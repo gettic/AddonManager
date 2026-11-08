@@ -1,0 +1,25 @@
+# Kit files (local only, never upload)
+CLAUDE.md
+.claude/
+
+# Private files (never upload)
+ideas.md
+work status.md
+readme notes.md
+plans/
+*.zip
+
+# Python build output (the .exe is attached to releases, not committed)
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.exe
+
+# Secrets
+.env*
+*.pem
+*.key
+credentials*.json
