@@ -13,10 +13,15 @@ plans/
 __pycache__/
 *.pyc
 .venv/
+.venv-build/
 venv/
 build/
 dist/
 *.exe
+*.log
+.pytest_cache/
+.idea/
+.vscode/
 
 # Secrets
 .env*

@@ -1,0 +1,115 @@
+"""Guild Addon Manager: start here.
+
+Options (for testing; players just double-click the .exe):
+  --manifest <url or path>   use this addon list (allows local files / localhost)
+  --wow <folder>             use this WoW Forever folder (not saved)
+  --home <folder>            keep settings and log here instead of %APPDATA%
+  --hidden                   start with the window hidden
+  --selftest --selftest-out <file>
+                             no window: install every addon from --manifest into
+                             --wow, check the result, write a report, exit 0/1
+"""
+
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+
+from am import APP_NAME, APP_VERSION, config
+
+log = logging.getLogger("main")
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(prog="AddonManager", add_help=True)
+    p.add_argument("--manifest")
+    p.add_argument("--wow")
+    p.add_argument("--home")
+    p.add_argument("--hidden", action="store_true")
+    p.add_argument("--selftest", action="store_true")
+    p.add_argument("--selftest-out")
+    return p.parse_args(argv)
+
+
+def set_dpi_aware():
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
+
+def selftest(args):
+    """Headless check used on the built .exe. Never uses the real WoW folder:
+    --manifest and --wow are required."""
+    from am import installer, manifest, toc, versions, wowpath
+    report = {"app": APP_VERSION, "ok": False, "steps": []}
+
+    def step(name, ok, detail=""):
+        report["steps"].append({"step": name, "ok": bool(ok), "detail": str(detail)})
+        return ok
+
+    try:
+        if not (args.manifest and args.wow):
+            step("arguments", False, "--manifest and --wow are required")
+            return report
+        m = manifest.load(args.manifest, allow_local=True)
+        step("manifest", m.addons, f"{len(m.addons)} addons")
+        status, addons_dir = wowpath.from_picked(args.wow)
+        if not step("wow folder", status == "ok", addons_dir or status):
+            return report
+        wowpath.ensure_addons_dir(addons_dir)
+        all_ok = bool(m.addons)
+        for addon in m.addons:
+            try:
+                installer.install(addon, addons_dir)
+                exists, v = toc.installed(addons_dir, addon.folder)
+                all_ok &= step(f"install {addon.folder}", exists and versions.same(v, addon.version),
+                               versions.display(v))
+            except Exception as e:
+                all_ok = step(f"install {addon.folder}", False, repr(e))
+        # The window toolkit must be bundled: build the window hidden, load, close.
+        import tkinter as tk
+        from am import ui
+        root = tk.Tk()
+        root.withdraw()
+        app = ui.App(root, args.manifest, True, args.wow)
+        deadline = time.time() + 20
+        while app.busy and time.time() < deadline:
+            root.update()
+            time.sleep(0.05)
+        rows = len(app.rows)
+        app.close()
+        window_ok = step("window", not app.busy and rows == len(m.addons), f"{rows} rows")
+        report["ok"] = bool(all_ok and window_ok)
+    except Exception as e:
+        step("error", False, repr(e))
+    return report
+
+
+def main(argv=None):
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.home:
+        os.environ[config.HOME_ENV] = os.path.abspath(args.home)
+    config.setup_logging()
+    log.info("%s %s starting", APP_NAME, APP_VERSION)
+    sys.excepthook = lambda *exc: log.error("Unexpected error", exc_info=exc)
+
+    if args.selftest:
+        report = selftest(args)
+        if args.selftest_out:
+            with open(args.selftest_out, "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2)
+        return 0 if report["ok"] else 1
+
+    set_dpi_aware()
+    from am import ui
+    ui.run(args.manifest, allow_local=bool(args.manifest), wow_override=args.wow,
+           hidden=args.hidden)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

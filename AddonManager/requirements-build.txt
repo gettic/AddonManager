@@ -1,0 +1,2 @@
+# Only for building the .exe (build.ps1). The app itself uses the standard library only.
+pyinstaller==6.22.3
