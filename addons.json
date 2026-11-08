@@ -2,7 +2,7 @@
   "format": 1,
   "title": "Guild Addons",
   "addons": [
-    {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
-    {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"}
+    {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"},
+    {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"}
   ]
 }

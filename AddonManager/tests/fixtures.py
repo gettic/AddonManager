@@ -134,6 +134,30 @@ def write_release(api_dir, repo, tag, assets, raw=None):
     return api_dir
 
 
+def make_fake_exe(path, marker=b"new", size=1024 * 1024 + 100, source=None):
+    """A file that passes the update checks ('MZ', over 1 MB). source: copy that file and
+    append marker (never run). Returns path."""
+    with open(path, "wb") as f:
+        if source:
+            with open(source, "rb") as src:
+                shutil.copyfileobj(src, f)
+            f.write(marker)
+        else:
+            f.write(b"MZ" + marker + b"\0" * max(0, size - 2 - len(marker)))
+    return path
+
+
+def make_app_release(api_dir, dl_dir, url_of, tag="v99.0.0", source=None, digest=True,
+                     name="AddonManager.exe", marker=b"new"):
+    """A fake latest release of gettic/AddonManager with one .exe asset in dl_dir.
+    url_of(file path) -> its URL. Returns the asset file path."""
+    os.makedirs(dl_dir, exist_ok=True)
+    path = make_fake_exe(os.path.join(dl_dir, name), marker=marker, source=source)
+    write_release(api_dir, "gettic/AddonManager", tag,
+                  [asset(name, url_of(path), path, digest=digest)])
+    return path
+
+
 def make_github_site(base, url_of):
     """base\\gh\\: zips for gettic/TaxiTime (tag v1.3.0, asset TaxiTime-v1.3.0.zip, like
     the real one) and gettic/GuildHub (tag 0.4.1, asset GuildHub-0.4.1.zip), the fake API

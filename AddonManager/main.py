@@ -9,6 +9,10 @@ Options (for testing; players just double-click the .exe):
   --selftest --selftest-out <file>
                              no window: install every addon from --manifest into
                              --wow, check the result, write a report, exit 0/1
+  --selftest-update --github-api <fake> --selftest-out <file>
+                             built .exe only, run on a COPY in a temp folder: update
+                             that copy from the fake release, check, roll back, report
+  --updated-from <version>   set by the app itself when it restarts after an update
 """
 
 import argparse
@@ -32,6 +36,8 @@ def parse_args(argv):
     p.add_argument("--hidden", action="store_true")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--selftest-out")
+    p.add_argument("--selftest-update", action="store_true")
+    p.add_argument("--updated-from")
     return p.parse_args(argv)
 
 
@@ -96,6 +102,47 @@ def selftest(args):
     return report
 
 
+def selftest_update(args, exe=None):
+    """Headless check of the self-update on the built .exe. Only meant for a copy of the
+    .exe in a temp folder: it swaps that copy for the fake release, checks, rolls back."""
+    import hashlib
+    from am import github, selfupdate
+    report = {"app": APP_VERSION, "ok": False, "steps": []}
+
+    def step(name, ok, detail=""):
+        report["steps"].append({"step": name, "ok": bool(ok), "detail": str(detail)})
+        return ok
+
+    def sha(path):
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    try:
+        exe = exe or selfupdate.exe_path()
+        if not step("arguments", exe and args.github_api, "built .exe and --github-api needed"):
+            return report
+        new, old = selfupdate.side_paths(exe)
+        before = sha(exe)
+        upd = selfupdate.check(APP_VERSION, github.api_base(args.github_api, True), True)
+        if not step("check", upd is not None, upd.version if upd else "no update found"):
+            return report
+        selfupdate.check_folder(exe)
+        step("folder", True, os.path.dirname(exe))
+        selfupdate.fetch(upd, exe, True)
+        step("download", os.path.isfile(new), f"{os.path.getsize(new)} bytes")
+        selfupdate.swap(exe)
+        swapped = step("swap", sha(exe) == upd.sha256 and sha(old) == before
+                       and not os.path.exists(new), "running exe renamed, new one in place")
+        back = step("rollback", selfupdate.rollback(exe) and sha(exe) == before,
+                    "old exe back")
+        clean = step("cleanup", selfupdate.cleanup(exe) and not os.path.exists(new)
+                     and not os.path.exists(old), "no .new/.old left")
+        report["ok"] = bool(swapped and back and clean)
+    except Exception as e:
+        step("error", False, repr(e))
+    return report
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.home:
@@ -104,17 +151,23 @@ def main(argv=None):
     log.info("%s %s starting", APP_NAME, APP_VERSION)
     sys.excepthook = lambda *exc: log.error("Unexpected error", exc_info=exc)
 
-    if args.selftest:
-        report = selftest(args)
+    if args.selftest or args.selftest_update:
+        report = selftest_update(args) if args.selftest_update else selftest(args)
         if args.selftest_out:
             with open(args.selftest_out, "w", encoding="utf-8") as f:
                 json.dump(report, f, indent=2)
         return 0 if report["ok"] else 1
 
+    from am import selfupdate
+    # Leftover AddonManager.exe.old/.new from an update (the old exe may still be closing).
+    selfupdate.cleanup_later(selfupdate.exe_path())
+    if args.updated_from:
+        log.info("Started after an update from %s", args.updated_from)
     set_dpi_aware()
     from am import ui
     ui.run(args.manifest, allow_local=bool(args.manifest), wow_override=args.wow,
-           hidden=args.hidden, github_api=args.github_api if args.manifest else None)
+           hidden=args.hidden, github_api=args.github_api if args.manifest else None,
+           updated_from=args.updated_from)
     return 0
 
 

@@ -14,13 +14,17 @@ BUILTIN_LIST = {
     "format": 1,
     "title": "Guild Addons",
     "addons": [
-        {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
         {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"},
+        {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
     ],
 }
 
 # The only place addon versions and downloads come from (tests may point elsewhere).
 GITHUB_API = "https://api.github.com"
+
+# The app's own releases (self-update). Fixed here: never taken from addons.json.
+APP_REPO = "gettic/AddonManager"
+APP_ASSET = "AddonManager.exe"
 
 HOME_ENV = "ADDONMANAGER_HOME"
 
@@ -46,14 +50,31 @@ def cache_path():
     return os.path.join(home_dir(), "cache.json")
 
 
+# Known settings and their type. A value of another type (a hand-edited or damaged
+# settings.json) is dropped on load, as if it had never been saved.
+SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": str,
+                 "update_failed": str, "known_addons": list}
+
+
 def load_settings():
-    """Return the saved settings as a dict ({} if missing or unreadable)."""
+    """Return the saved settings as a dict ({} if missing or unreadable). Known keys
+    with a wrong type (or empty text) are left out."""
     try:
         with open(settings_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    clean = {}
+    for key, value in data.items():
+        want = SETTING_TYPES.get(key)
+        if want is None or (isinstance(value, want) and (want is not str or value.strip())):
+            clean[key] = value
+        else:
+            logging.getLogger(__name__).warning("Ignoring bad setting %s=%r", key,
+                                                str(value)[:80])
+    return clean
 
 
 def save_settings(settings):

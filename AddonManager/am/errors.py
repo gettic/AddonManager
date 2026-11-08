@@ -13,6 +13,26 @@ NOT_WOW = ("That folder doesn't look like WoW Forever. Pick the folder that cont
 CHOOSE_CLIENT = ("That folder holds more than one game version. Open it and pick the "
                  "WoW Forever folder inside it.")
 FOLDER_GONE = "WoW Forever isn't where it was last time. Please choose its folder again."
+
+
+def only_other_clients(others):
+    """WoW was found, but only other game versions (beta, PTR, Classic, Retail...)."""
+    shown = ", ".join(others[:3]) + (", ..." if len(others) > 3 else "")
+    return (f"I found WoW on this PC ({shown}) but no WoW Forever. Click Choose folder "
+            "and pick your WoW Forever folder.")
+
+
+def not_forever(client):
+    """The player picked a folder that looks like another game version."""
+    return (f"Note: {client} looks like a different WoW version (not WoW Forever). "
+            "If that's wrong, click Change... and pick your WoW Forever folder.")
+
+
+def switched_folder(old, new):
+    return (f"Switched to your WoW Forever folder {new} (it was set to {old}, "
+            "which is a different WoW version).")
+
+
 GAME_RUNNING = ("WoW Forever is running. You can still install: afterwards type /reload "
                 "in the game or restart it to use the new versions.")
 
@@ -92,6 +112,48 @@ def install_message(exc, name):
 def _damaged(name):
     return (f"The download for {name} was damaged or doesn't match. Nothing was changed. "
             "Try again; if it keeps happening, tell the guild officer.")
+
+
+# ---------- the Addon Manager's own update (bar text: no game or company names) ----------
+def app_update_bar(version_text):
+    return f"Addon Manager {version_text} is out."
+
+
+APP_DOWNLOADING = "Downloading the Addon Manager update..."
+APP_RESTARTING = "Starting the new Addon Manager..."
+APP_CANT_HERE_BAR = "This copy can't update itself where it is. Get the new version here:"
+APP_DOWNLOAD_BUTTON = "Open download page"
+
+
+def app_update_message(exc):
+    """Message line text when the app's own update didn't work (the old version stays)."""
+    kind = getattr(exc, "kind", "")
+    if kind == "in_wow":
+        return ("The Addon Manager is inside your game folder, so it won't update itself "
+                "there. Click Open download page, and keep the new one outside the game folder.")
+    if kind == "read_only":
+        return ("Windows won't let the Addon Manager change files in its folder. Click Open "
+                "download page to get the new version.")
+    if kind == "offline":
+        return "Can't reach the internet. Check your connection and try again."
+    if kind == "timeout":
+        return "The download server isn't answering. Try again in a few minutes."
+    if kind == "rate_limited":
+        return "GitHub is limiting downloads from this PC. Try again in a few minutes."
+    if kind == "damaged":
+        return ("The update download was damaged or doesn't match, so nothing was changed. "
+                "Try again later.")
+    return ("The update didn't finish. Your current version still works. Try again later."
+            + DETAILS)
+
+
+def app_rolled_back(version_text):
+    return (f"The new Addon Manager {version_text} didn't start, so your old version is back. "
+            "That version won't be offered again." + DETAILS)
+
+
+def app_updated(version_text):
+    return f"Addon Manager updated to {version_text}."
 
 
 def success_message(name, version_text):

@@ -4,13 +4,31 @@ for the .exe self-test.
 Usage: python -m tests.make_selftest_data <empty folder>
 Prints three lines: the addon list path, the fake WoW folder and the fake GitHub API
 folder (for --github-api). The list mixes both kinds of entry: TaxiTime with a direct
-url/version/sha256, GuildHub from its (fake) GitHub repo's latest release."""
+url/version/sha256, GuildHub from its (fake) GitHub repo's latest release.
+
+       python -m tests.make_selftest_data <empty folder> --app-update <built .exe>
+Self-update test data: copies the .exe to <folder>\\run\\AddonManager.exe (the copy that
+runs and updates itself) and makes a fake gettic/AddonManager release v99.0.0 whose
+AddonManager.exe is another copy with a few bytes added (never run).
+Prints two lines: the copy to run and the fake GitHub API folder."""
 
 import os
 import pathlib
+import shutil
 import sys
 
 from tests import fixtures
+
+
+def app_update(base, exe):
+    run_dir = os.path.join(base, "run")
+    os.makedirs(run_dir)
+    copy = shutil.copy2(exe, os.path.join(run_dir, "AddonManager.exe"))
+    api = os.path.join(base, "api")
+    fixtures.make_app_release(api, os.path.join(base, "dl"), lambda p: pathlib.Path(p).as_uri(),
+                              source=exe, marker=b"selftest-update")
+    print(copy)
+    print(api)
 
 
 def main(base):
@@ -30,4 +48,8 @@ def main(base):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    if len(sys.argv) == 4 and sys.argv[2] == "--app-update":
+        os.makedirs(sys.argv[1], exist_ok=True)
+        app_update(sys.argv[1], sys.argv[3])
+    else:
+        main(sys.argv[1])

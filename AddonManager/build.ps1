@@ -53,6 +53,17 @@ try {
     if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report | Write-Host }
     if ($proc.ExitCode -ne 0) { throw "Self-test failed (exit code $($proc.ExitCode))." }
 
+    # Self-update on a COPY of the .exe in the temp folder (dist\AddonManager.exe is never swapped).
+    Write-Host 'Self-update test (hidden, copy of the .exe, fake release) ...'
+    $upd = & $py -m tests.make_selftest_data (Join-Path $work 'selfupdate') --app-update $exe
+    if ($LASTEXITCODE -or $upd.Count -lt 2) { throw 'Could not make self-update test data.' }
+    $updReport = Join-Path $work 'selfupdate-report.json'
+    $updArgs = @('--selftest-update', '--github-api', ('"' + $upd[1] + '"'),
+                 '--home', ('"' + (Join-Path $work 'home-update') + '"'), '--selftest-out', ('"' + $updReport + '"'))
+    $proc = Start-Process -FilePath $upd[0] -ArgumentList $updArgs -Wait -PassThru -WindowStyle Hidden
+    if (Test-Path -LiteralPath $updReport) { Get-Content -LiteralPath $updReport | Write-Host }
+    if ($proc.ExitCode -ne 0) { throw "Self-update test failed (exit code $($proc.ExitCode))." }
+
     $item = Get-Item -LiteralPath $exe
     $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower()
     Write-Host ('BUILD OK: {0}  {1:N1} MB  sha256 {2}' -f $item.FullName, ($item.Length / 1MB), $hash)

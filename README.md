@@ -4,7 +4,7 @@ A Windows app that installs and updates the guild's addons for WoW Forever with 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.1.0
+Current version: v0.2.0
 
 ## Get it
 
@@ -18,8 +18,8 @@ Windows may show "Windows protected your PC" the first times, because the app is
 
 ## How to use it
 
-1. Open `AddonManager.exe`. It looks for your WoW Forever folder by itself. If it can't find it, click **Choose folder** and pick the folder where WoW Forever is installed.
-2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The window is dark (black and grey with red). The status is colour-coded:
+1. Open `AddonManager.exe`. It looks for your WoW Forever folder by itself (for example `World of Warcraft\_forever_`). It only picks a real WoW Forever folder, never Beta, PTR, Classic or Retail. If it can't find it, click **Choose folder** and pick the folder where WoW Forever is installed.
+2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The guild's addons are listed in the guild's order, Guild Hub first. The window is dark (black and grey with red). The app's own version is shown at the bottom right. The status is colour-coded:
 
    | Status | Colour |
    | --- | --- |
@@ -31,18 +31,29 @@ Windows may show "Windows protected your PC" the first times, because the app is
    The title bar is dark too on Windows 10 (20H1 or newer) and Windows 11. The **Choose folder** window follows your Windows light or dark setting.
 3. Click **Install** or **Update** next to an addon, or **Install/update all** to do every addon that needs it.
 4. If the status says "Installed (version unknown)", the button says **Reinstall**.
-5. To use a different WoW Forever folder, click **Change...**.
+5. To use a different WoW Forever folder, click **Change...**. The folder path at the top can be selected and copied (Ctrl+C, or right-click and Copy).
 6. Click **Check again** to reload the list, for example after your internet came back.
+
+If the app had saved the folder of another version (for example Retail), it switches to WoW Forever and tells you. If you pick another version's folder yourself, the app uses it but shows a warning.
 
 If WoW is running, the app warns you. You can still install. Afterwards type `/reload` in the game, or restart it, to use the new versions.
 
 If something fails, the app tells you in plain words and nothing is half-installed: your old version stays.
 
+## Updating the app itself
+
+When a newer version of Addon Manager is out, a bar appears with **Update now**, **Later** and a **What's new** link.
+
+- **Update now** downloads the new `AddonManager.exe` from the AddonManager releases, replaces the old one and restarts the app. If the new version doesn't start, the old one comes back.
+- **Later** hides the bar.
+
+Keep `AddonManager.exe` in a normal folder, such as Desktop, Downloads or Documents. If it is inside your WoW folder, or in a folder the app can't write to, it can't replace itself. The bar then shows the download page instead, and you download the new version by hand.
+
 ## Where the addons come from
 
 Each guild addon has its own public page on GitHub. The app takes the latest normal release from there. Drafts and pre-releases are never offered.
 
-The guild's list of addons is the file `addons.json` in the AddonManager repo. The app also has a built-in copy of the list, in case it can't read the file.
+The guild's list of addons is the file `addons.json` in the AddonManager repo. The app shows the addons in the same order as in that file. The app also has a built-in copy of the list, in case it can't read the file.
 
 GitHub allows about 60 update checks per hour from one PC. That is plenty. The app remembers the answers for 10 minutes, and if you reach the limit it tells you when to try again.
 

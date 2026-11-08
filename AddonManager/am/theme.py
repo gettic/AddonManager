@@ -59,6 +59,19 @@ def apply(root):
           bordercolor=[("disabled", BORDER)],
           lightcolor=[("disabled", BG), ("active", ACCENT_HOVER)],
           darkcolor=[("disabled", BG), ("active", ACCENT_HOVER)])
+    for name, fg in (("Path.TEntry", TEXT), ("Muted.Path.TEntry", MUTED)):
+        s.configure(name, background=BG, fieldbackground=SURFACE, foreground=fg,
+                    bordercolor=BORDER, focuscolor=BORDER,
+                    lightcolor=SURFACE, darkcolor=SURFACE, insertcolor=TEXT,
+                    selectbackground=ACCENT, selectforeground=ACCENT_TEXT, padding=(4, 2))
+        s.map(name,
+              fieldbackground=[("readonly", SURFACE)],
+              background=[("readonly", BG)],   # clam's light 'frame' colour showed at the corners
+              foreground=[("readonly", fg)],
+              bordercolor=[("focus", BORDER)],
+              lightcolor=[("focus", SURFACE)],
+              selectbackground=[("!focus", BUTTON_HOVER)],
+              selectforeground=[("!focus", TEXT)])
     s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=SURFACE,
                 bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT)
 

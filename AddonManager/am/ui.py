@@ -6,10 +6,11 @@ import os
 import queue
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, ttk
 
-from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, installer, theme, toc,
-                versions, wowpath)
+from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, installer, selfupdate,
+                theme, toc, versions, wowpath)
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ BUTTON_TEXT = {
     versions.UNKNOWN: "Reinstall",
 }
 ALL_STATUSES = (versions.UPDATE, versions.NOT_INSTALLED)
+NOT_CHOSEN = "(not chosen)"
 
 
 class Tooltip:
@@ -69,8 +71,20 @@ class Row:
 class App:
     def __init__(self, root, manifest_location=None, allow_local=False, wow_override=None,
                  check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None,
-                 github_api=None):
+                 github_api=None, app_exe=None, updated_from=None, restart=selfupdate.restart,
+                 open_link=None):
+        """app_exe: the running .exe (self-update on); None = no self-update (from source,
+        self-test). updated_from: set when this run was started by an update."""
         self.root = root
+        self.app_exe = app_exe
+        self.restart = restart
+        self.open_link = open_link or webbrowser.open
+        self.app_update = None      # selfupdate.Update offered in the bar
+        self.update_mode = None     # None, "offer", "cant", "done"
+        self.update_dismissed = False
+        self.installing = False
+        self.updating = False       # the app's own update is downloading/restarting
+        self._was_visible = False
         self.allow_local = allow_local
         self.github_api = github.api_base(github_api, allow_local)
         self.manifest_location = config.manifest_url(config.load_settings(), manifest_location)
@@ -85,6 +99,8 @@ class App:
         self.rows = []
         self.manifest = None
         self.manifest_note = ""
+        self.folder_note = ""   # folder warning/notice kept in the message line
+        self.clipboard = self._set_clipboard   # tests swap this; never the real clipboard
 
         root.title(APP_NAME)
         root.geometry("680x420")
@@ -96,6 +112,15 @@ class App:
         self._after = None
         root.bind("<Destroy>", self._on_destroy, add="+")
         self.check_again(force=False)
+        if updated_from:
+            # Started by an update: tell the old exe we're up, and don't offer updates now.
+            selfupdate.mark_ok(APP_VERSION)
+            self.update_mode = "done"
+            self._render_update_bar()
+        elif self.app_exe:
+            threading.Thread(target=_update_check_worker, daemon=True,
+                             args=(self.queue, self.github_api, self.allow_local,
+                                   self.settings.get(selfupdate.SETTINGS_FAILED))).start()
         self._after = root.after(100, self._poll)
 
     # ---------- layout ----------
@@ -103,16 +128,20 @@ class App:
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill="both", expand=True)
 
-        head = ttk.Frame(outer)
-        head.pack(fill="x")
-        ttk.Label(head, text=APP_NAME, font=("Segoe UI", 14, "bold")).pack(side="left")
-        ttk.Label(head, text=versions.display(APP_VERSION), style="Muted.TLabel").pack(side="right")
-
         folder = ttk.LabelFrame(outer, text="WoW Forever folder", padding=8)
-        folder.pack(fill="x", pady=(8, 6))
-        self.folder_var = tk.StringVar(value="(not chosen)")
-        ttk.Label(folder, textvariable=self.folder_var, wraplength=480).grid(
-            row=0, column=0, sticky="w")
+        folder.pack(fill="x", pady=(0, 6))
+        self.folder_var = tk.StringVar(value=NOT_CHOSEN)
+        # Read-only but selectable: Ctrl+C and right-click Copy (copy only, no typing).
+        self.folder_entry = ttk.Entry(folder, textvariable=self.folder_var, state="readonly",
+                                      style="Muted.Path.TEntry", takefocus=0)
+        self.folder_entry.grid(row=0, column=0, sticky="ew")
+        self.folder_menu = tk.Menu(self.root, tearoff=0, background=theme.SURFACE,
+                                   foreground=theme.TEXT, activebackground=theme.ACCENT,
+                                   activeforeground=theme.ACCENT_TEXT, borderwidth=1)
+        self.folder_menu.add_command(label="Copy", command=self.copy_folder)
+        self.folder_entry.bind("<Button-3>", self._folder_menu_popup)
+        self.folder_entry.bind("<Control-c>", lambda _e: (self.copy_folder(), "break")[1])
+        self.folder_entry.bind("<Control-C>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder)
         self.folder_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
         folder.columnconfigure(0, weight=1)
@@ -121,6 +150,24 @@ class App:
         self.banner = tk.Label(outer, textvariable=self.banner_var, background=theme.BANNER_BG,
                                foreground=theme.BANNER_TEXT,
                                anchor="w", justify="left", wraplength=640, padx=6, pady=4)
+
+        # The app's own update: one line, shown only when there is something to say.
+        self.update_bar = tk.Frame(outer, background=theme.SURFACE, highlightthickness=1,
+                                   highlightbackground=theme.ACCENT, padx=6, pady=4)
+        self.update_text = tk.Label(self.update_bar, background=theme.SURFACE,
+                                    foreground=theme.TEXT, anchor="w")
+        self.update_text.pack(side="left")
+        self.update_link = tk.Label(self.update_bar, text="What's new", cursor="hand2",
+                                    background=theme.SURFACE, foreground=theme.BANNER_TEXT,
+                                    font=("Segoe UI", 9, "underline"))
+        self.update_link.pack(side="left", padx=(8, 0))
+        self.update_link.bind("<Button-1>", lambda _e: self.whats_new())
+        self.update_later_button = ttk.Button(self.update_bar, text="Later",
+                                              command=self.update_later)
+        self.update_later_button.pack(side="right")
+        self.update_now_button = ttk.Button(self.update_bar, text="Update now",
+                                            command=self.update_now, style="Accent.TButton")
+        self.update_now_button.pack(side="right", padx=(0, 6))
 
         self.list_frame = ttk.Frame(outer)
         self.list_frame.pack(fill="both", expand=True, pady=(4, 6))
@@ -137,8 +184,14 @@ class App:
         self.progress = ttk.Progressbar(bottom, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(8, 2))
         self.message_var = tk.StringVar()
-        ttk.Label(bottom, textvariable=self.message_var, wraplength=640,
-                  justify="left").pack(fill="x")
+        status_line = ttk.Frame(bottom)
+        status_line.pack(fill="x")
+        # The app version, dimmed, at the right end of the message line.
+        self.version_label = ttk.Label(status_line, text=versions.display(APP_VERSION),
+                                       style="Muted.TLabel")
+        self.version_label.pack(side="right", anchor="se", padx=(8, 0))
+        ttk.Label(status_line, textvariable=self.message_var, wraplength=580,
+                  justify="left").pack(side="left", fill="x", expand=True)
 
     def render(self):
         """Rebuild the addon rows from self.rows and the installed .toc files."""
@@ -195,6 +248,107 @@ class App:
         self._set_enabled(self.all_button, any_action and not self.busy)
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
+        self._render_update_bar()
+
+    # ---------- the app's own update ----------
+    def _render_update_bar(self):
+        """Show or hide the update bar. Hidden while addons install or after Later."""
+        mode = self.update_mode
+        show = bool(mode) and not self.update_dismissed and not self.installing
+        if not show:
+            self.update_bar.pack_forget()
+            return
+        if mode == "done":
+            self.update_text.configure(text=errors.app_updated(versions.display(APP_VERSION)))
+            self.update_now_button.pack_forget()
+            self.update_later_button.configure(text="OK")
+        else:
+            if mode == "cant":
+                self.update_text.configure(text=errors.APP_CANT_HERE_BAR)
+                self.update_now_button.configure(text=errors.APP_DOWNLOAD_BUTTON)
+                self._set_enabled(self.update_now_button, True)
+            else:
+                self.update_text.configure(text=errors.app_update_bar(
+                    versions.display(self.app_update.version)))
+                self.update_now_button.configure(text="Update now")
+                self._set_enabled(self.update_now_button, not self.busy)
+            if not self.update_now_button.winfo_manager():
+                self.update_now_button.pack(side="right", padx=(0, 6),
+                                            before=self.update_later_button)
+            self.update_later_button.configure(text="Later")
+        self._set_enabled(self.update_later_button, not self.updating)
+        if not self.update_bar.winfo_manager():
+            self.update_bar.pack(fill="x", before=self.list_frame, pady=(0, 4))
+
+    def whats_new(self):
+        if self.update_mode == "done":
+            tag = "v" + versions.plain(APP_VERSION)
+            url = f"https://github.com/{config.APP_REPO}/releases/tag/{tag}"
+        elif self.app_update:
+            url = self.app_update.page_url
+        else:
+            url = selfupdate.DOWNLOAD_PAGE
+        self.open_link(url)
+
+    def update_later(self):
+        if self.updating:
+            return
+        self.update_dismissed = True
+        self._render_update_bar()
+
+    def update_now(self):
+        if self.update_mode == "cant":
+            self.open_link(selfupdate.DOWNLOAD_PAGE)
+            return
+        if self.update_mode != "offer" or self.busy or not self.app_update or not self.app_exe:
+            return
+        try:
+            selfupdate.check_folder(self.app_exe, self.addons_dir)
+        except selfupdate.UpdateError as e:
+            log.info("App update not possible here: %s", e)
+            self.update_mode = "cant"
+            self.set_message(errors.app_update_message(e))
+            self.render()
+            return
+        self.busy = True
+        self.updating = True
+        self.set_message(errors.APP_DOWNLOADING)
+        self.progress.configure(value=0)
+        self.render()
+        threading.Thread(target=_app_update_worker, daemon=True,
+                         args=(self.queue, self.app_update, self.app_exe,
+                               self.allow_local)).start()
+
+    def _app_swapped(self):
+        """The new exe is in place: start it and wait for it to say it's up."""
+        self.set_message(errors.APP_RESTARTING)
+        selfupdate.clear_ok()
+        try:
+            proc = self.restart(self.app_exe, APP_VERSION)
+        except Exception:
+            log.exception("Could not start the new exe")
+            selfupdate.rollback(self.app_exe)
+            self._was_visible = False
+            self._app_finished(False)
+            return
+        self._was_visible = self.root.state() != "withdrawn"
+        self.root.withdraw()
+        threading.Thread(target=_app_wait_worker, daemon=True,
+                         args=(self.queue, self.app_update.version, self.app_exe, proc)).start()
+
+    def _app_finished(self, ok):
+        if ok:
+            log.info("Updated to %s; closing the old version", self.app_update.version)
+            self.close()
+            return
+        selfupdate.remember_failed(self.app_update.version)
+        if self._was_visible:
+            self.root.deiconify()
+        self.busy = False
+        self.updating = False
+        self.set_message(errors.app_rolled_back(versions.display(self.app_update.version)))
+        self.app_update, self.update_mode = None, None
+        self.render()
 
     @staticmethod
     def _set_enabled(widget, enabled):
@@ -216,10 +370,12 @@ class App:
             self.banner.pack_forget()
 
     # ---------- WoW folder ----------
-    def _set_addons_dir(self, addons_dir, save=True):
+    def _set_addons_dir(self, addons_dir, save=True, source="auto"):
+        """source: 'auto' (found by the app, re-checked at start) or 'picked' (by hand)."""
         self.addons_dir = addons_dir
         client = os.path.dirname(os.path.dirname(addons_dir))
         self.folder_var.set(client)
+        self.folder_entry.configure(style="Path.TEntry")
         self.folder_button.configure(text="Change...")
         if os.path.isdir(addons_dir):
             for action, name in installer.recover(addons_dir):
@@ -227,31 +383,91 @@ class App:
         if save:
             self.settings = config.load_settings()
             self.settings["wow_folder"] = addons_dir
+            self.settings["wow_folder_source"] = source
             config.save_settings(self.settings)
 
     def _no_folder(self, message):
         self.addons_dir = None
-        self.folder_var.set("(not chosen)")
+        self.folder_var.set(NOT_CHOSEN)
+        self.folder_entry.configure(style="Muted.Path.TEntry")
         self.folder_button.configure(text="Choose folder")
+        self.folder_note = message
         self.set_message(message)
 
     def _resolve_folder(self, override=None):
+        """Override (dev) > saved folder > automatic search. A saved folder that the app
+        found itself ('auto', or old settings without a source) is re-checked: if it is
+        another WoW version (beta, PTR, Classic...), search again for WoW Forever."""
+        self.folder_note = ""
         if override:
             status, addons_dir = wowpath.from_picked(override)
-            if status == "ok":
+            if status in ("ok", "other"):
                 self._set_addons_dir(addons_dir, save=False)
                 return
         saved = self.settings.get("wow_folder")
+        if not isinstance(saved, str) or not saved.strip() or "\0" in saved:
+            saved = None   # damaged setting: search again
+        wrong = None
         if saved:
             if os.path.isdir(os.path.dirname(saved)) and os.path.basename(saved).lower() == "addons":
-                self._set_addons_dir(saved, save=False)
-                return
-            log.info("Saved folder gone: %s", saved)
+                client = os.path.dirname(os.path.dirname(saved))
+                if wowpath.client_kind(client) != wowpath.OTHER:
+                    self._set_addons_dir(saved, save=False)
+                    return
+                if self.settings.get("wow_folder_source") == "picked":
+                    self._set_addons_dir(saved, save=False)
+                    self.folder_note = errors.not_forever(client)
+                    self.set_message(self.folder_note)
+                    return
+                log.info("Saved folder is not a WoW Forever client, searching again: %s", saved)
+                wrong = client
+            else:
+                log.info("Saved folder gone: %s", saved)
         found = self.detect()
         if found:
             self._set_addons_dir(found[0])
+            if wrong:
+                self.folder_note = errors.switched_folder(
+                    wrong, os.path.dirname(os.path.dirname(found[0])))
+                self.set_message(self.folder_note)
+            return
+        others = list(getattr(found, "others", []) or [])
+        if wrong and os.path.normcase(wrong) not in {os.path.normcase(o) for o in others}:
+            others.insert(0, wrong)
+        if others:
+            self._no_folder(errors.only_other_clients(others))
         else:
             self._no_folder(errors.FOLDER_GONE if saved else errors.NOT_FOUND)
+
+    # ---------- copy the folder path ----------
+    def _set_clipboard(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def copy_folder(self):
+        """Copy the selected part of the folder path, or all of it. Returns the text."""
+        text = ""
+        try:
+            if self.folder_entry.selection_present():
+                first = self.folder_entry.index("sel.first")
+                last = self.folder_entry.index("sel.last")
+                text = self.folder_var.get()[first:last]
+        except tk.TclError:
+            text = ""
+        if not text:
+            text = self.folder_var.get()
+        if not text or text == NOT_CHOSEN:
+            return ""
+        self.clipboard(text)
+        return text
+
+    def _folder_menu_popup(self, event):
+        state = "normal" if self.addons_dir else "disabled"
+        self.folder_menu.entryconfigure(0, state=state)
+        try:
+            self.folder_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.folder_menu.grab_release()
 
     def _ask_folder_dialog(self):
         return filedialog.askdirectory(parent=self.root, mustexist=True,
@@ -265,8 +481,13 @@ class App:
             return
         status, addons_dir = wowpath.from_picked(picked)
         if status == "ok":
-            self._set_addons_dir(addons_dir)
+            self._set_addons_dir(addons_dir, source="picked")
+            self.folder_note = ""
             self.set_message("")
+        elif status == "other":
+            self._set_addons_dir(addons_dir, source="picked")
+            self.folder_note = errors.not_forever(os.path.dirname(os.path.dirname(addons_dir)))
+            self.set_message(self.folder_note)
         elif status == "choose":
             self.set_message(errors.CHOOSE_CLIENT)
         else:
@@ -305,21 +526,27 @@ class App:
             config.save_settings(self.settings)
             self.manifest_note = "The guild's addon list is empty."
             note = ""
-            if m.app_version and versions.compare(m.app_version, APP_VERSION) == 1:
+            if (m.app_version and versions.compare(m.app_version, APP_VERSION) == 1
+                    and not self.app_exe):   # the built app shows the update bar instead
                 note = (f"A newer Addon Manager ({versions.display(m.app_version)}) "
                         "is available.")
             if notes:
                 note = "  ".join(notes + ([note] if note else []))
             if self.addons_dir:
-                self.set_message(note)
+                self.set_message(self._with_folder_note(note))
         else:
             known = self.settings.get("known_addons") or []
-            self.rows = [Row(f, n) for f, n in known
-                         if isinstance(f, str) and manifest_mod.is_safe_folder(f)]
+            self.rows = [Row(k[0], k[1]) for k in known
+                         if isinstance(k, (list, tuple)) and len(k) == 2
+                         and isinstance(k[0], str) and isinstance(k[1], str)
+                         and manifest_mod.is_safe_folder(k[0])]
             self.manifest_note = error
-            self.set_message(error)
+            self.set_message(self._with_folder_note(error))
         if not self.addons_dir:
-            self.set_message(errors.NOT_FOUND)
+            self.set_message(self.folder_note or errors.NOT_FOUND)
+
+    def _with_folder_note(self, text):
+        return "  ".join(t for t in (self.folder_note, text) if t)
 
     # ---------- installing ----------
     def update_all(self):
@@ -341,6 +568,7 @@ class App:
                 installer.InstallError("permission"), rows[0].name))
             return
         self.busy = True
+        self.installing = True
         for row in rows:
             row.state, row.message = "queued", ""
         self.progress.configure(value=0)
@@ -404,8 +632,27 @@ class App:
             if row:
                 row.state, row.message = "error", msg[2]
             self.render()
+        elif kind == "app_update":
+            if msg[1] is not None and self.update_mode is None:
+                self.app_update, self.update_mode = msg[1], "offer"
+                self._render_update_bar()
+        elif kind == "app_progress":
+            _, done, total = msg
+            if total:
+                self.progress.configure(value=min(100, done * 100 // total))
+        elif kind == "app_error":
+            self.busy = False
+            self.updating = False
+            self.set_message(msg[1])
+            self.render()
+        elif kind == "app_swapped":
+            self.progress.configure(value=100)
+            self._app_swapped()
+        elif kind == "app_started":
+            self._app_finished(msg[1])
         elif kind == "finished":
             self.busy = False
+            self.installing = False
             failed = [r for r in self.rows if r.state == "error"]
             if failed:
                 self.set_message("  ".join(r.message for r in failed))
@@ -462,13 +709,41 @@ def _install_worker(q, check_game, rows, addons_dir):
     q.put(("finished", done_msgs))
 
 
+def _update_check_worker(q, github_api, allow_local, failed):
+    """Thread: is there a newer Addon Manager? ("app_update", Update or None)."""
+    q.put(("app_update", selfupdate.check(APP_VERSION, github_api, allow_local,
+                                          cache_file=config.cache_path(), failed=failed)))
+
+
+def _app_update_worker(q, update, exe, allow_local):
+    """Thread: download + check + swap the app's own exe."""
+    try:
+        selfupdate.fetch(update, exe, allow_local,
+                         progress=lambda done, total: q.put(("app_progress", done, total)))
+        selfupdate.swap(exe)
+        q.put(("app_swapped",))
+    except Exception as e:
+        log.exception("App update failed")
+        q.put(("app_error", errors.app_update_message(e)))
+
+
+def _app_wait_worker(q, version, exe, proc):
+    """Thread: wait for the new exe to say it's up; roll back if it doesn't."""
+    ok = selfupdate.wait_ok(version, proc)
+    if not ok:
+        log.warning("New exe %s didn't confirm; rolling back", version)
+        selfupdate.rollback(exe, proc)
+    q.put(("app_started", ok))
+
+
 def run(manifest_location=None, allow_local=False, wow_override=None, hidden=False,
-        github_api=None):
+        github_api=None, updated_from=None):
     root = tk.Tk()
     if hidden:
         root.withdraw()
     root.report_callback_exception = _report_callback_exception
-    app = App(root, manifest_location, allow_local, wow_override, github_api=github_api)
+    app = App(root, manifest_location, allow_local, wow_override, github_api=github_api,
+              app_exe=selfupdate.exe_path(), updated_from=updated_from)
     theme.dark_title_bar(root)
     root.mainloop()
     return app
