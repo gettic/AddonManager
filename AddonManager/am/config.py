@@ -5,9 +5,22 @@ import logging
 import logging.handlers
 import os
 
-# Where the guild's addon list (manifest.json) lives. Hosting is decided later:
-# while this is empty the app shows "No addon list is set up yet".
-DEFAULT_MANIFEST_URL = ""
+# Where the guild's addon list lives: addons.json in the public AddonManager repo.
+# Adding an addon = add an entry there and push; no new .exe needed.
+DEFAULT_MANIFEST_URL = "https://raw.githubusercontent.com/gettic/AddonManager/main/addons.json"
+
+# Used when addons.json can't be read. Keep it the same as addons.json at the repo root.
+BUILTIN_LIST = {
+    "format": 1,
+    "title": "Guild Addons",
+    "addons": [
+        {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
+        {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"},
+    ],
+}
+
+# The only place addon versions and downloads come from (tests may point elsewhere).
+GITHUB_API = "https://api.github.com"
 
 HOME_ENV = "ADDONMANAGER_HOME"
 
@@ -27,6 +40,10 @@ def settings_path():
 
 def log_path():
     return os.path.join(home_dir(), "log.txt")
+
+
+def cache_path():
+    return os.path.join(home_dir(), "cache.json")
 
 
 def load_settings():

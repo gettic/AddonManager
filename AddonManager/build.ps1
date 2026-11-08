@@ -44,9 +44,10 @@ try {
 
     Write-Host 'Self-test of the .exe (hidden, fake WoW folder) ...'
     $data = & $py -m tests.make_selftest_data (Join-Path $work 'selftest')
-    if ($LASTEXITCODE -or $data.Count -lt 2) { throw 'Could not make self-test data.' }
-    $report = Join-Path $work 'selftest.json'
+    if ($LASTEXITCODE -or $data.Count -lt 3) { throw 'Could not make self-test data.' }
+    $report = Join-Path $work 'selftest-report.json'
     $argList = @('--selftest', '--manifest', ('"' + $data[0] + '"'), '--wow', ('"' + $data[1] + '"'),
+                 '--github-api', ('"' + $data[2] + '"'),
                  '--home', ('"' + (Join-Path $work 'home') + '"'), '--selftest-out', ('"' + $report + '"'))
     $proc = Start-Process -FilePath $exe -ArgumentList $argList -Wait -PassThru -WindowStyle Hidden
     if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report | Write-Host }

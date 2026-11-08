@@ -13,9 +13,11 @@ from am import download
 log = logging.getLogger(__name__)
 
 SUPPORTED_FORMAT = 1
-_FOLDER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
-_VERSION_RE = re.compile(r"^[vV]?[0-9A-Za-z.\-+]+$")
-_SHA_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+# These are used with fullmatch ("$" would also accept a trailing newline).
+_FOLDER_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
+_VERSION_RE = re.compile(r"[vV]?[0-9A-Za-z.\-+]+")
+_SHA_RE = re.compile(r"[0-9a-fA-F]{64}")
+_REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-]{0,38}/[A-Za-z0-9_.\-]{1,100}")
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
@@ -37,6 +39,8 @@ class Addon:
     description: str = ""
     sha256: str = ""
     size: int = 0
+    repo: str = ""      # "owner/name": version and url come from its latest GitHub release
+    strict_hosts: bool = False   # download and every redirect must stay on https GitHub hosts
 
 
 @dataclass
@@ -50,7 +54,7 @@ class Manifest:
 def is_safe_folder(name):
     """A plain AddOns folder name: no slashes, drive, '..' or leading dot."""
     return (isinstance(name, str) and 0 < len(name) <= 100
-            and bool(_FOLDER_RE.match(name)) and not name.endswith("."))
+            and bool(_FOLDER_RE.fullmatch(name)) and not name.endswith("."))
 
 
 def to_url(location):
@@ -58,6 +62,12 @@ def to_url(location):
     if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", location or ""):
         return location
     return pathlib.Path(os.path.abspath(location)).as_uri()
+
+
+def is_safe_repo(repo):
+    """A plain GitHub "owner/name" (no '..', no extra slashes)."""
+    return (isinstance(repo, str) and bool(_REPO_RE.fullmatch(repo))
+            and repo.split("/")[1] not in (".", ".."))
 
 
 def url_allowed(url, allow_local):
@@ -113,7 +123,15 @@ def _parse_addon(entry, base_url, allow_local):
     if not is_safe_folder(folder):
         log.warning("Addon entry skipped: unsafe folder %r", folder)
         return None
-    if not isinstance(version, str) or not _VERSION_RE.match(version.strip()):
+    repo = entry.get("repo")
+    if repo is not None:
+        # Version and download are filled in later from GitHub (am.github.resolve).
+        if not is_safe_repo(repo):
+            log.warning("Addon %s skipped: bad repo %r", folder, repo)
+            return None
+        return Addon(folder=folder, name=str(entry.get("name") or folder), version="", url="",
+                     description=str(entry.get("description") or ""), repo=repo)
+    if not isinstance(version, str) or not _VERSION_RE.fullmatch(version.strip()):
         log.warning("Addon %s skipped: bad version %r", folder, version)
         return None
     if not isinstance(url, str) or not url.strip():
@@ -124,7 +142,7 @@ def _parse_addon(entry, base_url, allow_local):
         log.warning("Addon %s skipped: url not allowed %s", folder, full_url)
         return None
     sha = entry.get("sha256") or ""
-    if sha and (not isinstance(sha, str) or not _SHA_RE.match(sha)):
+    if sha and (not isinstance(sha, str) or not _SHA_RE.fullmatch(sha)):
         log.warning("Addon %s skipped: bad sha256", folder)
         return None
     size = entry.get("size") or 0

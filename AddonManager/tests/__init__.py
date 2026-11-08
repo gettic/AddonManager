@@ -15,3 +15,11 @@ if os.environ.get("ADDONMANAGER_TEST_TMP"):
 os.environ["ADDONMANAGER_HOME"] = tempfile.mkdtemp(
     prefix="v1core_home_", dir=os.environ.get("ADDONMANAGER_TEST_TMP"))
 atexit.register(shutil.rmtree, os.environ["ADDONMANAGER_HOME"], True)
+
+# Tests never go online: no real addon list, and "GitHub" is a closed local port.
+from am import config  # noqa: E402
+
+REAL_MANIFEST_URL = config.DEFAULT_MANIFEST_URL
+REAL_GITHUB_API = config.GITHUB_API
+config.DEFAULT_MANIFEST_URL = ""
+config.GITHUB_API = "https://127.0.0.1:9"

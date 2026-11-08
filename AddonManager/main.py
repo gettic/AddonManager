@@ -2,6 +2,7 @@
 
 Options (for testing; players just double-click the .exe):
   --manifest <url or path>   use this addon list (allows local files / localhost)
+  --github-api <url or path> with --manifest only: a local fake of the GitHub API
   --wow <folder>             use this WoW Forever folder (not saved)
   --home <folder>            keep settings and log here instead of %APPDATA%
   --hidden                   start with the window hidden
@@ -25,6 +26,7 @@ log = logging.getLogger("main")
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="AddonManager", add_help=True)
     p.add_argument("--manifest")
+    p.add_argument("--github-api")
     p.add_argument("--wow")
     p.add_argument("--home")
     p.add_argument("--hidden", action="store_true")
@@ -44,7 +46,7 @@ def set_dpi_aware():
 def selftest(args):
     """Headless check used on the built .exe. Never uses the real WoW folder:
     --manifest and --wow are required."""
-    from am import installer, manifest, toc, versions, wowpath
+    from am import github, installer, manifest, toc, versions, wowpath
     report = {"app": APP_VERSION, "ok": False, "steps": []}
 
     def step(name, ok, detail=""):
@@ -57,11 +59,16 @@ def selftest(args):
             return report
         m = manifest.load(args.manifest, allow_local=True)
         step("manifest", m.addons, f"{len(m.addons)} addons")
+        api = github.api_base(args.github_api, True)
+        m.addons, problems = github.resolve_all(m.addons, api, allow_local=True)
+        releases_ok = step("releases", not problems,
+                           f"{sum(1 for a in m.addons if a.repo)} from GitHub-style releases; "
+                           f"problems: {sorted(problems) or 'none'}")
         status, addons_dir = wowpath.from_picked(args.wow)
         if not step("wow folder", status == "ok", addons_dir or status):
             return report
         wowpath.ensure_addons_dir(addons_dir)
-        all_ok = bool(m.addons)
+        all_ok = bool(m.addons) and releases_ok
         for addon in m.addons:
             try:
                 installer.install(addon, addons_dir)
@@ -75,7 +82,7 @@ def selftest(args):
         from am import ui
         root = tk.Tk()
         root.withdraw()
-        app = ui.App(root, args.manifest, True, args.wow)
+        app = ui.App(root, args.manifest, True, args.wow, github_api=args.github_api)
         deadline = time.time() + 20
         while app.busy and time.time() < deadline:
             root.update()
@@ -107,7 +114,7 @@ def main(argv=None):
     set_dpi_aware()
     from am import ui
     ui.run(args.manifest, allow_local=bool(args.manifest), wow_override=args.wow,
-           hidden=args.hidden)
+           hidden=args.hidden, github_api=args.github_api if args.manifest else None)
     return 0
 
 

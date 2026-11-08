@@ -143,6 +143,21 @@ class WindowTests(unittest.TestCase):
         self.pump(app)
         self.assertEqual(app.message_var.get(), "No addon list is set up yet.")
 
+    def test_rows_from_github_releases(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            fixtures.write_release(os.path.join(gh, "api"), "gettic/GuildHub", "v0.5.0", [])
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: False, detect=lambda: [],
+                         github_api=server.url + "api")
+            self.pump(app)
+            self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
+            self.assertEqual(self.status(app, "GuildHub"), ("No download yet", None))
+            self.assertIn("Guild Hub's newest release has no download yet", app.message_var.get())
+            app.row_widgets["TaxiTime"][1].invoke()
+            self.pump(app)
+            self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
+
     def test_no_wow_found(self):
         app = ui.App(self.root, os.path.join(self.site, "manifest.json"), True, None,
                      check_game=lambda: False, detect=lambda: [])

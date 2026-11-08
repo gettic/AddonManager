@@ -4,11 +4,13 @@ A Windows app that installs and updates the guild's addons for WoW Forever with 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.0.1
+Current version: v0.1.0
 
 ## Get it
 
-The download link comes with the first release.
+Download the latest version here: https://github.com/gettic/AddonManager/releases/latest/download/AddonManager.exe
+
+This link always gives you the newest `AddonManager.exe`.
 
 ## First start
 
@@ -34,7 +36,15 @@ Windows may show "Windows protected your PC" the first times, because the app is
 
 If WoW is running, the app warns you. You can still install. Afterwards type `/reload` in the game, or restart it, to use the new versions.
 
-If something fails, the app tells you in plain words and nothing is half-installed: your old version stays. The app says "No addon list is set up yet" until the guild's addon list is available.
+If something fails, the app tells you in plain words and nothing is half-installed: your old version stays.
+
+## Where the addons come from
+
+Each guild addon has its own public page on GitHub. The app takes the latest normal release from there. Drafts and pre-releases are never offered.
+
+The guild's list of addons is the file `addons.json` in the AddonManager repo. The app also has a built-in copy of the list, in case it can't read the file.
+
+GitHub allows about 60 update checks per hour from one PC. That is plenty. The app remembers the answers for 10 minutes, and if you reach the limit it tells you when to try again.
 
 ## Settings and log
 
@@ -43,7 +53,24 @@ Both are in `%APPDATA%\AddonManager` (paste it into the Windows Explorer address
 | File | What it holds |
 | --- | --- |
 | `settings.json` | the WoW Forever folder you chose |
+| `cache.json` | the latest versions found, kept for 10 minutes |
 | `log.txt` | details of errors; show it to the guild officer if something goes wrong |
+
+## For addon makers
+
+To add an addon to the guild's list, add an entry to `addons.json` and push it. No new `.exe` is needed:
+
+```
+{"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `folder` | the addon's folder name in `Interface\AddOns` |
+| `name` | the name shown in the app |
+| `repo` | the public GitHub repo, as `owner/name` |
+
+Each release of the addon needs a zip named `<Folder>-<version>.zip` or `<Folder>-v<version>.zip`, for example `TaxiTime-1.2.0.zip`. The version comes from the release tag (`v1.2.0` or `1.2.0`). Inside the zip must be the `<Folder>\` folder with `<Folder>_Forever.toc` in it. If the release has only one zip, the app uses that one.
 
 ## For developers
 

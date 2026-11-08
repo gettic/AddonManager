@@ -8,7 +8,8 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from am import APP_NAME, APP_VERSION, config, errors, gamecheck, installer, theme, toc, versions, wowpath
+from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, installer, theme, toc,
+                versions, wowpath)
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -62,13 +63,16 @@ class Row:
         self.addon, self.description = addon, description
         self.state = None   # None, "queued", "installing", "error"
         self.message = ""
+        self.problem = ""   # short status when the latest release couldn't be read
 
 
 class App:
     def __init__(self, root, manifest_location=None, allow_local=False, wow_override=None,
-                 check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None):
+                 check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None,
+                 github_api=None):
         self.root = root
         self.allow_local = allow_local
+        self.github_api = github.api_base(github_api, allow_local)
         self.manifest_location = config.manifest_url(config.load_settings(), manifest_location)
         self.check_game = check_game
         self.detect = detect
@@ -91,7 +95,7 @@ class App:
         self._resolve_folder(wow_override)
         self._after = None
         root.bind("<Destroy>", self._on_destroy, add="+")
-        self.check_again()
+        self.check_again(force=False)
         self._after = root.after(100, self._poll)
 
     # ---------- layout ----------
@@ -167,6 +171,8 @@ class App:
                 status_text = "Installing..."
             elif row.state == "error":
                 status_text = "✖ Failed (see below)"
+            elif row.problem and not row.addon:
+                status_text = row.problem
             if row.state == "error":
                 status_label = ttk.Label(f, text=status_text, style="Failed.TLabel")
             else:
@@ -268,7 +274,8 @@ class App:
         self.render()
 
     # ---------- addon list ----------
-    def check_again(self):
+    def check_again(self, force=True):
+        """Load the list and latest versions. force: ask GitHub even if the cache is fresh."""
         if self.busy:
             return
         self.busy = True
@@ -277,12 +284,22 @@ class App:
         # Workers get plain values, never `self`, so no Tk object is freed in a thread.
         threading.Thread(target=_load_worker, daemon=True,
                          args=(self.queue, self.check_game, self.manifest_location,
-                               self.allow_local)).start()
+                               self.allow_local, self.github_api, force)).start()
 
-    def _apply_manifest(self, m, error):
+    def _apply_manifest(self, m, error, problems=None):
         self.manifest = m
         if m is not None:
-            self.rows = [Row(a.folder, a.name, a.version, a, a.description) for a in m.addons]
+            problems = problems or {}
+            self.rows, notes = [], []
+            for a in m.addons:
+                if a.folder in problems:
+                    row = Row(a.folder, a.name, None, None, a.description)
+                    row.problem, full = errors.release_message(problems[a.folder], a.name)
+                    if full not in notes:
+                        notes.append(full)
+                else:
+                    row = Row(a.folder, a.name, a.version, a, a.description)
+                self.rows.append(row)
             self.settings = config.load_settings()
             self.settings["known_addons"] = [[a.folder, a.name] for a in m.addons]
             config.save_settings(self.settings)
@@ -291,6 +308,8 @@ class App:
             if m.app_version and versions.compare(m.app_version, APP_VERSION) == 1:
                 note = (f"A newer Addon Manager ({versions.display(m.app_version)}) "
                         "is available.")
+            if notes:
+                note = "  ".join(notes + ([note] if note else []))
             if self.addons_dir:
                 self.set_message(note)
         else:
@@ -357,7 +376,7 @@ class App:
         if kind == "game":
             self.set_banner(errors.GAME_RUNNING if msg[1] else "")
         elif kind == "manifest":
-            self._apply_manifest(msg[1], msg[2])
+            self._apply_manifest(msg[1], msg[2], msg[3] if len(msg) > 3 else None)
             self.busy = False
             self.render()
         elif kind == "start":
@@ -410,14 +429,19 @@ def _game_running(check_game):
         return False
 
 
-def _load_worker(q, check_game, location, allow_local):
-    """Thread: game check + addon list. Results go to the window through q."""
+def _load_worker(q, check_game, location, allow_local, github_api=None, force=True):
+    """Thread: game check + addon list + latest GitHub releases. Results go to the window
+    through q as ("manifest", Manifest or None, error text, {folder: ReleaseError})."""
     q.put(("game", _game_running(check_game)))
     try:
-        q.put(("manifest", manifest_mod.load(location, allow_local=allow_local), None))
+        m = github.load_list(location, allow_local=allow_local)
+        m.addons, problems = github.resolve_all(
+            m.addons, github_api, allow_local, cache_file=config.cache_path(),
+            use_fresh_cache=not force)
+        q.put(("manifest", m, None, problems))
     except Exception as e:
         log.warning("Addon list failed: %s", e)
-        q.put(("manifest", None, errors.manifest_message(e)))
+        q.put(("manifest", None, errors.manifest_message(e), None))
 
 
 def _install_worker(q, check_game, rows, addons_dir):
@@ -438,12 +462,13 @@ def _install_worker(q, check_game, rows, addons_dir):
     q.put(("finished", done_msgs))
 
 
-def run(manifest_location=None, allow_local=False, wow_override=None, hidden=False):
+def run(manifest_location=None, allow_local=False, wow_override=None, hidden=False,
+        github_api=None):
     root = tk.Tk()
     if hidden:
         root.withdraw()
     root.report_callback_exception = _report_callback_exception
-    app = App(root, manifest_location, allow_local, wow_override)
+    app = App(root, manifest_location, allow_local, wow_override, github_api=github_api)
     theme.dark_title_bar(root)
     root.mainloop()
     return app

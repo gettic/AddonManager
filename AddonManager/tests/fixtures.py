@@ -111,6 +111,51 @@ def make_server_files(base):
     return site
 
 
+def asset(name, url, path=None, digest=True, state="uploaded"):
+    """One release asset as GitHub's API shows it. digest=True: real sha256 of path;
+    a string: that digest; None: no digest (older GitHub assets)."""
+    if digest is True:
+        digest = "sha256:" + sha256(path) if path else None
+    return {"name": name, "browser_download_url": url, "state": state,
+            "size": os.path.getsize(path) if path else 123, "digest": digest,
+            "content_type": "application/zip"}
+
+
+def write_release(api_dir, repo, tag, assets, raw=None):
+    """A fake GitHub API answer: <api_dir>/repos/<repo>/releases/latest (a JSON file)."""
+    folder = os.path.join(api_dir, "repos", *repo.split("/"), "releases")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "latest"), "w", encoding="utf-8") as f:
+        if raw is not None:
+            f.write(raw)
+        else:
+            json.dump({"tag_name": tag, "name": tag, "draft": False, "prerelease": False,
+                       "assets": assets}, f, indent=2)
+    return api_dir
+
+
+def make_github_site(base, url_of):
+    """base\\gh\\: zips for gettic/TaxiTime (tag v1.3.0, asset TaxiTime-v1.3.0.zip, like
+    the real one) and gettic/GuildHub (tag 0.4.1, asset GuildHub-0.4.1.zip), the fake API
+    under gh\\api and addons.json (repo entries). url_of(path relative to gh) -> URL.
+    Returns the gh folder."""
+    gh = os.path.join(base, "gh")
+    api = os.path.join(gh, "api")
+    os.makedirs(os.path.join(gh, "dl"))
+    for repo, folder, tag, zname, version in (
+            ("gettic/TaxiTime", "TaxiTime", "v1.3.0", "TaxiTime-v1.3.0.zip", "1.3.0"),
+            ("gettic/GuildHub", "GuildHub", "0.4.1", "GuildHub-0.4.1.zip", "0.4.1")):
+        zpath = make_zip(os.path.join(gh, "dl", zname), folder, version)
+        write_release(api, repo, tag, [
+            asset(zname, url_of(f"dl/{zname}"), zpath),
+            {"name": "notes.txt", "browser_download_url": url_of("dl/notes.txt"),
+             "state": "uploaded", "size": 1, "digest": None}])
+    write_manifest(os.path.join(gh, "addons.json"), [
+        {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
+        {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"}])
+    return gh
+
+
 def tree_snapshot(path):
     """{relative path: bytes} of every file under path, to prove nothing changed."""
     snap = {}
@@ -130,6 +175,19 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/slow"):
             time.sleep(2)
             self.send_response(200)
+            self.end_headers()
+            return
+        if self.path.startswith("/limited"):
+            # GitHub's "rate limit reached" reply (unauthenticated: 60 an hour).
+            self.send_response(403)
+            self.send_header("x-ratelimit-remaining", "0")
+            self.send_header("x-ratelimit-reset", str(int(time.time()) + 150))
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"message": "API rate limit exceeded"}')
+            return
+        if self.path.startswith("/forbidden"):
+            self.send_response(403)
             self.end_headers()
             return
         if self.path.startswith("/redirect/"):

@@ -32,6 +32,27 @@ def manifest_message(exc):
             "or tell the guild officer." + DETAILS)
 
 
+def release_message(exc, name):
+    """(short status text, full message) when an addon's latest release can't be read."""
+    kind = getattr(exc, "kind", "")
+    if kind == "rate_limited":
+        minutes = max(1, (int(getattr(exc, "wait", 0) or 0) + 59) // 60)
+        return ("Can't check now", "GitHub is limiting update checks from this PC. Try again "
+                f"in {minutes} minute{'s' if minutes != 1 else ''}.")
+    if kind == "offline":
+        return ("Can't check now",
+                "Can't reach the internet. Check your connection and click Check again.")
+    if kind == "timeout":
+        return ("Can't check now", "The download server isn't answering. Try again in a few minutes.")
+    if kind == "no_release":
+        return ("No release yet", f"{name} has no release to download yet.")
+    if kind == "no_asset":
+        return ("No download yet", f"{name}'s newest release has no download yet. "
+                "Try again later, or tell the guild officer.")
+    return ("Can't check now", f"{name}'s newest release can't be read right now. Try again "
+            "later, or tell the guild officer." + DETAILS)
+
+
 def install_message(exc, name):
     """Message for a failed install of the addon called `name`."""
     kind = getattr(exc, "kind", "")
@@ -40,6 +61,8 @@ def install_message(exc, name):
             return "Can't reach the internet. Check your connection and click Check again."
         if kind == "timeout":
             return "The download server isn't answering. Try again in a few minutes."
+        if kind == "rate_limited":
+            return release_message(exc, name)[1]
         if kind in ("checksum", "too_big"):
             return _damaged(name)
         return (f"The download for {name} isn't available right now. Try again later, "

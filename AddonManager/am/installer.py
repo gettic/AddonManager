@@ -219,7 +219,9 @@ def install(addon, addons_dir, progress=None, timeout=30, tmp_root=None):
     try:
         zip_path = os.path.join(tmp, "addon.zip")
         download.download_file(addon.url, zip_path, max_bytes, addon.sha256 or None,
-                               progress=progress, timeout=timeout)
+                               progress=progress, timeout=timeout,
+                               url_check=download.github_host_ok
+                               if getattr(addon, "strict_hosts", False) else None)
         try:
             zf = zipfile.ZipFile(zip_path)
         except (zipfile.BadZipFile, OSError) as e:
