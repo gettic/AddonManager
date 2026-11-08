@@ -8,7 +8,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from am import APP_NAME, APP_VERSION, config, errors, gamecheck, installer, toc, versions, wowpath
+from am import APP_NAME, APP_VERSION, config, errors, gamecheck, installer, theme, toc, versions, wowpath
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -45,8 +45,8 @@ class Tooltip:
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        tk.Label(self.tip, text=self.text, background="#ffffe0", relief="solid",
-                 borderwidth=1, wraplength=320, justify="left").pack(ipadx=4, ipady=2)
+        tk.Label(self.tip, text=self.text, background=theme.SURFACE, foreground=theme.TEXT,
+                 relief="solid", borderwidth=1, wraplength=320, justify="left").pack(ipadx=4, ipady=2)
 
     def hide(self, _event=None):
         if self.tip:
@@ -86,6 +86,7 @@ class App:
         root.geometry("680x420")
         root.minsize(560, 320)
         root.protocol("WM_DELETE_WINDOW", self.close)
+        theme.apply(root)
         self._build()
         self._resolve_folder(wow_override)
         self._after = None
@@ -101,7 +102,7 @@ class App:
         head = ttk.Frame(outer)
         head.pack(fill="x")
         ttk.Label(head, text=APP_NAME, font=("Segoe UI", 14, "bold")).pack(side="left")
-        ttk.Label(head, text=versions.display(APP_VERSION)).pack(side="right")
+        ttk.Label(head, text=versions.display(APP_VERSION), style="Muted.TLabel").pack(side="right")
 
         folder = ttk.LabelFrame(outer, text="WoW Forever folder", padding=8)
         folder.pack(fill="x", pady=(8, 6))
@@ -113,7 +114,8 @@ class App:
         folder.columnconfigure(0, weight=1)
 
         self.banner_var = tk.StringVar()
-        self.banner = tk.Label(outer, textvariable=self.banner_var, background="#fff4c2",
+        self.banner = tk.Label(outer, textvariable=self.banner_var, background=theme.BANNER_BG,
+                               foreground=theme.BANNER_TEXT,
                                anchor="w", justify="left", wraplength=640, padx=6, pady=4)
 
         self.list_frame = ttk.Frame(outer)
@@ -125,7 +127,8 @@ class App:
         buttons.pack(fill="x")
         self.check_button = ttk.Button(buttons, text="Check again", command=self.check_again)
         self.check_button.pack(side="left")
-        self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all)
+        self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all,
+                                     style="Accent.TButton")
         self.all_button.pack(side="left", padx=(8, 0))
         self.progress = ttk.Progressbar(bottom, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(8, 2))
@@ -140,7 +143,7 @@ class App:
         f = self.list_frame
         headers = ("Addon", "Installed", "Latest", "Status", "")
         for col, text in enumerate(headers):
-            ttk.Label(f, text=text, font=("Segoe UI", 9, "bold")).grid(
+            ttk.Label(f, text=text, font=("Segoe UI", 9, "bold"), style="Muted.TLabel").grid(
                 row=0, column=col, sticky="w", padx=(0, 14), pady=(0, 4))
         f.columnconfigure(3, weight=1)
         self.row_widgets = {}
@@ -163,9 +166,12 @@ class App:
             elif row.state == "installing":
                 status_text = "Installing..."
             elif row.state == "error":
-                status_text = "Failed (see below)"
-            status_label = ttk.Label(f, text=status_text,
-                                     foreground="#b00020" if row.state == "error" else "")
+                status_text = "✖ Failed (see below)"
+            if row.state == "error":
+                status_label = ttk.Label(f, text=status_text, style="Failed.TLabel")
+            else:
+                status_label = ttk.Label(f, text=status_text, foreground=(
+                    "" if row.state else theme.STATUS.get(status, "")))
             status_label.grid(row=i, column=3, sticky="w")
             button = None
             if row.addon and status in BUTTON_TEXT and self.addons_dir:
@@ -438,6 +444,7 @@ def run(manifest_location=None, allow_local=False, wow_override=None, hidden=Fal
         root.withdraw()
     root.report_callback_exception = _report_callback_exception
     app = App(root, manifest_location, allow_local, wow_override)
+    theme.dark_title_bar(root)
     root.mainloop()
     return app
 

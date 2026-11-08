@@ -17,7 +17,16 @@ Windows may show "Windows protected your PC" the first times, because the app is
 ## How to use it
 
 1. Open `AddonManager.exe`. It looks for your WoW Forever folder by itself. If it can't find it, click **Choose folder** and pick the folder where WoW Forever is installed.
-2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3).
+2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The window is dark (black and grey with red). The status is colour-coded:
+
+   | Status | Colour |
+   | --- | --- |
+   | Update available | red |
+   | Not installed | light grey |
+   | Up to date | dim grey |
+   | Failed install | red "Failed" block |
+
+   The title bar is dark too on Windows 10 (20H1 or newer) and Windows 11. The **Choose folder** window follows your Windows light or dark setting.
 3. Click **Install** or **Update** next to an addon, or **Install/update all** to do every addon that needs it.
 4. If the status says "Installed (version unknown)", the button says **Reinstall**.
 5. To use a different WoW Forever folder, click **Change...**.
