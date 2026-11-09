@@ -373,20 +373,51 @@ def remember_failed(version):
 
 
 # ---------- 6. clean up at start ----------
-def cleanup(exe, tries=1, delay=3.0):
-    """Remove <exe>.old and <exe>.new (only those two names). Returns True when both are gone."""
+def cleanup(exe, tries=1, delay=3.0, quiet=False):
+    """Remove <exe>.old and <exe>.new (only those two names). Returns True when both are
+    gone. quiet: no "still in use" log line (the slow retries log it once themselves)."""
     if not exe:
         return True
     for i in range(tries):
+        existed = [p for p in side_paths(exe) if os.path.exists(p)]
         if all(_remove(p) for p in side_paths(exe)):
+            if existed:
+                log.info("Removed old update files: %s", ", ".join(
+                    os.path.basename(p) for p in existed))
             return True
         if i < tries - 1:
             time.sleep(delay)
-    log.info("Old update files still in use: %s", exe)
+    if not quiet:
+        log.info("Old update files still in use: %s", exe)
     return False
 
 
-def cleanup_later(exe, tries=20, delay=3.0):
-    """cleanup in a background thread (the old exe may still be closing)."""
+def _cleanup_loop(exe, tries, delay, slow_delay, slow_tries):
+    """Fast tries first (the old exe is usually closed within seconds), then one try every
+    slow_delay seconds for as long as this app runs (slow_tries=None) or slow_tries times.
+    The "still in use" line is logged once. Never raises."""
+    try:
+        if cleanup(exe, tries, delay):
+            return True
+        n = 0
+        while slow_tries is None or n < slow_tries:
+            time.sleep(slow_delay)
+            n += 1
+            if cleanup(exe, quiet=True):
+                return True
+        return False
+    except Exception:   # a background helper: never take the app down
+        log.exception("Cleaning up old update files failed")
+        return False
+
+
+def cleanup_later(exe, tries=20, delay=3.0, slow_delay=30.0, slow_tries=None):
+    """Clean up in a background thread (the old exe may still be closing; Windows can't
+    delete a running .exe). Keeps trying every slow_delay seconds while the app runs.
+    Returns the thread (None if there is nothing to clean)."""
     if exe and any(os.path.exists(p) for p in side_paths(exe)):
-        threading.Thread(target=cleanup, args=(exe, tries, delay), daemon=True).start()
+        t = threading.Thread(target=_cleanup_loop, daemon=True,
+                             args=(exe, tries, delay, slow_delay, slow_tries))
+        t.start()
+        return t
+    return None

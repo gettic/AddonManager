@@ -46,6 +46,11 @@ a = Analysis(
     pathex=[HERE],
     excludes=["tests", "unittest", "pydoc", "doctest", "pdb"],
 )
+# Faster start: the one-file program unpacks every bundled file on each start (antivirus
+# checks each one). Tcl's time zone files (600+) are never used, and the Tcl/Tk
+# translations only affect Tk's own dialogs (English text there is fine).
+_drop = re.compile(r"^(_tcl_data[\\/]tzdata|_tcl_data[\\/]msgs|_tk_data[\\/]msgs)[\\/]")
+a.datas = [d for d in a.datas if not _drop.match(d[0])]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

@@ -1,10 +1,10 @@
 # Guild Addon Manager
 
-An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. You don't need to install anything else.
+An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. You don't need to install anything else. It opens in about a second.
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.4.0
+Current version: v0.4.1
 
 ## Get it
 
@@ -64,14 +64,14 @@ If something fails, the app tells you in plain words and nothing is half-install
 
 When a newer version of Addon Manager is out, a bar appears with **Update now**, **Later** and a **What's new** link.
 
-- **Update now** downloads the new `AddonManager.exe` from the AddonManager releases, replaces the old one and restarts the app. If the new version doesn't start, the old one comes back.
+- **Update now** downloads the new `AddonManager.exe` from the AddonManager releases, replaces the old one and restarts the app. If the new version doesn't start, the old one comes back. The leftover `AddonManager.exe.old` is removed automatically (an old one from an earlier update goes away the next time you open the app).
 - **Later** hides the bar.
 
 Keep `AddonManager.exe` in a normal folder, such as Desktop, Downloads or Documents. If it is inside your WoW folder, or in a folder the app can't write to, it can't replace itself. The bar then shows the download page instead, and you download the new version by hand.
 
 ## Beta versions
 
-A beta is a test version of an addon. It may have bugs. The checkbox **Show beta versions** (in **Settings**, bottom right) is off by default, and the app remembers your choice.
+A beta is a test version of an addon. It may have bugs. The checkbox **Show beta versions** (at the bottom of the main window, next to **Settings**, and also in the **Settings** window; both always match) is off by default, and the app remembers your choice.
 
 - When it is on, an addon's newest beta is offered if it is newer than its normal version. It is shown as "v1.2.0 (beta)".
 - Turning it off does not remove the beta. You keep it until a newer normal version comes out.

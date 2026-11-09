@@ -364,6 +364,7 @@ class WindowTests(unittest.TestCase):
         self.pump(app)
         self.root.update_idletasks()
         row = app.settings_button.master
+        self.assertIs(app.beta_main_check.master, row)   # incl. the Show beta versions box
         self.assertLessEqual(row.winfo_reqwidth(), 560 - 20)
 
     def test_waits_for_app_update_check(self):

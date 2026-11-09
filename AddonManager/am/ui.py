@@ -231,6 +231,12 @@ class App:
         self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON,
                                           command=self.open_settings)
         self.settings_button.pack(side="right")
+        # Show beta versions also in the main window (easy to toggle), left of Settings.
+        # Same variable and command as the box in Settings, so both always match.
+        self.beta_main_check = ttk.Checkbutton(buttons, text=BETA_TEXT, variable=self.beta_var,
+                                               command=self.toggle_betas)
+        self.beta_main_check.pack(side="right", padx=(0, 10))
+        Tooltip(self.beta_main_check, BETA_NOTE)
         self.progress = ttk.Progressbar(bottom, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(8, 2))
         self.message_var = tk.StringVar()
@@ -362,6 +368,7 @@ class App:
         self._set_enabled(self.all_button, any_action and not self.busy)
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
+        self._set_enabled(self.beta_main_check, not self.busy)
         if self.beta_check is not None:   # only while the Settings window is open
             self._set_enabled(self.beta_check, not self.busy)
         self._render_update_bar()

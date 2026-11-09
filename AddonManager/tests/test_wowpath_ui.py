@@ -370,7 +370,8 @@ class WindowTests(unittest.TestCase):
             self.pump(app)
             widgets = [str(w) for w in app.list_frame.winfo_children()]
             buttons = [app.row_widgets[f][1] for f in ("TaxiTime", "GuildHub")]
-            buttons += [app.all_button, app.check_button, app.folder_button, self.beta_box(app)]
+            buttons += [app.all_button, app.check_button, app.folder_button, self.beta_box(app),
+                        app.beta_main_check]
             checks_before, renders = len(game_checks), []
             real_render = app.render
             app.render = lambda: (renders.append(1), real_render())
@@ -440,6 +441,34 @@ class WindowTests(unittest.TestCase):
             self.pump(app)
             self.assertEqual(self.status(app, "TaxiTime")[1], "Use v1.3.0")
             self.assertEqual(self.row_geometry(app), geometry)
+
+    def test_beta_box_in_main_window_and_settings_in_sync(self):
+        app = self.make_app()
+        self.pump(app)
+        row = app.settings_button.master
+        self.assertIs(app.beta_main_check.master, row)
+        self.assertEqual(app.beta_main_check.cget("text"), "Show beta versions")
+        self.root.update_idletasks()
+        self.assertLess(app.beta_main_check.winfo_x(), app.settings_button.winfo_x())
+        settings_box = self.beta_box(app)
+        self.assertEqual(str(settings_box.cget("variable")), str(app.beta_main_check.cget("variable")))
+        # main box on -> saved, and the Settings box shows it
+        app.beta_main_check.invoke()
+        self.pump(app)
+        self.assertIs(config.load_settings()["show_betas"], True)
+        self.assertIn("selected", settings_box.state())
+        # Settings box off -> saved, and the main box shows it
+        settings_box.invoke()
+        self.pump(app)
+        self.assertIs(config.load_settings()["show_betas"], False)
+        self.assertNotIn("selected", app.beta_main_check.state())
+        # greyed out while busy, like the other buttons
+        app.busy = True
+        app.render()
+        self.assertIn("disabled", app.beta_main_check.state())
+        app.busy = False
+        app.render()
+        self.assertNotIn("disabled", app.beta_main_check.state())
 
     def test_show_beta_versions_remembered(self):
         config.save_settings({"show_betas": True})
@@ -540,7 +569,12 @@ class WindowTests(unittest.TestCase):
         texts = [str(lbl.cget("text")) for lbl in labels(self.root)]
         self.assertNotIn(ui.APP_NAME, texts)          # big title gone (window title keeps it)
         self.assertEqual(self.root.title(), ui.APP_NAME)
-        self.assertEqual(texts.count(app.version_label.cget("text")), 1)
+        # The app's own version is shown once outside the addon list (an addon in the
+        # list may have the same version text, e.g. a fixture at v0.4.1).
+        outside = [str(lbl.cget("text")) for lbl in labels(self.root)
+                   if not str(lbl).startswith(str(app.list_frame) + ".")]
+        self.assertEqual(outside.count(app.version_label.cget("text")), 1)
+        self.assertNotEqual(app.version_label.master, app.list_frame)
         self.assertEqual(str(app.version_label.cget("text")), ui.versions.display(ui.APP_VERSION))
         self.assertEqual(str(app.version_label.cget("style")), "Muted.TLabel")
         # it sits on the message line, below the progress bar

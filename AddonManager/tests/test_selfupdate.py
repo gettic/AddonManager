@@ -249,6 +249,74 @@ class Files(unittest.TestCase):
         self.assertEqual(cm.exception.kind, "failed")
         self.assertEqual(self.read(self.exe), self.old_bytes)
 
+    def _busy_old(self, busy_calls):
+        """A _remove that refuses <exe>.old for its first busy_calls calls (the old exe
+        still closing), then really removes it."""
+        real, calls = selfupdate._remove, []
+
+        def fake(path):
+            if path == self.exe + ".old":
+                calls.append(1)
+                if len(calls) <= busy_calls:
+                    return False
+            return real(path)
+        return fake, calls
+
+    def test_cleanup_keeps_trying_after_the_fast_tries(self):
+        # .old still in use during all 3 fast tries and the first 2 slow ones: removed later
+        with open(self.exe + ".old", "wb") as f:
+            f.write(b"old")
+        fake, calls = self._busy_old(5)
+        with mock.patch.object(selfupdate, "_remove", fake), \
+                self.assertLogs("am.selfupdate", "INFO") as logs:
+            t = selfupdate.cleanup_later(self.exe, tries=3, delay=0.01, slow_delay=0.01,
+                                         slow_tries=10)
+            t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertFalse(os.path.exists(self.exe + ".old"))
+        self.assertEqual(len(calls), 6)
+        text = "\n".join(logs.output)
+        self.assertEqual(text.count("still in use"), 1)   # logged once, not every 30 s
+        self.assertIn("Removed old update files: AddonManager.exe.old", text)
+        self.assertTrue(os.path.exists(self.exe))          # the app itself untouched
+
+    def test_cleanup_gives_up_quietly_when_still_in_use(self):
+        with open(self.exe + ".old", "wb") as f:
+            f.write(b"old")
+        fake, _calls = self._busy_old(10 ** 6)
+        with mock.patch.object(selfupdate, "_remove", fake):
+            t = selfupdate.cleanup_later(self.exe, tries=2, delay=0.01, slow_delay=0.01,
+                                         slow_tries=3)
+            t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(os.path.exists(self.exe + ".old"))   # left for the next start
+
+    def test_cleanup_later_nothing_to_do_and_errors(self):
+        self.assertIsNone(selfupdate.cleanup_later(self.exe))
+        self.assertIsNone(selfupdate.cleanup_later(None))
+        with open(self.exe + ".new", "wb") as f:
+            f.write(b"new")
+        with mock.patch.object(selfupdate, "cleanup", side_effect=RuntimeError("boom")):
+            t = selfupdate.cleanup_later(self.exe, tries=1, delay=0.01, slow_delay=0.01,
+                                         slow_tries=1)
+            t.join(5)   # the helper thread ends, never raises into the app
+        self.assertFalse(t.is_alive())
+
+    def test_main_tries_once_more_on_exit(self):
+        import main
+        for name in ("AddonManager.exe.old", "AddonManager.exe.new", "notes.txt"):
+            with open(os.path.join(self.app_dir, name), "w") as f:
+                f.write("x")
+        with mock.patch.object(selfupdate, "exe_path", return_value=self.exe), \
+                mock.patch.object(selfupdate, "cleanup_later") as later, \
+                mock.patch.object(ui, "run") as run, \
+                mock.patch.object(main, "set_dpi_aware"), \
+                mock.patch.object(config, "setup_logging"):
+            self.assertEqual(main.main([]), 0)
+        later.assert_called_once_with(self.exe)
+        run.assert_called_once()
+        self.assertEqual(sorted(os.listdir(self.app_dir)), ["AddonManager.exe", "notes.txt"])
+
     def test_cleanup_only_its_own_files(self):
         for name in ("AddonManager.exe.old", "AddonManager.exe.new", "notes.txt",
                      "AddonManager.exe.older"):

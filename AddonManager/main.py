@@ -168,6 +168,9 @@ def main(argv=None):
     ui.run(args.manifest, allow_local=bool(args.manifest), wow_override=args.wow,
            hidden=args.hidden, github_api=args.github_api if args.manifest else None,
            updated_from=args.updated_from)
+    # One more quiet try on the way out (the old exe may have closed meanwhile). Only
+    # <exe>.old/.new; a file still in use is simply left for the next start.
+    selfupdate.cleanup(selfupdate.exe_path(), quiet=True)
     return 0
 
 
