@@ -63,14 +63,16 @@ jobs:
           ldd --version | head -n 1
 
       # Everything below runs as a normal user (root would ignore the read-only folder
-      # checks the tests make), in a copy of the app under that user's home.
+      # checks the tests make), in a copy of the repo under that user's home (the whole
+      # repo: a test compares addons.json at its root with the app's built-in list).
       - name: Tests, PyInstaller and self-tests (as a normal user)
         run: |
           useradd -m builder
-          cp -r AddonManager /home/builder/src
-          chown -R builder:builder /home/builder/src
+          mkdir /home/builder/repo
+          cp -r addons.json AddonManager /home/builder/repo/
+          chown -R builder:builder /home/builder/repo
           runuser -u builder -- bash -euo pipefail -c '
-            cd /home/builder/src
+            cd /home/builder/repo/AddonManager
             python -m venv /home/builder/venv
             . /home/builder/venv/bin/activate
             pip install --disable-pip-version-check -q -r requirements-build.txt
@@ -78,7 +80,7 @@ jobs:
             work=$(mktemp -d)
             ADDONMANAGER_TEST_TMP="$work/tests" xvfb-run -a python -m unittest discover -s tests -t .
             pyinstaller --noconfirm --clean --log-level WARN --distpath dist --workpath build AddonManager.spec
-            exe=/home/builder/src/dist/AddonManager
+            exe=/home/builder/repo/AddonManager/dist/AddonManager
             test -x "$exe"
 
             # Hidden self-test on fake data (never a real game folder).
@@ -102,8 +104,8 @@ jobs:
       - name: Package and sha256
         run: |
           mkdir -p out pkg
-          install -m 755 /home/builder/src/dist/AddonManager out/AddonManager-linux-x86_64
-          install -m 755 /home/builder/src/dist/AddonManager pkg/AddonManager
+          install -m 755 /home/builder/repo/AddonManager/dist/AddonManager out/AddonManager-linux-x86_64
+          install -m 755 /home/builder/repo/AddonManager/dist/AddonManager pkg/AddonManager
           tar -C pkg --owner=0 --group=0 --numeric-owner -czf out/AddonManager-linux-x86_64.tar.gz AddonManager
           cd out
           sha256sum AddonManager-linux-x86_64 AddonManager-linux-x86_64.tar.gz | tee SHA256SUMS

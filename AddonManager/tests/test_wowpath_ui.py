@@ -540,7 +540,29 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(str(app.version_label.cget("style")), "Muted.TLabel")
         # it sits on the message line, below the progress bar
         self.root.update_idletasks()
-        self.assertGreater(app.version_label.winfo_rooty(), app.progress.winfo_rooty())
+        self.assert_below(app.version_label, app.progress)
+
+    def assert_below(self, low, high):
+        """low is laid out under high. Checked by layout order (works for the withdrawn
+        test window on every system; on X a never-mapped window has no screen
+        positions), plus the positions inside the shared parent when Tk has them."""
+        def chain(w):
+            out = [w]
+            while w.master is not None:
+                w = w.master
+                out.append(w)
+            return out
+        low_chain, high_chain = chain(low), chain(high)
+        common = next(w for w in low_chain if w in high_chain)
+        branch = lambda c: c[c.index(common) - 1]
+        a, b = branch(low_chain), branch(high_chain)
+        self.assertIsNot(a, b)
+        self.assertEqual((a.winfo_manager(), b.winfo_manager()), ("pack", "pack"))
+        self.assertEqual((str(a.pack_info()["side"]), str(b.pack_info()["side"])), ("top", "top"))
+        slaves = common.pack_slaves()
+        self.assertGreater(slaves.index(a), slaves.index(b))
+        if a.winfo_y() or b.winfo_y():
+            self.assertGreater(a.winfo_y(), b.winfo_y())
 
     def test_folder_field_nothing_to_copy(self):
         app = ui.App(self.root, os.path.join(self.site, "manifest.json"), True, None,

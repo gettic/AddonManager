@@ -1,6 +1,7 @@
 """The app's own update: check, download, swap, rollback, clean-up and the update bar.
 Only fake .exe files in temp folders; never the real running exe, never a real WoW folder."""
 
+import contextlib
 import gc
 import json
 import os
@@ -21,6 +22,36 @@ def release(tag="v99.0.0", name=config.APP_ASSET, url=GH, digest="sha256:" + "a"
             size=5_000_000, state="uploaded"):
     return {"tag": tag, "assets": [{"name": name, "url": url, "digest": digest, "size": size,
                                     "state": state}]}
+
+
+@contextlib.contextmanager
+def locked(path):
+    """path can't be renamed or removed while inside. Windows: a real open handle (no
+    delete sharing). Linux allows renaming/removing open files, so there the same refusal
+    (as from a read-only mount, an immutable file or another user's file) is simulated:
+    os.replace/os.remove of exactly that path raise PermissionError."""
+    if os.name == "nt":
+        with open(path, "rb"):
+            yield
+        return
+    real_replace, real_remove = os.replace, os.remove
+    target = os.path.abspath(path)
+
+    def is_target(p):
+        return os.path.abspath(os.fspath(p)) == target
+
+    def replace(src, dst, *a, **k):
+        if is_target(src):
+            raise PermissionError(13, "Permission denied (test lock)", src)
+        return real_replace(src, dst, *a, **k)
+
+    def remove(p, *a, **k):
+        if is_target(p):
+            raise PermissionError(13, "Permission denied (test lock)", p)
+        return real_remove(p, *a, **k)
+    with mock.patch.object(selfupdate.os, "replace", replace), \
+            mock.patch.object(selfupdate.os, "remove", remove):
+        yield
 
 
 class FakeProc:
@@ -185,7 +216,7 @@ class Files(unittest.TestCase):
 
     def test_swap_locked_exe_keeps_old(self):
         selfupdate.fetch(self.update(), self.exe, allow_local=True)
-        with open(self.exe, "rb"):   # an open handle without delete sharing: can't rename
+        with locked(self.exe):
             with self.assertRaises(selfupdate.UpdateError) as cm:
                 selfupdate.swap(self.exe, tries=2, delay=0.01)
         self.assertEqual(cm.exception.kind, "locked")
@@ -194,11 +225,23 @@ class Files(unittest.TestCase):
 
     def test_swap_locked_new_puts_old_back(self):
         new = selfupdate.fetch(self.update(), self.exe, allow_local=True)
-        with open(new, "rb"):
+        with locked(new):
             with self.assertRaises(selfupdate.UpdateError):
                 selfupdate.swap(self.exe, tries=2, delay=0.01)
         self.assertEqual(self.read(self.exe), self.old_bytes)
         self.assertFalse(os.path.exists(self.exe + ".old"))
+
+    @unittest.skipIf(os.name == "nt", "Linux: open files can be renamed and removed")
+    def test_linux_swap_and_cleanup_while_running(self):
+        """On Linux the running program stays open during the update: renaming it and,
+        at the next start, removing its .old copy must work (Windows would refuse)."""
+        selfupdate.fetch(self.update(), self.exe, allow_local=True)
+        with open(self.exe, "rb") as running:
+            selfupdate.swap(self.exe, tries=1, delay=0.01)
+            self.assertEqual(self.read(self.exe), self.new_bytes)
+            self.assertTrue(selfupdate.cleanup(self.exe))
+            self.assertEqual(running.read(), self.old_bytes)   # the old one kept running
+        self.assertEqual(sorted(os.listdir(self.app_dir)), ["AddonManager.exe"])
 
     def test_swap_new_gone(self):
         with self.assertRaises(selfupdate.UpdateError) as cm:
@@ -211,7 +254,7 @@ class Files(unittest.TestCase):
                      "AddonManager.exe.older"):
             with open(os.path.join(self.app_dir, name), "w") as f:
                 f.write("x")
-        with open(self.exe + ".old", "rb"):
+        with locked(self.exe + ".old"):
             self.assertFalse(selfupdate.cleanup(self.exe))
         self.assertTrue(selfupdate.cleanup(self.exe))
         self.assertEqual(sorted(os.listdir(self.app_dir)),
