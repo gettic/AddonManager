@@ -1,10 +1,10 @@
 # Guild Addon Manager
 
-A Windows app that installs and updates the guild's addons for WoW Forever with one click. It is one file, `AddonManager.exe`. You don't need to install anything else.
+An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. You don't need to install anything else.
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.3.0
+Current version: v0.4.0
 
 ## Get it
 
@@ -12,9 +12,29 @@ Download the latest version here: https://github.com/gettic/AddonManager/release
 
 This link always gives you the newest `AddonManager.exe`.
 
+**Linux (beta):** https://github.com/gettic/AddonManager/releases/latest/download/AddonManager-linux-x86_64.tar.gz
+
+It stays "beta" until it has been tested on a real Steam Deck.
+
 ## First start
 
 Windows may show "Windows protected your PC" the first times, because the app isn't signed. This is normal. Click **More info**, then **Run anyway**.
+
+## Linux (beta) and Steam Deck
+
+Made for Desktop Mode.
+
+1. Switch the Steam Deck to Desktop Mode and download the `.tar.gz`.
+2. Right-click it, choose Extract (here), then double-click `AddonManager`.
+3. Keep it in your home folder (for example Downloads or `~/Applications`), not inside the game folder. It updates itself like the Windows version.
+
+It finds WoW Forever installed through Battle.net with Proton (as a non-Steam game), Lutris, Heroic, Bottles or Wine, also on the SD card. If it can't, click **Choose folder** and pick the Battle.net Proton folder (`~/.local/share/Steam/steamapps/compatdata/<number>`; hidden folders are shown) or the `World of Warcraft` folder inside it.
+
+Game Mode may work if you add it as a non-Steam game, but don't force Proton on it: it is a Linux program.
+
+Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol.
+
+Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Proton/Wine. The Addon Manager only installs addon files. Whether the game runs there is up to Proton/Wine.
 
 ## How to use it
 
@@ -51,7 +71,7 @@ Keep `AddonManager.exe` in a normal folder, such as Desktop, Downloads or Docume
 
 ## Beta versions
 
-A beta is a test version of an addon. It may have bugs. The checkbox **Show beta versions** (bottom right) is off by default, and the app remembers your choice.
+A beta is a test version of an addon. It may have bugs. The checkbox **Show beta versions** (in **Settings**, bottom right) is off by default, and the app remembers your choice.
 
 - When it is on, an addon's newest beta is offered if it is newer than its normal version. It is shown as "v1.2.0 (beta)".
 - Turning it off does not remove the beta. You keep it until a newer normal version comes out.
@@ -70,13 +90,38 @@ GitHub allows about 60 update checks per hour from one PC. That is plenty. The a
 
 ## Settings and log
 
-Both are in `%APPDATA%\AddonManager` (paste it into the Windows Explorer address bar):
+Both are in `%APPDATA%\AddonManager` on Windows (paste it into the Windows Explorer address bar) and in `~/.config/AddonManager` on Linux:
 
 | File | What it holds |
 | --- | --- |
-| `settings.json` | the WoW Forever folder you chose, and the "Show beta versions" choice |
+| `settings.json` | the WoW Forever folder you chose, the "Show beta versions" and "Share anonymous counts" choices, and the day and week of the last usage ping |
 | `cache.json` | the latest versions found, kept for 10 minutes |
 | `log.txt` | details of errors; show it to the guild officer if something goes wrong |
+
+## Anonymous usage data
+
+The app's maker counts how many people use each guild addon and whether they are up to date. It is on by default. To turn it off, click **Settings** (bottom right) and untick **Share anonymous counts**. Nothing is sent while it is off.
+
+While it is on, the app sends this once a day, after the update check:
+
+| Sent | Example |
+| --- | --- |
+| Names of the guild addons you have installed, and the Addon Manager itself | `GuildHub` |
+| Their versions | `0.1.2` |
+| Whether each is latest, outdated or a beta | `outdated` |
+| Whether this is the first ping this week | yes / no |
+
+**Not sent:** your name, account, characters, any ID, or any file path.
+
+What happens to it:
+
+- Your IP address is not stored. Cloudflare, which runs the counter, sees it for a moment, like any website you visit.
+- Workers logs are switched off.
+- Only daily and weekly totals are kept, not one record per person.
+- Only the app's maker can see the totals. Guild members can't.
+- In a small guild, a total of 1 may show who that is. Turn it off if you don't want that.
+- The counter's code is public: see `AddonManager\stats_worker\`.
+- If the counter can't be reached, nothing changes. The app works as usual.
 
 ## For addon makers
 

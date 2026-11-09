@@ -30,7 +30,8 @@ class Basics(unittest.TestCase):
         strip = lambda d: [(a["folder"], a["repo"]) for a in d["addons"]]
         self.assertEqual(strip(doc), strip(config.BUILTIN_LIST))
         m = manifest.parse(json.dumps(doc), "https://example.invalid/addons.json")
-        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime"])
+        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
+                                                   "gettic/NotePad"])
 
     def test_repo_entries(self):
         m = manifest.parse(json.dumps({"addons": [
@@ -341,13 +342,15 @@ class WithServer(unittest.TestCase):
         url = self.server.url + "empty.json"
         with mock.patch.object(config, "DEFAULT_MANIFEST_URL", url):
             m = github.load_list(url, allow_local=True)
-        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime"])
+        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
+                                                   "gettic/NotePad"])
         self.assertEqual(github.load_list(url, allow_local=True).addons, [])  # other lists: as is
 
     def test_fallback_to_builtin_list(self):
         with mock.patch.object(config, "DEFAULT_MANIFEST_URL", "https://127.0.0.1:9/addons.json"):
             m = github.load_list(config.DEFAULT_MANIFEST_URL)
-            self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime"])
+            self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
+                                                   "gettic/NotePad"])
             with self.assertRaises(manifest.ManifestError):   # other lists don't fall back
                 github.load_list("https://127.0.0.1:9/other.json")
 
@@ -369,6 +372,7 @@ class WithServer(unittest.TestCase):
         self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.3.0", False))
         (taxi,), problems = self.resolve([_addon()], show_betas=True)
         self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.4.0-beta.2", True))
+        self.assertEqual(taxi.stable_version, "1.3.0")   # kept for the usage count
         self.assertTrue(taxi.url.endswith("/dl/TaxiTime-v1.4.0-beta.2.zip"))
         installer.install(taxi, self.addons)
         self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.4.0-beta.2"))

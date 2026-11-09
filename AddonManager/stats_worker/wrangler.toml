@@ -1,0 +1,20 @@
+# A record of the Worker's settings (the setup in SETUP.md is done in the browser;
+# this file is only used if someone deploys with Wrangler instead). No secrets here.
+name = "guild-stats"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+# Logs OFF: Cloudflare turns Workers Logs on by default for new Workers. Nothing about
+# a request (IP address included) is kept.
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "addon-stats"
+database_id = "e129817a-893f-4d64-82e2-834c3d4cecee"
+
+[vars]
+ADDONS = "GuildHub,TaxiTime,NotePad,AddonManager"
+PING_CAP = "200"

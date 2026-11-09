@@ -43,6 +43,7 @@ class Addon:
     strict_hosts: bool = False   # download and every redirect must stay on https GitHub hosts
     beta: bool = False  # version/url come from a GitHub pre-release (Show beta versions)
     beta_version: str = ""  # newest GitHub pre-release's version, offered or not (spots it installed)
+    stable_version: str = ""  # newest normal GitHub release's version (even when a beta is offered)
 
 
 @dataclass

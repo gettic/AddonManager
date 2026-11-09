@@ -226,10 +226,10 @@ def download_allowed(url, repo, allow_local):
     return False
 
 
-def apply_release(addon, release, allow_local, beta=False, beta_version=""):
+def apply_release(addon, release, allow_local, beta=False, beta_version="", stable_version=""):
     """A copy of addon with version, url, sha256 and size from the release
     (beta: it is a pre-release; beta_version: the newest pre-release's version, offered
-    or not). Outside dev mode the copy has strict_hosts set: every redirect of its
+    or not; stable_version: the newest normal release's version). Outside dev mode the copy has strict_hosts set: every redirect of its
     download must stay on https GitHub hosts (see download.github_host_ok)."""
     version = plain_tag(release["tag"])
     if not version or not manifest_mod._VERSION_RE.fullmatch(version):
@@ -243,7 +243,8 @@ def apply_release(addon, release, allow_local, beta=False, beta_version=""):
     return dataclasses.replace(addon, version=version, url=asset["url"],
                                sha256=parse_digest(asset["digest"]), size=size,
                                strict_hosts=not allow_local, beta=bool(beta),
-                               beta_version=beta_version or "")
+                               beta_version=beta_version or "",
+                               stable_version=stable_version or "")
 
 def load_cache(path):
     try:
@@ -322,7 +323,9 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
             beta_version = ""
             if pair[1] is not None and choose(pair[0], pair[1], True)[1]:
                 beta_version = plain_tag(pair[1]["tag"])
-            result.append(apply_release(addon, release, allow_local, is_beta, beta_version))
+            stable_version = plain_tag(pair[0]["tag"]) if pair[0] is not None else ""
+            result.append(apply_release(addon, release, allow_local, is_beta, beta_version,
+                                        stable_version))
         except ReleaseError as e:
             log.warning("Release of %s: %s", addon.repo, e)
             problems[addon.folder] = e

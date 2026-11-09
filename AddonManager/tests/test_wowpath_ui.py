@@ -171,6 +171,11 @@ class WindowTests(unittest.TestCase):
         return ui.App(self.root, manifest, True, wow or self.root_dir,
                       check_game=lambda: game, detect=detect)
 
+    def beta_box(self, app):
+        """The Show beta versions box in the Settings window (built, never shown)."""
+        app.open_settings(show=False)
+        return app.beta_check
+
     def status(self, app, folder):
         label, button, _ = app.row_widgets[folder]
         return label.cget("text"), button.cget("text") if button else None
@@ -253,7 +258,7 @@ class WindowTests(unittest.TestCase):
             self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.3.0")
             xs_before = self.column_xs(app)
             # On: the newer beta, marked, saved, and installable.
-            app.beta_check.invoke()
+            self.beta_box(app).invoke()
             self.pump(app)
             self.assertIs(config.load_settings()["show_betas"], True)
             self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.4.0-beta.1 (beta)")
@@ -265,7 +270,7 @@ class WindowTests(unittest.TestCase):
             self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
             # Off again: the beta stays (no "Update" to an older version), but the row
             # offers going back to the normal version.
-            app.beta_check.invoke()
+            self.beta_box(app).invoke()
             self.pump(app)
             self.assertIs(config.load_settings()["show_betas"], False)
             self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.3.0")
@@ -319,7 +324,7 @@ class WindowTests(unittest.TestCase):
             self.pump(app)
             self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
             # Box on: the same release is offered as "(beta)".
-            app.beta_check.invoke()
+            self.beta_box(app).invoke()
             self.pump(app)
             self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.4.0 (beta)")
             self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
@@ -365,11 +370,11 @@ class WindowTests(unittest.TestCase):
             self.pump(app)
             widgets = [str(w) for w in app.list_frame.winfo_children()]
             buttons = [app.row_widgets[f][1] for f in ("TaxiTime", "GuildHub")]
-            buttons += [app.all_button, app.check_button, app.folder_button, app.beta_check]
+            buttons += [app.all_button, app.check_button, app.folder_button, self.beta_box(app)]
             checks_before, renders = len(game_checks), []
             real_render = app.render
             app.render = lambda: (renders.append(1), real_render())
-            app.beta_check.invoke()
+            self.beta_box(app).invoke()
             greyed = set()
             end = time.time() + 15
             while time.time() < end:
@@ -421,7 +426,7 @@ class WindowTests(unittest.TestCase):
             self.assertEqual(self.status(app, "TaxiTime")[1], "Use v1.3.0")
             geometry = self.row_geometry(app)
             # Box on: Taxi Time is up to date, no button.
-            app.beta_check.invoke()
+            self.beta_box(app).invoke()
             self.pump(app)
             self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
             self.assertEqual(self.row_geometry(app), geometry)
@@ -431,7 +436,7 @@ class WindowTests(unittest.TestCase):
             self.assertEqual(self.status(app, "GuildHub"), ("Up to date", None))
             self.assertEqual(self.row_geometry(app), geometry)
             # Box off again: the go-back button comes back, the rows stay put.
-            app.beta_check.invoke()
+            self.beta_box(app).invoke()
             self.pump(app)
             self.assertEqual(self.status(app, "TaxiTime")[1], "Use v1.3.0")
             self.assertEqual(self.row_geometry(app), geometry)

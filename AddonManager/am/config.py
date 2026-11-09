@@ -16,6 +16,7 @@ BUILTIN_LIST = {
     "addons": [
         {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"},
         {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
+        {"folder": "NotePad", "name": "Note Pad", "repo": "gettic/NotePad"},
     ],
 }
 
@@ -29,6 +30,11 @@ APP_REPO = "gettic/AddonManager"
 WINDOWS_ASSET = "AddonManager.exe"
 LINUX_ASSET = "AddonManager-linux-x86_64"
 APP_ASSET = WINDOWS_ASSET if os.name == "nt" else LINUX_ASSET
+
+# Anonymous daily usage count (see am\stats.py and stats_worker\): the address of the
+# stats server's /ping, e.g. "https://<worker>.<subdomain>.workers.dev/ping".
+# Empty = nothing is ever sent. Only the built app (not dev runs or self-tests) uses it.
+STATS_URL = "https://guild-stats.gtd-relay.workers.dev/ping"
 
 HOME_ENV = "ADDONMANAGER_HOME"
 
@@ -63,7 +69,8 @@ def cache_path():
 # Known settings and their type. A value of another type (a hand-edited or damaged
 # settings.json) is dropped on load, as if it had never been saved.
 SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": str,
-                 "update_failed": str, "known_addons": list, "show_betas": bool}
+                 "update_failed": str, "known_addons": list, "show_betas": bool,
+                 "stats_sent_day": str, "stats_sent_week": str, "share_stats": bool}
 
 
 def load_settings():

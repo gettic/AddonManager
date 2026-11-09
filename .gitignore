@@ -28,3 +28,6 @@ dist/
 *.pem
 *.key
 credentials*.json
+
+# Wrangler local cache (Cloudflare account info)
+.wrangler/

@@ -12,7 +12,7 @@ from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
 from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, installer, selfupdate,
-                theme, toc, versions, wowpath)
+                stats, theme, toc, versions, wowpath)
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,14 @@ BUTTON_TEXT = {
 ALL_STATUSES = (versions.UPDATE, versions.NOT_INSTALLED)
 NOT_CHOSEN = "(not chosen)"
 VERSION_SAMPLE = "v10.10.10-beta.10"   # sets the Installed/Latest column widths
+SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
+# The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
+SETTINGS_BUTTON = "⚙ Settings" if os.name == "nt" else "Settings"
+BETA_TEXT = "Show beta versions"
+BETA_NOTE = "Also offer test (beta) versions of addons when they are newer than the normal version."
+SHARE_TEXT = "Share anonymous counts"
+SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and whether "
+              "they're up to date. No name, account or ID. Only the app's maker sees the totals.")
 
 
 class Tooltip:
@@ -58,6 +66,11 @@ class Tooltip:
         if self.tip:
             self.tip.destroy()
             self.tip = None
+
+
+def _share_on(settings):
+    """Share anonymous counts: on unless the player switched it off (missing = on)."""
+    return settings.get(SHARE_SETTING) is not False
 
 
 def _is_installed_beta(row, installed_v):
@@ -87,11 +100,13 @@ class App:
     def __init__(self, root, manifest_location=None, allow_local=False, wow_override=None,
                  check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None,
                  github_api=None, app_exe=None, updated_from=None, restart=selfupdate.restart,
-                 open_link=None, confirm=None):
+                 open_link=None, confirm=None, stats_url=None):
         """app_exe: the running .exe (self-update on); None = no self-update (from source,
         self-test). updated_from: set when this run was started by an update.
         confirm(title, text, ok_text, cancel_text) -> bool: the yes/no question (tests
-        pass their own, so no dialog ever opens there)."""
+        pass their own, so no dialog ever opens there). stats_url: where the daily anonymous
+        count goes; None = config.STATS_URL for the built app only (never dev runs or
+        self-tests), "" = never."""
         self.confirm = confirm or self._confirm_dialog
         self._widths = {}   # measured text widths (see _text_width)
         self._rows_key, self._cells = None, []   # the list's widgets (see _build_rows)
@@ -106,6 +121,13 @@ class App:
         self.updating = False       # the app's own update is downloading/restarting
         self._was_visible = False
         self.allow_local = allow_local
+        if stats_url is None:
+            stats_url = config.STATS_URL if (app_exe and not allow_local) else ""
+        self.stats_url = stats_url
+        self._stats_started = False   # at most one ping per run
+        # The app's own update check must be done first (latest/outdated for the app).
+        self._app_checked = not app_exe or bool(updated_from)
+        self._app_newer = False
         self.github_api = github.api_base(github_api, allow_local)
         self.manifest_location = config.manifest_url(config.load_settings(), manifest_location)
         self.check_game = check_game
@@ -201,13 +223,14 @@ class App:
         self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all,
                                      style="Accent.TButton")
         self.all_button.pack(side="left", padx=(8, 0))
-        # App setting, off by default: also offer addons' newer GitHub pre-releases.
+        # App settings live in a small Settings window (see open_settings).
+        # Show beta versions: off by default. Share anonymous counts: on by default.
         self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
-        self.beta_check = ttk.Checkbutton(buttons, text="Show beta versions",
-                                          variable=self.beta_var, command=self.toggle_betas)
-        self.beta_check.pack(side="right")
-        Tooltip(self.beta_check, "Also offer test (beta) versions of addons when they are "
-                                 "newer than the normal version.")
+        self.share_var = tk.BooleanVar(value=_share_on(self.settings))
+        self.settings_win = self.beta_check = self.share_check = None
+        self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON,
+                                          command=self.open_settings)
+        self.settings_button.pack(side="right")
         self.progress = ttk.Progressbar(bottom, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(8, 2))
         self.message_var = tk.StringVar()
@@ -339,7 +362,8 @@ class App:
         self._set_enabled(self.all_button, any_action and not self.busy)
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
-        self._set_enabled(self.beta_check, not self.busy)
+        if self.beta_check is not None:   # only while the Settings window is open
+            self._set_enabled(self.beta_check, not self.busy)
         self._render_update_bar()
 
     # ---------- the app's own update ----------
@@ -678,6 +702,74 @@ class App:
                          args=(self.queue, self.manifest, self.allow_local, self.github_api,
                                bool(self.beta_var.get()))).start()
 
+    def toggle_share(self):
+        """Share anonymous counts switched: save it. On again: send today's count now if it
+        wasn't sent yet (off: nothing is sent from now on)."""
+        self.settings = config.load_settings()
+        self.settings[SHARE_SETTING] = bool(self.share_var.get())
+        config.save_settings(self.settings)
+        if self.share_var.get():
+            self._maybe_send_stats()
+
+    # ---------- settings window ----------
+    def open_settings(self, show=True):
+        """The small Settings window with both switches; changes apply at once.
+        show=False (tests): built but never shown, so nothing pops up."""
+        if self.settings_win is not None:
+            if show:
+                self.settings_win.deiconify()
+                self.settings_win.lift()
+            return self.settings_win
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.title("Settings")
+        win.configure(background=theme.BG)
+        win.resizable(False, False)
+        win.transient(self.root)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Settings", font=theme.font("bold", bigger=1)).pack(anchor="w")
+        self.beta_var.set(self.settings.get("show_betas") is True)
+        self.share_var.set(_share_on(config.load_settings()))
+        checks = []
+        for text, var, command, note in (
+                (BETA_TEXT, self.beta_var, self.toggle_betas, BETA_NOTE),
+                (SHARE_TEXT, self.share_var, self.toggle_share, SHARE_NOTE)):
+            check = ttk.Checkbutton(frame, text=text, variable=var, command=command)
+            check.pack(anchor="w", pady=(10, 0))
+            ttk.Label(frame, text=note, style="Muted.TLabel", wraplength=320,
+                      justify="left").pack(anchor="w", padx=(22, 0))
+            checks.append(check)
+        self.beta_check, self.share_check = checks
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(14, 0))
+        self.settings_close = ttk.Button(buttons, text="Close", command=self.close_settings)
+        self.settings_close.pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", self.close_settings)
+        win.bind("<Escape>", lambda _e: self.close_settings())
+        self.settings_win = win
+        self._set_enabled(self.beta_check, not self.busy)
+        if show:
+            win.update_idletasks()
+            x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - win.winfo_reqwidth()) // 2)
+            y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - win.winfo_reqheight()) // 3)
+            win.geometry(f"+{x}+{y}")
+            win.deiconify()
+            theme.dark_title_bar(win)
+            self.settings_close.focus_set()
+            win.grab_set()
+        return win
+
+    def close_settings(self):
+        win, self.settings_win = self.settings_win, None
+        self.beta_check = self.share_check = None
+        if win is not None:
+            try:
+                win.grab_release()
+                win.destroy()
+            except tk.TclError:
+                pass
+
     def _apply_manifest(self, m, error, problems=None):
         self.manifest = m
         if m is not None:
@@ -779,6 +871,7 @@ class App:
             self._apply_manifest(msg[1], msg[2], msg[3] if len(msg) > 3 else None)
             self.busy = False
             self.render()
+            self._maybe_send_stats()
         elif kind == "start":
             row = self._row(msg[1])
             if row:
@@ -804,7 +897,13 @@ class App:
             if row:
                 row.state, row.message = "error", msg[2]
             self.render()
+        elif kind == "stats_sent":
+            self.settings = config.load_settings()
+            self.settings[stats.DAY_SETTING], self.settings[stats.WEEK_SETTING] = msg[1], msg[2]
+            config.save_settings(self.settings)
         elif kind == "app_update":
+            self._app_checked, self._app_newer = True, msg[1] is not None
+            self._maybe_send_stats()
             if msg[1] is not None and self.update_mode is None:
                 self.app_update, self.update_mode = msg[1], "offer"
                 self._render_update_bar()
@@ -835,6 +934,35 @@ class App:
                     self.set_message("Installed: " + ", ".join(msg[1])
                                      + ". Restart WoW or type /reload to use them.")
             self.render()
+
+    def _maybe_send_stats(self):
+        """The daily anonymous count (see am\\stats.py): once a day, after the addon list
+        and the app's own update check are done, in a thread; silent if it fails.
+        Nothing at all while Share anonymous counts is off (checked again just before
+        sending, in the thread)."""
+        if (self._stats_started or not self.stats_url or not self._app_checked
+                or self.manifest is None or not self.addons_dir):
+            return
+        settings = config.load_settings()
+        if not _share_on(settings):
+            return   # not "started": switching it back on later this run still sends
+        self._stats_started = True
+        if not stats.due(settings):
+            return
+        entries = []
+        for row in self.rows:
+            if not row.addon:
+                continue
+            exists, installed_v = self._installed(row.folder)
+            if exists and installed_v:
+                a = row.addon
+                stable = a.stable_version or ("" if a.beta else a.version)
+                entries.append((row.folder, installed_v, stable, a.beta_version))
+        payload = stats.build_payload(entries, APP_VERSION, self._app_newer,
+                                      stats.first_this_week(settings))
+        threading.Thread(target=_stats_worker, daemon=True,
+                         args=(self.queue, self.stats_url, payload, self.allow_local,
+                               stats.day(), stats.week())).start()
 
     def close(self):
         self.closed = True
@@ -919,6 +1047,12 @@ def _install_worker(q, check_game, rows, addons_dir):
             log.exception("Install of %s failed", row.folder)
             q.put(("error", row.folder, errors.install_message(e, row.name)))
     q.put(("finished", done_msgs))
+
+
+def _stats_worker(q, url, payload, allow_local, today, this_week):
+    """Thread: the usage ping, only if Share anonymous counts is still on right now."""
+    if _share_on(config.load_settings()):
+        stats.worker(q, url, payload, allow_local, today, this_week)
 
 
 def _update_check_worker(q, github_api, allow_local, failed):
