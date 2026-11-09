@@ -37,6 +37,9 @@ SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
 SETTINGS_BUTTON = "⚙ Settings" if os.name == "nt" else "Settings"
 BETA_TEXT = "Show beta versions"
+# The main window's box: shorter on Linux, whose fonts are wider (keeps the bottom row
+# inside the smallest window). The Settings window always says BETA_TEXT.
+BETA_MAIN_TEXT = BETA_TEXT if os.name == "nt" else "Show betas"
 BETA_NOTE = "Also offer test (beta) versions of addons when they are newer than the normal version."
 SHARE_TEXT = "Share anonymous counts"
 SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and whether "
@@ -233,7 +236,7 @@ class App:
         self.settings_button.pack(side="right")
         # Show beta versions also in the main window (easy to toggle), left of Settings.
         # Same variable and command as the box in Settings, so both always match.
-        self.beta_main_check = ttk.Checkbutton(buttons, text=BETA_TEXT, variable=self.beta_var,
+        self.beta_main_check = ttk.Checkbutton(buttons, text=BETA_MAIN_TEXT, variable=self.beta_var,
                                                command=self.toggle_betas)
         self.beta_main_check.pack(side="right", padx=(0, 10))
         Tooltip(self.beta_main_check, BETA_NOTE)

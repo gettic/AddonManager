@@ -447,10 +447,18 @@ class WindowTests(unittest.TestCase):
         self.pump(app)
         row = app.settings_button.master
         self.assertIs(app.beta_main_check.master, row)
-        self.assertEqual(app.beta_main_check.cget("text"), "Show beta versions")
-        self.root.update_idletasks()
-        self.assertLess(app.beta_main_check.winfo_x(), app.settings_button.winfo_x())
+        # "Show beta versions" on Windows, the shorter "Show betas" on Linux (wider fonts)
+        self.assertEqual(app.beta_main_check.cget("text"),
+                         "Show beta versions" if os.name == "nt" else "Show betas")
+        # Left of Settings, checked by packing order (works for the withdrawn window on
+        # X too, where a never-mapped window has no positions): both packed on the right,
+        # Settings first, so the box comes after it = to its left.
+        slaves = row.pack_slaves()
+        self.assertEqual(app.beta_main_check.pack_info()["side"], "right")
+        self.assertEqual(app.settings_button.pack_info()["side"], "right")
+        self.assertGreater(slaves.index(app.beta_main_check), slaves.index(app.settings_button))
         settings_box = self.beta_box(app)
+        self.assertEqual(settings_box.cget("text"), "Show beta versions")   # full text there
         self.assertEqual(str(settings_box.cget("variable")), str(app.beta_main_check.cget("variable")))
         # main box on -> saved, and the Settings box shows it
         app.beta_main_check.invoke()

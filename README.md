@@ -4,7 +4,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.4.1
+Current version: v0.4.2
 
 ## Get it
 
@@ -32,7 +32,7 @@ It finds WoW Forever installed through Battle.net with Proton (as a non-Steam ga
 
 Game Mode may work if you add it as a non-Steam game, but don't force Proton on it: it is a Linux program.
 
-Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol.
+Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol, and the main-window checkbox reads **Show betas** (the **Settings** window still says **Show beta versions**).
 
 Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Proton/Wine. The Addon Manager only installs addon files. Whether the game runs there is up to Proton/Wine.
 
