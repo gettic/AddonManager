@@ -28,6 +28,17 @@ STATUS = {"update": "#ff5252",        # bright red: needs action
           "up_to_date": "#7a7a7a"}    # dim grey: nothing to do
 
 
+# Windows: Segoe UI. Linux (SteamOS's KDE): Noto Sans; Tk falls back to its default
+# font if the family is missing. Sizes are points, so they follow the screen scaling.
+FONT_FAMILY = "Segoe UI" if sys.platform == "win32" else "Noto Sans"
+FONT_SIZE = 9 if sys.platform == "win32" else 10
+
+
+def font(*styles, bigger=0):
+    """A font tuple in the app's family, e.g. font("bold"), font("bold", bigger=1)."""
+    return (FONT_FAMILY, FONT_SIZE + bigger) + styles
+
+
 def apply(root):
     """Style every ttk widget dark. Call once, before building widgets."""
     root.configure(background=BG)
@@ -35,12 +46,12 @@ def apply(root):
     s.theme_use("clam")   # 'vista' ignores colours
     s.configure(".", background=BG, foreground=TEXT, fieldbackground=SURFACE,
                 bordercolor=BORDER, lightcolor=BG, darkcolor=BG,
-                troughcolor=SURFACE, focuscolor=ACCENT, font=("Segoe UI", 9))
+                troughcolor=SURFACE, focuscolor=ACCENT, font=font())
     s.configure("TFrame", background=BG)
     s.configure("TLabel", background=BG, foreground=TEXT)
     s.configure("Muted.TLabel", foreground=MUTED)
     s.configure("Failed.TLabel", background=ERROR_BG, foreground=ERROR_TEXT,
-                font=("Segoe UI", 9, "bold"), padding=(6, 1))
+                font=font("bold"), padding=(6, 1))
     s.configure("TLabelframe", background=BG, bordercolor=BORDER,
                 lightcolor=BORDER, darkcolor=BORDER)
     s.configure("TLabelframe.Label", background=BG, foreground=MUTED)

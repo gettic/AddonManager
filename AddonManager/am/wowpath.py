@@ -1,7 +1,9 @@
 """Find the WoW Forever Interface\\AddOns folder.
 
-Order: registry (read-only), then common install paths on fixed drives. The UI
-adds the saved choice before this and the folder picker after it.
+Order: registry (read-only), then common install paths on fixed drives. On Linux
+(SteamOS) the game runs in a Wine/Proton prefix: the prefixes' system.reg (read-only)
+and the usual paths inside their drive_c. The UI adds the saved choice before this
+and the folder picker after it.
 """
 
 import logging
@@ -94,6 +96,35 @@ def read_registry():
     return paths
 
 
+# Linux folders care about upper/lower case; Wine (and so the game) doesn't.
+CASE_SENSITIVE = os.name != "nt"
+
+
+def child(path, name):
+    """path/name, using the name as it is really spelled on disk (Addons, interface...)
+    when the file system cares about case. Falls back to path/name if none exists."""
+    exact = os.path.join(path, name)
+    if not CASE_SENSITIVE:
+        return exact
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return exact
+    if name in names:
+        return exact
+    low = name.lower()
+    for n in names:
+        if n.lower() == low:
+            return os.path.join(path, n)
+    return exact
+
+
+def child_path(path, *parts):
+    for part in parts:
+        path = child(path, part)
+    return path
+
+
 def _has_game_exe(path):
     try:
         return any(name.lower() in GAME_EXES for name in os.listdir(path))
@@ -105,8 +136,8 @@ def is_client_dir(path):
     """A game client folder: has the game .exe, or WTF\\ or Interface\\."""
     return os.path.isdir(path) and (
         _has_game_exe(path)
-        or os.path.isdir(os.path.join(path, "WTF"))
-        or os.path.isdir(os.path.join(path, "Interface")))
+        or os.path.isdir(child(path, "WTF"))
+        or os.path.isdir(child(path, "Interface")))
 
 
 def client_subdirs(root):
@@ -143,12 +174,12 @@ def client_kind(client_dir):
 
 def has_forever_addons(client_dir):
     """Its AddOns already hold an addon with a <Name>_Forever.toc (weak hint only)."""
-    addons = os.path.join(client_dir, "Interface", "AddOns")
+    addons = addons_dir_of(client_dir)
     try:
         with os.scandir(addons) as it:
             for entry in it:
                 if entry.is_dir() and os.path.isfile(
-                        os.path.join(entry.path, f"{entry.name}_Forever.toc")):
+                        child(entry.path, f"{entry.name}_Forever.toc")):
                     return True
     except OSError:
         pass
@@ -200,11 +231,39 @@ def candidates(picked):
         return sorted(subs, key=_rank)
     if is_client_dir(p):
         return [p]
-    return []
+    return _prefix_clients(p)
+
+
+def _prefix_clients(p):
+    """A picked Wine prefix (compatdata/<id>, pfx or drive_c): the clients in its
+    usual install folders, best first."""
+    if os.path.basename(p).lower() == "drive_c":
+        drive_c = p
+    elif os.path.isdir(os.path.join(p, "drive_c")):
+        drive_c = os.path.join(p, "drive_c")
+    else:
+        drive_c = os.path.join(p, "pfx", "drive_c")
+    if not os.path.isdir(drive_c):
+        return []
+    found, seen = [], set()
+    for parent in PARENTS:
+        parts = [x for x in parent.split(os.sep) if x]
+        for name in ROOT_NAMES:
+            root = child_path(drive_c, *parts, name)
+            if not os.path.isdir(root):
+                continue
+            for c in client_subdirs(root) or ([root] if is_client_dir(root) else []):
+                key = os.path.normcase(os.path.realpath(c))
+                if key not in seen:
+                    seen.add(key)
+                    found.append(c)
+    return sorted(found, key=_rank)
 
 
 def addons_dir_of(client_dir):
-    return os.path.join(client_dir, "Interface", "AddOns")
+    """client/Interface/AddOns, reusing an existing folder spelled another way on Linux
+    (never a second Interface or AddOns folder next to the real one)."""
+    return child_path(client_dir, "Interface", "AddOns")
 
 
 def from_picked(picked):
@@ -231,22 +290,216 @@ class Found(list):
         self.others = list(others)
 
 
-def detect(drives=None, registry=read_registry):
+# ---------- Linux / SteamOS: the game runs inside a Wine/Proton prefix ----------
+# Places where removable drives / SD cards are mounted (SteamOS: /run/media/...).
+MEDIA_ROOTS = ("/run/media", "/media", "/mnt")
+MAX_PREFIXES = 500
+MAX_REG_BYTES = 64 * 1024 * 1024
+_STEAM_FLATPAK = os.path.join(".var", "app", "com.valvesoftware.Steam")
+_WINE_KEYS = ("software\\wow6432node\\blizzard entertainment\\world of warcraft",
+              "software\\blizzard entertainment\\world of warcraft")
+_WINE_UNINSTALL = ("software\\microsoft\\windows\\currentversion\\uninstall\\",
+                   "software\\wow6432node\\microsoft\\windows\\currentversion\\uninstall\\")
+_REG_VALUE_RE = re.compile(r'^"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"\s*$')
+_VDF_PATH_RE = re.compile(r'"path"\s+"((?:[^"\\]|\\.)*)"', re.IGNORECASE)
+
+
+def _subdirs(path):
+    try:
+        with os.scandir(path) as it:
+            return sorted(e.path for e in it if e.is_dir())
+    except OSError:
+        return []
+
+
+def _vdf_paths(vdf_file):
+    """Library folders listed in Steam's libraryfolders.vdf ("path" "...")."""
+    try:
+        with open(vdf_file, encoding="utf-8", errors="replace") as f:
+            text = f.read(1024 * 1024)
+    except OSError:
+        return []
+    return [m.group(1).replace("\\\\", "\\") for m in _VDF_PATH_RE.finditer(text)]
+
+
+def steam_libraries(home, media_roots=MEDIA_ROOTS):
+    """Steam folders (normal, ~/.steam links, Flatpak), the libraries they list, and
+    SteamLibrary folders on SD cards / other drives."""
+    steams = [os.path.join(home, ".local", "share", "Steam"),
+              os.path.join(home, ".steam", "steam"),
+              os.path.join(home, ".steam", "root"),
+              os.path.join(home, _STEAM_FLATPAK, ".local", "share", "Steam"),
+              os.path.join(home, _STEAM_FLATPAK, "data", "Steam")]
+    libs = list(steams)
+    for s in steams:
+        libs += _vdf_paths(os.path.join(s, "steamapps", "libraryfolders.vdf"))
+        libs += _vdf_paths(os.path.join(s, "config", "libraryfolders.vdf"))
+    for media in media_roots:
+        for d in _subdirs(media):            # /run/media/mmcblk0p1, /run/media/deck
+            for base in [d] + _subdirs(d):   # /run/media/deck/<label>
+                libs += [base, os.path.join(base, "SteamLibrary")]
+    return libs
+
+
+def wine_prefixes(home=None, media_roots=MEDIA_ROOTS):
+    """Wine/Proton prefixes (folders holding drive_c), newest first: Steam's
+    compatdata/<id>/pfx (non-Steam games run with Proton), Lutris (~/Games/<name>),
+    Heroic, Bottles (Flatpak and normal), PlayOnLinux and ~/.wine."""
+    home = home or os.path.expanduser("~")
+    found = []
+    for lib in steam_libraries(home, media_roots):
+        found += [os.path.join(d, "pfx") for d in _subdirs(os.path.join(lib, "steamapps", "compatdata"))]
+    games = os.path.join(home, "Games")
+    flat = os.path.join(home, ".var", "app")
+    found += _subdirs(games)
+    for heroic in (os.path.join(games, "Heroic", "Prefixes"),
+                   os.path.join(flat, "com.heroicgameslauncher.hgl", "Games", "Heroic", "Prefixes")):
+        found += _subdirs(heroic) + _subdirs(os.path.join(heroic, "default"))
+    found += _subdirs(os.path.join(flat, "com.usebottles.bottles", "data", "bottles", "bottles"))
+    found += _subdirs(os.path.join(home, ".local", "share", "bottles", "bottles"))
+    found += _subdirs(os.path.join(home, ".PlayOnLinux", "wineprefix"))
+    found.append(os.path.join(home, ".wine"))
+    prefixes, seen = [], set()
+    for p in found:
+        if not os.path.isdir(os.path.join(p, "drive_c")):
+            continue
+        key = os.path.normcase(os.path.realpath(p))
+        if key not in seen:
+            seen.add(key)
+            prefixes.append(p)
+
+    def mtime(p):
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0
+    prefixes.sort(key=mtime, reverse=True)
+    return prefixes[:MAX_PREFIXES]
+
+
+def _reg_unescape(s):
+    return re.sub(r"\\(.)", lambda m: m.group(1), s)
+
+
+def read_wine_registry(prefix):
+    """Install folders (Windows paths) from a prefix's system.reg, Wine's registry as
+    plain text. Read-only; same keys as read_registry."""
+    path = os.path.join(prefix, "system.reg")
+    try:
+        if os.path.getsize(path) > MAX_REG_BYTES:
+            return []
+        f = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    paths, section, vals = [], None, {}
+
+    def flush():
+        if section in _WINE_KEYS:
+            if vals.get("installpath"):
+                paths.append(vals["installpath"])
+        elif section and section.startswith(_WINE_UNINSTALL):
+            display = vals.get("displayname", "").lower()
+            if ("world of warcraft" in display or "forever" in display) \
+                    and vals.get("installlocation"):
+                paths.append(vals["installlocation"])
+
+    with f:
+        for line in f:
+            line = line.rstrip("\r\n")
+            if line.startswith("["):
+                flush()
+                end = line.rfind("]")
+                name = _reg_unescape(line[1:end]).lower() if end > 0 else ""
+                wanted = name in _WINE_KEYS or name.startswith(_WINE_UNINSTALL)
+                section, vals = (name if wanted else None), {}
+            elif section and line.startswith('"'):
+                m = _REG_VALUE_RE.match(line)
+                if m:
+                    vals[_reg_unescape(m.group(1)).lower()] = _reg_unescape(m.group(2))
+        flush()
+    return paths
+
+
+def wine_to_linux(prefix, win_path):
+    """C:\\Program Files (x86)\\World of Warcraft -> <prefix>/drive_c/Program Files (x86)/...
+    Other drive letters through the prefix's dosdevices links. None if not mappable."""
+    m = re.match(r"^([A-Za-z]):[\\/]*(.*)$", (win_path or "").strip())
+    if not m:
+        return None
+    parts = [p for p in re.split(r"[\\/]+", m.group(2)) if p]
+    if any(p in (".", "..") for p in parts):
+        return None
+    letter = m.group(1).lower()
+    dev = os.path.join(prefix, "dosdevices", letter + ":")
+    if os.path.isdir(dev):
+        base = os.path.realpath(dev)
+    elif letter == "c":
+        base = os.path.join(prefix, "drive_c")
+    else:
+        return None
+    return child_path(base, *parts)
+
+
+def _has_battlenet(drive_c):
+    return any(os.path.isdir(child_path(drive_c, *parts)) for parts in (
+        ("Program Files (x86)", "Battle.net"), ("Program Files", "Battle.net"),
+        ("ProgramData", "Battle.net")))
+
+
+def linux_roots(home=None, media_roots=MEDIA_ROOTS):
+    """(registry paths, common install paths) found in the Wine prefixes, plus a game
+    folder copied straight into ~/Games or ~."""
+    home = home or os.path.expanduser("~")
+    registry_paths, roots = [], []
+    for prefix in wine_prefixes(home, media_roots):
+        drive_c = os.path.join(prefix, "drive_c")
+        if _has_battlenet(drive_c):   # only then is system.reg worth reading
+            for win in read_wine_registry(prefix):
+                p = wine_to_linux(prefix, win)
+                if p:
+                    registry_paths.append(p)
+        for parent in PARENTS:
+            parts = [x for x in parent.split(os.sep) if x]
+            for name in ROOT_NAMES:
+                roots.append(child_path(drive_c, *parts, name))
+    for base in (os.path.join(home, "Games"), home):
+        for name in ROOT_NAMES:
+            roots.append(os.path.join(base, name))
+    return registry_paths, roots
+
+
+def detect(drives=None, registry=read_registry, linux=None, home=None,
+           media_roots=MEDIA_ROOTS):
     """Automatic search. Only real WoW Forever clients are picked: Forever by name
     or .exe first; an unknown client holding Forever addons only if it is the only
-    one; known other clients (_retail_, _classic_beta_, ...) never."""
+    one; known other clients (_retail_, _classic_beta_, ...) never.
+    Windows: registry + fixed drives. Linux (SteamOS): Wine/Proton prefixes (their
+    system.reg + common paths). Passing drives means the Windows search (tests)."""
+    if linux is None:
+        linux = os.name != "nt" and drives is None
+    if linux:
+        try:
+            reg_paths, common = linux_roots(home, media_roots)
+        except Exception:
+            log.exception("Linux folder search failed")
+            reg_paths, common = [], []
+    else:
+        common = []
+        try:
+            reg_paths = list(registry() or [])
+        except Exception:
+            log.exception("Registry lookup failed")
+            reg_paths = []
+        for drive in (fixed_drives() if drives is None else drives):
+            for parent in PARENTS:
+                for name in ROOT_NAMES:
+                    common.append(os.path.join(drive, parent, name))
     roots = []
-    try:
-        for p in registry() or []:
-            roots.append(p)
-            if os.path.basename(os.path.normpath(p)).startswith("_"):
-                roots.append(os.path.dirname(os.path.normpath(p)))   # its siblings too
-    except Exception:
-        log.exception("Registry lookup failed")
-    for drive in (fixed_drives() if drives is None else drives):
-        for parent in PARENTS:
-            for name in ROOT_NAMES:
-                roots.append(os.path.join(drive, parent, name))
+    for p in reg_paths:
+        roots.append(p)
+        if os.path.basename(os.path.normpath(p)).startswith("_"):
+            roots.append(os.path.dirname(os.path.normpath(p)))   # its siblings too
+    roots += common
     forever, maybe, others, seen, clients = [], [], [], set(), set()
     for root in roots:
         key = os.path.normcase(os.path.normpath(root))

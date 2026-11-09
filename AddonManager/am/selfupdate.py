@@ -7,6 +7,9 @@ exe; put back on failure) -> start the new exe -> it writes update-ok.txt -> the
 exits. If the new one doesn't confirm in time: roll back and never offer that version again.
 Leftover .old/.new files (exactly those two names) are removed at the next start.
 Never writes inside a WoW folder, never uses a token, nothing from any other host.
+Linux (SteamOS) works the same with its own asset (config.APP_ASSET), an ELF check
+instead of 'MZ', and the .new file made executable before the swap (Linux lets a
+running program be renamed, so the swap needs no locks).
 """
 
 import dataclasses
@@ -27,6 +30,8 @@ MIN_BYTES = 1024 * 1024          # a real one-file build is far bigger
 OK_FILE = "update-ok.txt"
 WAIT_SECONDS = 30
 SETTINGS_FAILED = "update_failed"
+# First bytes of a real program for this system: Windows .exe, Linux ELF.
+PROGRAM_MAGIC = b"MZ" if os.name == "nt" else b"\x7fELF"
 
 
 class UpdateError(Exception):
@@ -149,8 +154,8 @@ def _real_client(path):
     settings backup) doesn't count."""
     if wowpath._has_game_exe(path):
         return True
-    return wowpath._forever_exe(path) and (os.path.isdir(os.path.join(path, "Interface"))
-                                           or os.path.isdir(os.path.join(path, "WTF")))
+    return wowpath._forever_exe(path) and (os.path.isdir(wowpath.child(path, "Interface"))
+                                           or os.path.isdir(wowpath.child(path, "WTF")))
 
 
 def _real_root(path):
@@ -222,8 +227,10 @@ def fetch(update, exe, allow_local=False, progress=None, min_bytes=MIN_BYTES):
         if size != update.size or size < min_bytes:
             raise UpdateError("damaged", f"size {size}, expected {update.size}")
         with open(new, "rb") as f:
-            if f.read(2) != b"MZ":
-                raise UpdateError("damaged", "not a Windows program")
+            if f.read(len(PROGRAM_MAGIC)) != PROGRAM_MAGIC:
+                raise UpdateError("damaged", "not a program for this system")
+        if os.name != "nt":
+            os.chmod(new, 0o755)   # downloads aren't executable on Linux
         return new
     except download.DownloadError as e:
         _remove(new)

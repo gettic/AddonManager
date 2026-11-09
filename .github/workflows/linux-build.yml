@@ -1,0 +1,146 @@
+# Builds the Linux (SteamOS / Steam Deck) Addon Manager and, with a tag, attaches it to
+# that tag's DRAFT release. It never publishes a release: /commit does that after
+# checking every file's digest, so self-update never sees a half release.
+#
+#   Test build (artifact only):   gh workflow run linux-build.yml
+#   Release build:                gh workflow run linux-build.yml -f tag=vX.Y.Z
+#
+# Pinned: actions by full commit SHA, the build image by digest. No secrets: only the
+# built-in GITHUB_TOKEN, and only the attach job may write (contents: write).
+
+name: Linux build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag (vX.Y.Z) of an existing DRAFT release. Empty = test build only."
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: linux-build-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # python:3.13-bookworm (Debian 12, glibc 2.36: older than SteamOS 3.x, so the
+    # program runs there). Digest of the multi-arch index, looked up 2026-11-09.
+    container:
+      image: python:3.13-bookworm@sha256:cc55e4ded9c95f6ce2133b3d096db43f214d280c2a8af65d83e246c8fa7d168c
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Check the tag
+        if: inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || { echo "Bad tag: $TAG"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      - name: Tag matches APP_VERSION
+        if: inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          v=$(sed -n 's/^APP_VERSION *= *"\([^"]*\)".*/\1/p' AddonManager/am/__init__.py)
+          [ "v$v" = "$TAG" ] || { echo "APP_VERSION $v does not match $TAG"; exit 1; }
+
+      - name: Tools (virtual screen for the hidden window tests, fonts)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends xvfb xauth xfonts-base fonts-dejavu-core
+          python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+          ldd --version | head -n 1
+
+      # Everything below runs as a normal user (root would ignore the read-only folder
+      # checks the tests make), in a copy of the app under that user's home.
+      - name: Tests, PyInstaller and self-tests (as a normal user)
+        run: |
+          useradd -m builder
+          cp -r AddonManager /home/builder/src
+          chown -R builder:builder /home/builder/src
+          runuser -u builder -- bash -euo pipefail -c '
+            cd /home/builder/src
+            python -m venv /home/builder/venv
+            . /home/builder/venv/bin/activate
+            pip install --disable-pip-version-check -q -r requirements-build.txt
+            python -m compileall -q main.py am tests
+            work=$(mktemp -d)
+            ADDONMANAGER_TEST_TMP="$work/tests" xvfb-run -a python -m unittest discover -s tests -t .
+            pyinstaller --noconfirm --clean --log-level WARN --distpath dist --workpath build AddonManager.spec
+            exe=/home/builder/src/dist/AddonManager
+            test -x "$exe"
+
+            # Hidden self-test on fake data (never a real game folder).
+            mapfile -t data < <(python -m tests.make_selftest_data "$work/selftest")
+            xvfb-run -a "$exe" --selftest --manifest "${data[0]}" --wow "${data[1]}" \
+                --github-api "${data[2]}" --home "$work/home" --selftest-out "$work/selftest.json" \
+              || { cat "$work/selftest.json" || true; exit 1; }
+            cat "$work/selftest.json"
+
+            # Self-update on a COPY of the program (fake release v99.0.0).
+            mapfile -t upd < <(python -m tests.make_selftest_data "$work/selfupdate" --app-update "$exe")
+            xvfb-run -a "${upd[0]}" --selftest-update --github-api "${upd[1]}" \
+                --home "$work/home-update" --selftest-out "$work/selfupdate.json" \
+              || { cat "$work/selfupdate.json" || true; exit 1; }
+            cat "$work/selfupdate.json"
+
+            echo "Newest glibc the program needs:"
+            objdump -T "$exe" | grep -o "GLIBC_[0-9.]*" | sort -uV | tail -n 1
+          '
+
+      - name: Package and sha256
+        run: |
+          mkdir -p out pkg
+          install -m 755 /home/builder/src/dist/AddonManager out/AddonManager-linux-x86_64
+          install -m 755 /home/builder/src/dist/AddonManager pkg/AddonManager
+          tar -C pkg --owner=0 --group=0 --numeric-owner -czf out/AddonManager-linux-x86_64.tar.gz AddonManager
+          cd out
+          sha256sum AddonManager-linux-x86_64 AddonManager-linux-x86_64.tar.gz | tee SHA256SUMS
+          ls -l
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: AddonManager-linux
+          path: |
+            out/AddonManager-linux-x86_64
+            out/AddonManager-linux-x86_64.tar.gz
+            out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  attach:
+    needs: build
+    if: inputs.tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # only here: upload files to the draft release
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: AddonManager-linux
+          path: out
+
+      - name: Upload to the DRAFT release (never publishes it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          [ "$draft" = "true" ] || { echo "$TAG is not a draft release; nothing uploaded."; exit 1; }
+          cd out
+          sha256sum -c SHA256SUMS
+          gh release upload "$TAG" AddonManager-linux-x86_64 AddonManager-linux-x86_64.tar.gz --clobber
+          cat SHA256SUMS

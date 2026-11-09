@@ -24,16 +24,26 @@ GITHUB_API = "https://api.github.com"
 
 # The app's own releases (self-update). Fixed here: never taken from addons.json.
 APP_REPO = "gettic/AddonManager"
-APP_ASSET = "AddonManager.exe"
+# The release file this build updates itself from: the Windows .exe, or the Linux
+# (SteamOS) one-file program. Each build only ever picks its own.
+WINDOWS_ASSET = "AddonManager.exe"
+LINUX_ASSET = "AddonManager-linux-x86_64"
+APP_ASSET = WINDOWS_ASSET if os.name == "nt" else LINUX_ASSET
 
 HOME_ENV = "ADDONMANAGER_HOME"
 
 
 def home_dir():
-    """Folder for settings and log: $ADDONMANAGER_HOME or %APPDATA%\\AddonManager."""
+    """Folder for settings and log: $ADDONMANAGER_HOME, else %APPDATA%\\AddonManager on
+    Windows and $XDG_CONFIG_HOME/AddonManager (~/.config/AddonManager) on Linux."""
     path = os.environ.get(HOME_ENV)
     if not path:
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        if os.name == "nt":
+            base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME", "")
+            if not os.path.isabs(base):   # the XDG rule: relative values are ignored
+                base = os.path.join(os.path.expanduser("~"), ".config")
         path = os.path.join(base, "AddonManager")
     return path
 

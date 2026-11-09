@@ -17,7 +17,7 @@ URI = lambda p: pathlib.Path(p).as_uri()
 GH = "https://github.com/gettic/AddonManager/releases/download/v99.0.0/AddonManager.exe"
 
 
-def release(tag="v99.0.0", name="AddonManager.exe", url=GH, digest="sha256:" + "a" * 64,
+def release(tag="v99.0.0", name=config.APP_ASSET, url=GH, digest="sha256:" + "a" * 64,
             size=5_000_000, state="uploaded"):
     return {"tag": tag, "assets": [{"name": name, "url": url, "digest": digest, "size": size,
                                     "state": state}]}
@@ -147,7 +147,7 @@ class Files(unittest.TestCase):
         with open(self.new_path, "wb") as f:
             f.write(b"PK" + b"\0" * (1024 * 1024 + 10))
         fixtures.write_release(self.api, "gettic/AddonManager", "v99.0.0",
-                               [fixtures.asset("AddonManager.exe", URI(self.new_path),
+                               [fixtures.asset(config.APP_ASSET, URI(self.new_path),
                                                self.new_path)])
         with self.assertRaises(selfupdate.UpdateError) as cm:
             selfupdate.fetch(self.update(), self.exe, allow_local=True)

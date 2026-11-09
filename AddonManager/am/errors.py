@@ -1,13 +1,20 @@
 """Plain messages for players. The technical detail goes to the log file."""
 
+import os
+
 from am.download import DownloadError
 from am.installer import InstallError
 from am.manifest import ManifestError
 
 DETAILS = " (Details were saved to the log.)"
+SYSTEM = "Windows" if os.name == "nt" else "Your system"
 
 NOT_FOUND = ("I couldn't find WoW Forever on this PC. Click Choose folder and pick "
              "the folder where WoW Forever is installed.")
+if os.name != "nt":
+    NOT_FOUND = ("I couldn't find WoW Forever. Click Choose folder and pick the Battle.net "
+                 "Proton folder (in Steam: .local/share/Steam/steamapps/compatdata/<number>) "
+                 "or the World of Warcraft folder inside it.")
 NOT_WOW = ("That folder doesn't look like WoW Forever. Pick the folder that contains "
            "the game (the one with the Interface and WTF folders).")
 CHOOSE_CLIENT = ("That folder holds more than one game version. Open it and pick the "
@@ -91,6 +98,9 @@ def install_message(exc, name):
         if kind in ("unsafe", "bad_zip", "mismatch"):
             return _damaged(name)
         if kind == "permission":
+            if os.name != "nt":
+                return ("Your system won't let me write into the WoW Forever folder. Close "
+                        "WoW, then try again.")
             return ("Windows won't let me write into the WoW Forever folder. Close WoW, then "
                     "try again. If it still fails, right-click Addon Manager and choose "
                     "Run as administrator.")
@@ -132,7 +142,7 @@ def app_update_message(exc):
         return ("The Addon Manager is inside your game folder, so it won't update itself "
                 "there. Click Open download page, and keep the new one outside the game folder.")
     if kind == "read_only":
-        return ("Windows won't let the Addon Manager change files in its folder. Click Open "
+        return (f"{SYSTEM} won't let the Addon Manager change files in its folder. Click Open "
                 "download page to get the new version.")
     if kind == "offline":
         return "Can't reach the internet. Check your connection and try again."

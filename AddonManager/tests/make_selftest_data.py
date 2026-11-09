@@ -9,7 +9,8 @@ url/version/sha256, GuildHub from its (fake) GitHub repo's latest release.
        python -m tests.make_selftest_data <empty folder> --app-update <built .exe>
 Self-update test data: copies the .exe to <folder>\\run\\AddonManager.exe (the copy that
 runs and updates itself) and makes a fake gettic/AddonManager release v99.0.0 whose
-AddonManager.exe is another copy with a few bytes added (never run).
+AddonManager.exe is another copy with a few bytes added (never run). On Linux the same
+with the AddonManager program and the AddonManager-linux-x86_64 asset.
 Prints two lines: the copy to run and the fake GitHub API folder."""
 
 import os
@@ -23,7 +24,9 @@ from tests import fixtures
 def app_update(base, exe):
     run_dir = os.path.join(base, "run")
     os.makedirs(run_dir)
-    copy = shutil.copy2(exe, os.path.join(run_dir, "AddonManager.exe"))
+    # Same file name as the build (AddonManager.exe, or AddonManager on Linux); copy2 keeps
+    # the Linux "executable" bit. The fake release's asset is this system's (config.APP_ASSET).
+    copy = shutil.copy2(exe, os.path.join(run_dir, os.path.basename(exe)))
     api = os.path.join(base, "api")
     fixtures.make_app_release(api, os.path.join(base, "dl"), lambda p: pathlib.Path(p).as_uri(),
                               source=exe, marker=b"selftest-update")

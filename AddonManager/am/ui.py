@@ -179,7 +179,7 @@ class App:
         self.update_text.pack(side="left")
         self.update_link = tk.Label(self.update_bar, text="What's new", cursor="hand2",
                                     background=theme.SURFACE, foreground=theme.BANNER_TEXT,
-                                    font=("Segoe UI", 9, "underline"))
+                                    font=theme.font("underline"))
         self.update_link.pack(side="left", padx=(8, 0))
         self.update_link.bind("<Button-1>", lambda _e: self.whats_new())
         self.update_later_button = ttk.Button(self.update_bar, text="Later",
@@ -241,7 +241,7 @@ class App:
             f.rowconfigure(i, minsize=0)
         headers = ("Addon", "Installed", "Latest", "Status", "")
         for col, text in enumerate(headers):
-            ttk.Label(f, text=text, font=("Segoe UI", 9, "bold"), style="Muted.TLabel").grid(
+            ttk.Label(f, text=text, font=theme.font("bold"), style="Muted.TLabel").grid(
                 row=0, column=col, sticky="w", padx=(0, 14), pady=(0, 4))
         f.columnconfigure(3, weight=1)
         # Fixed widths for Installed and Latest, so Status and the buttons don't jump
@@ -572,7 +572,7 @@ class App:
         win.transient(self.root)
         frame = ttk.Frame(win, padding=14)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text=title, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(frame, text=title, font=theme.font("bold", bigger=1)).pack(anchor="w")
         ttk.Label(frame, text=text, wraplength=360, justify="left").pack(anchor="w",
                                                                          pady=(6, 12))
         buttons = ttk.Frame(frame)
@@ -614,8 +614,16 @@ class App:
         self.install_rows([row])
 
     def _ask_folder_dialog(self):
+        extra = {}
+        if os.name != "nt":
+            # Linux: the game sits in a hidden folder (~/.local/share/Steam/...), so let
+            # Tk's folder dialog show hidden folders and start where Steam keeps them.
+            _show_hidden_folders(self.root)
+            start = _linux_start_folder()
+            if start:
+                extra["initialdir"] = start
         return filedialog.askdirectory(parent=self.root, mustexist=True,
-                                       title="Choose your WoW Forever folder")
+                                       title="Choose your WoW Forever folder", **extra)
 
     def choose_folder(self):
         if self.busy:
@@ -831,6 +839,31 @@ class App:
     def close(self):
         self.closed = True
         self.root.destroy()
+
+
+def _show_hidden_folders(root):
+    """Linux Tk dialog: show the "Show hidden" switch and hidden folders. Harmless if
+    the Tk version names these differently."""
+    try:
+        try:
+            root.tk.call("tk_getOpenFile", "-foobar")   # loads the dialog's code only
+        except tk.TclError:
+            pass
+        root.tk.call("set", "::tk::dialog::file::showHiddenBtn", "1")
+        root.tk.call("set", "::tk::dialog::file::showHiddenVar", "1")
+    except tk.TclError:
+        pass
+
+
+def _linux_start_folder():
+    """Where the folder dialog starts on Linux: Steam's compatdata (Proton prefixes) if
+    it exists, else the home folder."""
+    home = os.path.expanduser("~")
+    for lib in wowpath.steam_libraries(home, media_roots=()):
+        compat = os.path.join(lib, "steamapps", "compatdata")
+        if os.path.isdir(compat):
+            return compat
+    return home if os.path.isdir(home) else None
 
 
 def _game_running(check_game):

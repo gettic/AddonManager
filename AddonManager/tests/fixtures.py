@@ -159,22 +159,26 @@ def write_release(api_dir, repo, tag, assets, raw=None, latest=None):
 
 
 def make_fake_exe(path, marker=b"new", size=1024 * 1024 + 100, source=None):
-    """A file that passes the update checks ('MZ', over 1 MB). source: copy that file and
-    append marker (never run). Returns path."""
+    """A file that passes the update checks ('MZ' on Windows, ELF on Linux, over 1 MB).
+    source: copy that file and append marker (never run). Returns path."""
+    from am.selfupdate import PROGRAM_MAGIC
     with open(path, "wb") as f:
         if source:
             with open(source, "rb") as src:
                 shutil.copyfileobj(src, f)
             f.write(marker)
         else:
-            f.write(b"MZ" + marker + b"\0" * max(0, size - 2 - len(marker)))
+            head = PROGRAM_MAGIC + marker
+            f.write(head + b"\0" * max(0, size - len(head)))
     return path
 
 
 def make_app_release(api_dir, dl_dir, url_of, tag="v99.0.0", source=None, digest=True,
-                     name="AddonManager.exe", marker=b"new"):
+                     name=None, marker=b"new"):
     """A fake latest release of gettic/AddonManager with one .exe asset in dl_dir.
-    url_of(file path) -> its URL. Returns the asset file path."""
+    url_of(file path) -> its URL. Returns the asset file path. name: this system's asset."""
+    from am import config
+    name = name or config.APP_ASSET
     os.makedirs(dl_dir, exist_ok=True)
     path = make_fake_exe(os.path.join(dl_dir, name), marker=marker, source=source)
     write_release(api_dir, "gettic/AddonManager", tag,
