@@ -41,6 +41,8 @@ class Addon:
     size: int = 0
     repo: str = ""      # "owner/name": version and url come from its latest GitHub release
     strict_hosts: bool = False   # download and every redirect must stay on https GitHub hosts
+    beta: bool = False  # version/url come from a GitHub pre-release (Show beta versions)
+    beta_version: str = ""  # newest GitHub pre-release's version, offered or not (spots it installed)
 
 
 @dataclass

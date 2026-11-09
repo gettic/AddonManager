@@ -53,7 +53,7 @@ def cache_path():
 # Known settings and their type. A value of another type (a hand-edited or damaged
 # settings.json) is dropped on load, as if it had never been saved.
 SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": str,
-                 "update_failed": str, "known_addons": list}
+                 "update_failed": str, "known_addons": list, "show_betas": bool}
 
 
 def load_settings():

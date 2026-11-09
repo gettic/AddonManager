@@ -64,6 +64,8 @@ class Pick(unittest.TestCase):
             "http": release(url=GH.replace("https:", "http:")),
             "bad tag": release(tag="v99.0.0/../x"),
             "text tag": release(tag="latest"),
+            "pre-release tag": release(tag="v99.0.0-beta.1"),
+            "pre-release flag": dict(release(), prerelease=True),
         }
         for what, rel in cases.items():
             self.assertIsNone(selfupdate.pick(rel, "0.1.0"), what)

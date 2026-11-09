@@ -156,5 +156,22 @@ def app_updated(version_text):
     return f"Addon Manager updated to {version_text}."
 
 
+# Going back from an installed beta to the normal version.
+BETA_INSTALLED = "Beta installed"
+NO_NORMAL_YET = "There's no normal version of this addon yet."
+GO_BACK_TITLE = "Go back to the normal version?"
+GO_BACK_OK = "Go back"
+GO_BACK_CANCEL = "Cancel"
+
+
+def go_back_button(normal_text):
+    return f"Use {normal_text}"
+
+
+def go_back_text(name, beta_text, normal_text):
+    return (f"{name} {beta_text} (beta) will be replaced by the normal version "
+            f"{normal_text}. Your {name} settings are kept.")
+
+
 def success_message(name, version_text):
     return f"{name} {version_text} installed. Restart WoW or type /reload to use it."

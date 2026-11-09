@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 import tests
-from am import config, download, errors, github, installer, manifest, toc
+from am import config, download, errors, github, installer, manifest, toc, versions
 from tests import fixtures
 
 
@@ -227,11 +227,11 @@ class WithServer(unittest.TestCase):
         _, problems = self.resolve(cache_file=self.cache, now=now)
         self.assertEqual(problems, {})
         # Fresh cache: GitHub isn't asked at all.
-        with mock.patch.object(github, "latest_release", side_effect=AssertionError("called")):
+        with mock.patch.object(github, "newest_releases", side_effect=AssertionError("called")):
             (taxi, _hub), problems = self.resolve(cache_file=self.cache, now=now + 60)
         self.assertEqual((problems, taxi.version), ({}, "1.3.0"))
         # "Check again" asks GitHub even with a fresh cache.
-        with mock.patch.object(github, "latest_release", wraps=github.latest_release) as spy:
+        with mock.patch.object(github, "newest_releases", wraps=github.newest_releases) as spy:
             self.resolve(cache_file=self.cache, now=now + 60, use_fresh_cache=False)
         self.assertEqual(spy.call_count, 2)
 
@@ -243,7 +243,7 @@ class WithServer(unittest.TestCase):
         self.assertTrue(100 <= err.wait <= 150, err.wait)
         self.assertIn("3 minutes", errors.release_message(err, "Taxi Time")[1])
         # With an old cached answer the app carries on with it.
-        cache = {f"{limited}|gettic/TaxiTime": {"time": time.time() - 3600, "release": {
+        cache = {github.cache_key(limited, "gettic/TaxiTime"): {"time": time.time() - 3600, "release": {
             "tag": "v1.3.0", "assets": [{"name": "TaxiTime-v1.3.0.zip", "size": 5, "digest": "",
                                          "state": "uploaded",
                                          "url": self.server.url + "dl/TaxiTime-v1.3.0.zip"}]}}}
@@ -255,7 +255,7 @@ class WithServer(unittest.TestCase):
         self.assertEqual(problems["TaxiTime"].kind, "bad")
 
     def _write_cache_entry(self, release, when=None):
-        github.save_cache(self.cache, {f"{self.api}|gettic/TaxiTime": {
+        github.save_cache(self.cache, {github.cache_key(self.api, "gettic/TaxiTime"): {
             "time": time.time() if when is None else when, "release": release}})
 
     def test_damaged_cache_entries_refetched(self):
@@ -271,12 +271,12 @@ class WithServer(unittest.TestCase):
             addons, problems = self.resolve([direct, _addon()], cache_file=self.cache)
             self.assertEqual(problems, {}, release)
             self.assertEqual([a.version for a in addons], ["1.0", "1.3.0"])
-            entry = github.load_cache(self.cache)[f"{self.api}|gettic/TaxiTime"]
+            entry = github.load_cache(self.cache)[github.cache_key(self.api, "gettic/TaxiTime")]
             self.assertEqual(entry["release"]["tag"], "v1.3.0")
 
     def test_damaged_cache_while_rate_limited_only_that_row(self):
         limited = self.server.url + "limited"
-        github.save_cache(self.cache, {f"{limited}|gettic/TaxiTime": {
+        github.save_cache(self.cache, {github.cache_key(limited, "gettic/TaxiTime"): {
             "time": time.time() - 3600, "release": {"tag": 130, "assets": []}}})
         direct = manifest.Addon(folder="Direct", name="Direct", version="1.0",
                                 url=self.server.url + "dl/x.zip")
@@ -291,7 +291,7 @@ class WithServer(unittest.TestCase):
         # finding 1 as the player saw it: the whole list went blank
         import queue
         from am import ui
-        github.save_cache(config.cache_path(), {f"{self.api}|gettic/TaxiTime": {
+        github.save_cache(config.cache_path(), {github.cache_key(self.api, "gettic/TaxiTime"): {
             "time": time.time(), "release": {"tag": 130, "assets": []}}})
         q = queue.Queue()
         ui._load_worker(q, lambda: False, os.path.join(self.gh, "addons.json"), True,
@@ -350,6 +350,126 @@ class WithServer(unittest.TestCase):
             self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime"])
             with self.assertRaises(manifest.ManifestError):   # other lists don't fall back
                 github.load_list("https://127.0.0.1:9/other.json")
+
+    def _write_taxi(self, *releases):
+        """releases: (tag, prerelease[, draft]) newest first; each gets a matching zip."""
+        items = []
+        for tag, pre, *draft in releases:
+            version = tag.lstrip("v")
+            zname = f"TaxiTime-{tag}.zip"
+            z = fixtures.make_zip(os.path.join(self.gh, "dl", zname), "TaxiTime", version)
+            items.append(fixtures.release_json(tag, [fixtures.asset(
+                zname, self.server.url + "dl/" + zname, z)], prerelease=pre,
+                draft=bool(draft and draft[0])))
+        fixtures.write_releases(self.api_dir, "gettic/TaxiTime", items)
+
+    def test_betas_hidden_unless_switched_on(self):
+        self._write_taxi(("v1.4.0-beta.2", True), ("v1.4.0-beta.1", True), ("v1.3.0", False))
+        (taxi,), problems = self.resolve([_addon()])
+        self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.3.0", False))
+        (taxi,), problems = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.4.0-beta.2", True))
+        self.assertTrue(taxi.url.endswith("/dl/TaxiTime-v1.4.0-beta.2.zip"))
+        installer.install(taxi, self.addons)
+        self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.4.0-beta.2"))
+        # Switched off again: the installed beta counts as newer, nothing is offered.
+        (stable,), _ = self.resolve([_addon()])
+        self.assertEqual(versions.status(True, "1.4.0-beta.2", stable.version), versions.NEWER)
+
+    def test_beta_older_than_stable_not_offered(self):
+        self._write_taxi(("v1.4.0", False), ("v1.4.0-rc.1", True))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta), ("1.4.0", False))
+
+    def test_drafts_skipped_and_only_betas(self):
+        self._write_taxi(("v2.0.0", False, True), ("v1.5.0-beta.1", True))
+        (taxi,), problems = self.resolve([_addon()])
+        self.assertEqual(problems["TaxiTime"].kind, "no_release")
+        (taxi,), problems = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.5.0-beta.1", True))
+
+    def test_bad_release_list(self):
+        fixtures.write_releases(self.api_dir, "gettic/TaxiTime", None, raw='{"tag_name": "v1"}')
+        _, problems = self.resolve([_addon()])
+        self.assertEqual(problems["TaxiTime"].kind, "bad")
+        fixtures.write_releases(self.api_dir, "gettic/TaxiTime", [])
+        _, problems = self.resolve([_addon()])
+        self.assertEqual(problems["TaxiTime"].kind, "no_release")
+
+    def test_switch_uses_cache_and_old_key_dropped(self):
+        self._write_taxi(("v1.4.0-beta.1", True), ("v1.3.0", False))
+        now = time.time()
+        old_key = f"{self.api}|gettic/TaxiTime"
+        github.save_cache(self.cache, {old_key: {"time": now, "release": {
+            "tag": "v9.0", "assets": []}}})
+        (taxi,), _ = self.resolve([_addon()], cache_file=self.cache, now=now)
+        self.assertEqual(taxi.version, "1.3.0")
+        cache = github.load_cache(self.cache)
+        self.assertNotIn(old_key, cache)
+        self.assertEqual(cache[github.cache_key(self.api, "gettic/TaxiTime")]["beta"]["tag"],
+                         "v1.4.0-beta.1")
+        with mock.patch.object(github, "newest_releases", side_effect=AssertionError("called")):
+            (taxi,), problems = self.resolve([_addon()], cache_file=self.cache, now=now + 60,
+                                             show_betas=True)
+        self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.4.0-beta.1", True))
+
+    def test_flag_decides_what_is_a_beta(self):
+        # Flagged pre-release with a plain tag: a beta (offered only with the box on).
+        self._write_taxi(("v1.4.0", True), ("v1.3.0", False))
+        (taxi,), _ = self.resolve([_addon()])
+        self.assertEqual((taxi.version, taxi.beta, taxi.beta_version), ("1.3.0", False, "1.4.0"))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta), ("1.4.0", True))
+        # A pre-release tag without a dash can't be compared: newer by date, so offered.
+        self._write_taxi(("v1.4.0beta", True), ("v1.3.0", False))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta), ("1.4.0beta", True))
+        # Not flagged on GitHub: a normal release, even with a beta-looking tag.
+        self._write_taxi(("v1.4.0-beta.1", False), ("v1.3.0", False))
+        (taxi,), _ = self.resolve([_addon()])
+        self.assertEqual((taxi.version, taxi.beta, taxi.beta_version),
+                         ("1.4.0-beta.1", False, ""))
+        # Pre-releases older than the newest normal release are ignored.
+        self._write_taxi(("v1.5.0", False), ("v1.6.0-beta.1", True))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta, taxi.beta_version), ("1.5.0", False, ""))
+
+    def test_beta_numbers_without_dot(self):
+        self._write_taxi(("v1.0.0-beta10", True), ("v0.9.0", False))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual(versions.status(True, "1.0.0-beta9", taxi.version), versions.UPDATE)
+
+    def test_reads_up_to_100_releases(self):
+        urls = []
+        real = download.fetch_bytes
+
+        def spy(url, *a, **kw):
+            urls.append(url)
+            return real(url, *a, **kw)
+        with mock.patch.object(download, "fetch_bytes", side_effect=spy):
+            (taxi,), problems = self.resolve([_addon()])
+        self.assertEqual((problems, taxi.version), ({}, "1.3.0"))
+        self.assertEqual(urls, [self.api + "/repos/gettic/TaxiTime/releases?per_page=100"])
+
+    def test_old_cache_entry_is_rate_limit_fallback(self):
+        limited = self.server.url + "limited"
+        old_key = f"{limited}|gettic/TaxiTime"
+        github.save_cache(self.cache, {old_key: {"time": time.time() - 3600, "release": {
+            "tag": "v1.3.0", "assets": [{"name": "TaxiTime-v1.3.0.zip", "size": 5, "digest": "",
+                                         "state": "uploaded",
+                                         "url": self.server.url + "dl/TaxiTime-v1.3.0.zip"}]}}})
+        (taxi,), problems = self.resolve([_addon()], base=limited, cache_file=self.cache,
+                                         show_betas=True)
+        self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.3.0", False))
+        self.assertIn(old_key, github.load_cache(self.cache))   # kept until a real fetch
+        # Not used as a fresh answer: a fresh-looking old entry is still fetched again.
+        old_api_key = f"{self.api}|gettic/TaxiTime"
+        github.save_cache(self.cache, {old_api_key: {"time": time.time(), "release": {
+            "tag": "v9.0", "assets": []}}})
+        self._write_taxi(("v1.4.0-beta.1", True), ("v1.3.0", False))
+        (taxi,), _ = self.resolve([_addon()], cache_file=self.cache, show_betas=True)
+        self.assertEqual(taxi.version, "1.4.0-beta.1")
+        self.assertNotIn(old_api_key, github.load_cache(self.cache))
 
     def test_file_based_fake_api(self):
         """The layout the .exe self-test uses: everything as local files, no server."""

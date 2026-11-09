@@ -14,7 +14,7 @@ import re
 import time
 import urllib.parse
 
-from am import config, download
+from am import config, download, versions
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -58,12 +58,16 @@ def _trim(release):
                            "digest": digest if isinstance(digest, str) else "",
                            "size": size if isinstance(size, int) and size > 0 else 0,
                            "state": state if isinstance(state, str) else "uploaded"})
-    return {"tag": release["tag_name"], "assets": assets}
+    return {"tag": release["tag_name"], "prerelease": release.get("prerelease") is True,
+            "assets": assets}
 
 
 def valid_release(release):
-    """True if a (cached) release has exactly the shape _trim makes."""
+    """True if a (cached) release has exactly the shape _trim makes
+    ("prerelease" may be missing in older cache entries: then it is a normal release)."""
     if not isinstance(release, dict) or not isinstance(release.get("tag"), str):
+        return False
+    if not isinstance(release.get("prerelease", False), bool):
         return False
     assets = release.get("assets")
     if not isinstance(assets, list):
@@ -82,11 +86,27 @@ def _cached(cache, key):
     return None
 
 
-def latest_release(repo, base, timeout=20):
-    """GET <base>/repos/<repo>/releases/latest (never drafts or pre-releases)."""
-    if not manifest_mod.is_safe_repo(repo):
-        raise ReleaseError("bad", f"repo {repo!r}")
-    url = f"{base}/repos/{repo}/releases/latest"
+def cache_key(base, repo):
+    """Cache key of a repo's newest normal release + newest pre-release."""
+    return f"{base}|{repo}|releases"
+
+
+def _cached_releases(cache, key):
+    """A cache entry {"time", "release": stable or None, "beta": pre-release or None},
+    or None if missing or damaged."""
+    entry = cache.get(key)
+    if not (isinstance(entry, dict) and isinstance(entry.get("time"), (int, float))
+            and not isinstance(entry.get("time"), bool)):
+        return None
+    stable, beta = entry.get("release"), entry.get("beta")
+    if (stable is not None and not valid_release(stable)) or \
+            (beta is not None and not valid_release(beta)):
+        return None
+    return {"time": entry["time"], "release": stable, "beta": beta}
+
+
+def _get_json(url, repo, timeout):
+    """GET a GitHub API URL -> parsed JSON, errors as ReleaseError."""
     try:
         data = download.fetch_bytes(url, timeout=timeout, headers=API_HEADERS)
     except download.DownloadError as e:
@@ -101,9 +121,59 @@ def latest_release(repo, base, timeout=20):
             raise ReleaseError(e.kind, e.detail) from e
         raise ReleaseError("bad", e.detail) from e
     try:
-        return _trim(json.loads(data.decode("utf-8")))
+        return json.loads(data.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as e:
         raise ReleaseError("bad", f"not JSON: {e}") from e
+
+
+def newest_releases(repo, base, timeout=20):
+    """GET <base>/repos/<repo>/releases (newest first, up to 100 in one call) ->
+    (newest normal release or None, newest pre-release published after it or None).
+    A beta is what GitHub flags as a pre-release (whatever its tag). Drafts are skipped."""
+    if not manifest_mod.is_safe_repo(repo):
+        raise ReleaseError("bad", f"repo {repo!r}")
+    url = f"{base}/repos/{repo}/releases"
+    if not url.startswith("file:"):   # the file-based fake API (dev only) has no query
+        url += "?per_page=100"
+    data = _get_json(url, repo, timeout)
+    if not isinstance(data, list):
+        raise ReleaseError("bad", "release list is not a list")
+    stable = beta = None
+    for raw in data:
+        if not isinstance(raw, dict) or raw.get("draft"):
+            continue
+        try:
+            release = _trim(raw)
+        except ReleaseError:
+            log.warning("Unreadable release in %s skipped", repo)
+            continue
+        if release["prerelease"]:
+            beta = beta or release
+        else:
+            stable = release
+            break   # pre-releases older than the newest normal release don't matter
+    return stable, beta
+
+
+def choose(stable, beta, show_betas):
+    """(release, is_beta) to offer. The pre-release (published after the newest normal
+    release) only with show_betas, and not if its version is the same or lower; a tag
+    that can't be compared (e.g. v1.1.0beta) counts as newer, as it was published later."""
+    if show_betas and beta is not None and (
+            stable is None
+            or versions.compare(plain_tag(beta["tag"]), plain_tag(stable["tag"])) not in (0, -1)):
+        return beta, True
+    if stable is None:
+        raise ReleaseError("no_release", "only pre-releases" if beta else "no releases")
+    return stable, False
+
+
+def latest_release(repo, base, timeout=20):
+    """GET <base>/repos/<repo>/releases/latest (never drafts or pre-releases).
+    Used by the app's own update, which stays on normal releases."""
+    if not manifest_mod.is_safe_repo(repo):
+        raise ReleaseError("bad", f"repo {repo!r}")
+    return _trim(_get_json(f"{base}/repos/{repo}/releases/latest", repo, timeout))
 
 
 def parse_digest(value):
@@ -156,10 +226,11 @@ def download_allowed(url, repo, allow_local):
     return False
 
 
-def apply_release(addon, release, allow_local):
-    """A copy of addon with version, url, sha256 and size from the release.
-    Outside dev mode the copy has strict_hosts set: every redirect of its download
-    must stay on https GitHub hosts (see download.github_host_ok)."""
+def apply_release(addon, release, allow_local, beta=False, beta_version=""):
+    """A copy of addon with version, url, sha256 and size from the release
+    (beta: it is a pre-release; beta_version: the newest pre-release's version, offered
+    or not). Outside dev mode the copy has strict_hosts set: every redirect of its
+    download must stay on https GitHub hosts (see download.github_host_ok)."""
     version = plain_tag(release["tag"])
     if not version or not manifest_mod._VERSION_RE.fullmatch(version):
         raise ReleaseError("bad", f"tag {release['tag']!r}")
@@ -171,7 +242,8 @@ def apply_release(addon, release, allow_local):
     size = asset["size"] if isinstance(asset["size"], int) and asset["size"] > 0 else 0
     return dataclasses.replace(addon, version=version, url=asset["url"],
                                sha256=parse_digest(asset["digest"]), size=size,
-                               strict_hosts=not allow_local)
+                               strict_hosts=not allow_local, beta=bool(beta),
+                               beta_version=beta_version or "")
 
 def load_cache(path):
     try:
@@ -194,9 +266,10 @@ def save_cache(path, cache):
 
 
 def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh_cache=True,
-                now=None):
+                now=None, show_betas=False):
     """Fill in repo-based addons from GitHub. Returns (addons, problems) where
     problems maps folder -> ReleaseError. Addons without a repo pass through.
+    show_betas: offer a pre-release when it is newer than the newest normal release.
     The cache (if cache_file) is used when fresh (and use_fresh_cache), and whenever
     GitHub is rate-limiting this PC. Damaged cache entries are dropped and fetched again;
     a problem with one addon never stops the others."""
@@ -209,28 +282,47 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
         if not addon.repo:
             result.append(addon)
             continue
-        key = f"{base}|{addon.repo}"
-        cached = _cached(cache, key)
+        # An entry from v0.2.0 (latest normal release only): kept as a stale fallback until
+        # the first successful fetch replaces it.
+        old_key = f"{base}|{addon.repo}"
+        old = _cached(cache, old_key)
+        if old is None and old_key in cache:
+            cache.pop(old_key, None)
+            changed = True
+        key = cache_key(base, addon.repo)
+        cached = _cached_releases(cache, key)
         if cached is None and key in cache:
             log.warning("Damaged cache entry for %s dropped", addon.repo)
             cache.pop(key, None)
             changed = True
+        fallback = cached   # used when GitHub is rate-limiting this PC
+        if fallback is None and old is not None:
+            fallback = {"time": old["time"],
+                        "release": dict(old["release"], prerelease=False), "beta": None}
         try:
-            release = None
+            pair = None
             if cached and use_fresh_cache and 0 <= now - cached["time"] < CACHE_SECONDS:
-                release = cached["release"]
-            if release is None:
+                pair = cached["release"], cached["beta"]
+            if pair is None:
                 try:
-                    release = latest_release(addon.repo, base)
-                    cache[key] = {"time": now, "release": release}
+                    pair = newest_releases(addon.repo, base)
+                    cache[key] = {"time": now, "release": pair[0], "beta": pair[1]}
+                    if cache.pop(old_key, None) is not None:
+                        log.info("Old cache entry for %s replaced", addon.repo)
                     changed = True
                 except ReleaseError as e:
-                    if e.kind == "rate_limited" and cached:
+                    if e.kind == "rate_limited" and fallback:
                         log.info("GitHub limit reached; using cached %s", addon.repo)
-                        release = cached["release"]
+                        pair = fallback["release"], fallback["beta"]
                     else:
                         raise
-            result.append(apply_release(addon, release, allow_local))
+            release, is_beta = choose(pair[0], pair[1], show_betas)
+            # The beta's version, if it's one the box would offer (so an installed normal
+            # version is never mistaken for it).
+            beta_version = ""
+            if pair[1] is not None and choose(pair[0], pair[1], True)[1]:
+                beta_version = plain_tag(pair[1]["tag"])
+            result.append(apply_release(addon, release, allow_local, is_beta, beta_version))
         except ReleaseError as e:
             log.warning("Release of %s: %s", addon.repo, e)
             problems[addon.folder] = e

@@ -221,6 +221,227 @@ class WindowTests(unittest.TestCase):
             self.pump(app)
             self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
 
+    def column_xs(self, app):
+        """x of the Installed, Latest and Status columns (header labels)."""
+        self.root.update_idletasks()
+        return [app.list_frame.grid_slaves(row=0, column=c)[0].winfo_x() for c in (1, 2, 3)]
+
+    def latest_text(self, app, folder):
+        i = [r.folder for r in app.rows].index(folder) + 1
+        return app.list_frame.grid_slaves(row=i, column=2)[0].cget("text")
+
+    def test_show_beta_versions_switch(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            z = fixtures.make_zip(os.path.join(gh, "dl", "TaxiTime-v1.4.0-beta.1.zip"),
+                                  "TaxiTime", "1.4.0-beta.1")
+            stable_zip = os.path.join(gh, "dl", "TaxiTime-v1.3.0.zip")
+            fixtures.write_releases(os.path.join(gh, "api"), "gettic/TaxiTime", [
+                fixtures.release_json("v1.4.0-beta.1", [fixtures.asset(
+                    "TaxiTime-v1.4.0-beta.1.zip", server.url + "dl/TaxiTime-v1.4.0-beta.1.zip",
+                    z)], prerelease=True),
+                fixtures.release_json("v1.3.0", [fixtures.asset(
+                    "TaxiTime-v1.3.0.zip", server.url + "dl/TaxiTime-v1.3.0.zip", stable_zip)])])
+            asked, answer = [], [False]
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: False, detect=lambda: [],
+                         github_api=server.url + "api",
+                         confirm=lambda *a: (asked.append(a), answer[0])[1])
+            self.pump(app)
+            # Off by default: the normal release.
+            self.assertFalse(app.beta_var.get())
+            self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.3.0")
+            xs_before = self.column_xs(app)
+            # On: the newer beta, marked, saved, and installable.
+            app.beta_check.invoke()
+            self.pump(app)
+            self.assertIs(config.load_settings()["show_betas"], True)
+            self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.4.0-beta.1 (beta)")
+            # No wobble: the Status column (and the buttons) stay where they were.
+            self.assertEqual(self.column_xs(app), xs_before)
+            app.row_widgets["TaxiTime"][1].invoke()
+            self.pump(app)
+            self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.4.0-beta.1"))
+            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
+            # Off again: the beta stays (no "Update" to an older version), but the row
+            # offers going back to the normal version.
+            app.beta_check.invoke()
+            self.pump(app)
+            self.assertIs(config.load_settings()["show_betas"], False)
+            self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.3.0")
+            self.assertEqual(self.status(app, "TaxiTime"), ("Beta installed", "Use v1.3.0"))
+            self.assertEqual(self.column_xs(app), xs_before)
+            self.assertNotIn(app.row_widgets["TaxiTime"][2], ui.ALL_STATUSES)  # "all" never goes back
+            self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.4.0-beta.1"))
+            # Cancel: asked once, nothing changes.
+            app.row_widgets["TaxiTime"][1].invoke()
+            self.pump(app)
+            self.assertEqual(len(asked), 1)
+            title, text, ok, cancel = asked[0]
+            self.assertEqual((title, ok, cancel),
+                             ("Go back to the normal version?", "Go back", "Cancel"))
+            self.assertIn("v1.4.0-beta.1 (beta) will be replaced by the normal version v1.3.0",
+                          text)
+            self.assertIn("settings are kept", text)
+            self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.4.0-beta.1"))
+            # Yes: the normal version is installed; WTF (saved settings) untouched.
+            wtf = os.path.join(os.path.dirname(os.path.dirname(self.addons)), "WTF")
+            sv = os.path.join(wtf, "Account", "X", "SavedVariables")
+            os.makedirs(sv, exist_ok=True)
+            with open(os.path.join(sv, "TaxiTime.lua"), "w", encoding="utf-8") as fh:
+                fh.write("TaxiTimeDB = {beta = true}\n")
+            before = fixtures.tree_snapshot(wtf)
+            answer[0] = True
+            app.row_widgets["TaxiTime"][1].invoke()
+            self.pump(app)
+            self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
+            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
+            self.assertEqual(before, fixtures.tree_snapshot(wtf))
+
+    def test_flagged_beta_with_plain_tag_can_go_back(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            z = fixtures.make_zip(os.path.join(gh, "dl", "TaxiTime-v1.4.0.zip"), "TaxiTime", "1.4.0")
+            stable_zip = os.path.join(gh, "dl", "TaxiTime-v1.3.0.zip")
+            fixtures.write_releases(os.path.join(gh, "api"), "gettic/TaxiTime", [
+                fixtures.release_json("v1.4.0", [fixtures.asset(
+                    "TaxiTime-v1.4.0.zip", server.url + "dl/TaxiTime-v1.4.0.zip", z)],
+                    prerelease=True),
+                fixtures.release_json("v1.3.0", [fixtures.asset(
+                    "TaxiTime-v1.3.0.zip", server.url + "dl/TaxiTime-v1.3.0.zip", stable_zip)])])
+            fixtures.make_addon_folder(self.addons, "TaxiTime", "1.4.0")
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: False, detect=lambda: [],
+                         github_api=server.url + "api", confirm=lambda *a: True)
+            self.pump(app)
+            self.assertEqual(self.status(app, "TaxiTime"), ("Beta installed", "Use v1.3.0"))
+            app.row_widgets["TaxiTime"][1].invoke()
+            self.pump(app)
+            self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
+            # Box on: the same release is offered as "(beta)".
+            app.beta_check.invoke()
+            self.pump(app)
+            self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.4.0 (beta)")
+            self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
+
+    def test_hand_installed_beta_without_normal_version(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            z = fixtures.make_zip(os.path.join(gh, "dl", "TaxiTime-v2.0.0-beta.1.zip"),
+                                  "TaxiTime", "2.0.0-beta.1")
+            fixtures.write_releases(os.path.join(gh, "api"), "gettic/TaxiTime", [
+                fixtures.release_json("v2.0.0-beta.1", [fixtures.asset(
+                    "TaxiTime-v2.0.0-beta.1.zip", server.url + "dl/TaxiTime-v2.0.0-beta.1.zip",
+                    z)], prerelease=True)])
+            fixtures.make_addon_folder(self.addons, "TaxiTime", "2.0.0-beta.1")
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: False, detect=lambda: [],
+                         github_api=server.url + "api",
+                         confirm=lambda *a: self.fail("asked"))
+            self.pump(app)
+            self.assertEqual(self.status(app, "TaxiTime"), ("Beta installed", None))
+            # A hand-installed normal version newer than the list keeps its old status.
+            fixtures.make_addon_folder(self.addons, "GuildHub", "9.0")
+            app.render()
+            self.assertEqual(self.status(app, "GuildHub"), ("Newer than the list", None))
+
+    def test_beta_switch_no_flicker(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            z = fixtures.make_zip(os.path.join(gh, "dl", "TaxiTime-v1.4.0-beta.1.zip"),
+                                  "TaxiTime", "1.4.0-beta.1")
+            stable_zip = os.path.join(gh, "dl", "TaxiTime-v1.3.0.zip")
+            fixtures.write_releases(os.path.join(gh, "api"), "gettic/TaxiTime", [
+                fixtures.release_json("v1.4.0-beta.1", [fixtures.asset(
+                    "TaxiTime-v1.4.0-beta.1.zip", server.url + "dl/TaxiTime-v1.4.0-beta.1.zip",
+                    z)], prerelease=True),
+                fixtures.release_json("v1.3.0", [fixtures.asset(
+                    "TaxiTime-v1.3.0.zip", server.url + "dl/TaxiTime-v1.3.0.zip", stable_zip)])])
+            game_checks = []
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: game_checks.append(1) or False,
+                         detect=lambda: [], github_api=server.url + "api",
+                         confirm=lambda *a: False)
+            self.pump(app)
+            widgets = [str(w) for w in app.list_frame.winfo_children()]
+            buttons = [app.row_widgets[f][1] for f in ("TaxiTime", "GuildHub")]
+            buttons += [app.all_button, app.check_button, app.folder_button, app.beta_check]
+            checks_before, renders = len(game_checks), []
+            real_render = app.render
+            app.render = lambda: (renders.append(1), real_render())
+            app.beta_check.invoke()
+            greyed = set()
+            end = time.time() + 15
+            while time.time() < end:
+                self.root.update()
+                greyed |= {str(b) for b in buttons if "disabled" in b.state()}
+                if not app.busy:
+                    break
+                time.sleep(0.005)
+            self.pump(app)
+            self.assertEqual(greyed, set())                       # nothing greyed out
+            self.assertEqual(len(renders), 1)                     # one redraw
+            self.assertEqual(len(game_checks), checks_before)     # no full check
+            self.assertNotEqual(app.message_var.get(), "Checking for updates...")
+            self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.4.0-beta.1 (beta)")
+            # The same row widgets, only updated.
+            self.assertEqual([str(w) for w in app.list_frame.winfo_children()], widgets)
+            # "Check again" also keeps the widgets when the addons stay the same.
+            app.check_button.invoke()
+            self.pump(app)
+            self.assertEqual([str(w) for w in app.list_frame.winfo_children()], widgets)
+
+    def row_geometry(self, app):
+        """(row y, row height, name label y) of every addon row."""
+        self.root.update_idletasks()
+        f, out = app.list_frame, []
+        for i in range(1, len(app.rows) + 1):
+            _x, y, _w, h = f.grid_bbox(0, i)
+            out.append((y, h, f.grid_slaves(row=i, column=0)[0].winfo_y()))
+        return out
+
+    def test_rows_keep_height_with_or_without_button(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            z = fixtures.make_zip(os.path.join(gh, "dl", "TaxiTime-v1.4.0-beta.1.zip"),
+                                  "TaxiTime", "1.4.0-beta.1")
+            stable_zip = os.path.join(gh, "dl", "TaxiTime-v1.3.0.zip")
+            fixtures.write_releases(os.path.join(gh, "api"), "gettic/TaxiTime", [
+                fixtures.release_json("v1.4.0-beta.1", [fixtures.asset(
+                    "TaxiTime-v1.4.0-beta.1.zip", server.url + "dl/TaxiTime-v1.4.0-beta.1.zip",
+                    z)], prerelease=True),
+                fixtures.release_json("v1.3.0", [fixtures.asset(
+                    "TaxiTime-v1.3.0.zip", server.url + "dl/TaxiTime-v1.3.0.zip", stable_zip)])])
+            fixtures.make_addon_folder(self.addons, "TaxiTime", "1.4.0-beta.1")
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: False, detect=lambda: [],
+                         github_api=server.url + "api", confirm=lambda *a: False)
+            self.pump(app)
+            # Box off: "Use v1.3.0" on Taxi Time, "Install" on Guild Hub.
+            self.assertEqual(self.status(app, "TaxiTime")[1], "Use v1.3.0")
+            geometry = self.row_geometry(app)
+            # Box on: Taxi Time is up to date, no button.
+            app.beta_check.invoke()
+            self.pump(app)
+            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
+            self.assertEqual(self.row_geometry(app), geometry)
+            # Install Guild Hub: its button goes away.
+            app.row_widgets["GuildHub"][1].invoke()
+            self.pump(app)
+            self.assertEqual(self.status(app, "GuildHub"), ("Up to date", None))
+            self.assertEqual(self.row_geometry(app), geometry)
+            # Box off again: the go-back button comes back, the rows stay put.
+            app.beta_check.invoke()
+            self.pump(app)
+            self.assertEqual(self.status(app, "TaxiTime")[1], "Use v1.3.0")
+            self.assertEqual(self.row_geometry(app), geometry)
+
+    def test_show_beta_versions_remembered(self):
+        config.save_settings({"show_betas": True})
+        app = self.make_app()
+        self.pump(app)
+        self.assertTrue(app.beta_var.get())
+
     def test_no_wow_found(self):
         app = ui.App(self.root, os.path.join(self.site, "manifest.json"), True, None,
                      check_game=lambda: False, detect=lambda: [])

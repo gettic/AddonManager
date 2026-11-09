@@ -75,6 +75,9 @@ def pick(release, current, allow_local=False, failed=None):
             or "/" in tag or "\\" in tag or ".." in tag:
         log.warning("App release tag not usable: %r", tag)
         return None
+    if release.get("prerelease") or versions.is_prerelease(version):
+        log.info("App pre-release %s not offered (the app updates to normal releases only)", tag)
+        return None
     if versions.compare(version, current) != 1:
         return None
     if not isinstance(failed, str):

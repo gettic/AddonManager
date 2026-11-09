@@ -121,16 +121,40 @@ def asset(name, url, path=None, digest=True, state="uploaded"):
             "content_type": "application/zip"}
 
 
-def write_release(api_dir, repo, tag, assets, raw=None):
-    """A fake GitHub API answer: <api_dir>/repos/<repo>/releases/latest (a JSON file)."""
+def release_json(tag, assets, prerelease=False, draft=False):
+    """One release as GitHub's API shows it."""
+    return {"tag_name": tag, "name": tag, "draft": draft, "prerelease": prerelease,
+            "assets": assets}
+
+
+def write_releases(api_dir, repo, releases, raw=None):
+    """A fake GitHub API release list (newest first): <api_dir>/repos/<repo>/releases
+    (a JSON file), what the app reads for addons."""
+    folder = os.path.join(api_dir, "repos", *repo.split("/"))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "releases"), "w", encoding="utf-8") as f:
+        if raw is not None:
+            f.write(raw)
+        else:
+            json.dump(releases, f, indent=2)
+    return api_dir
+
+
+def write_release(api_dir, repo, tag, assets, raw=None, latest=None):
+    """One normal fake release. For addons: a release list with just it (see
+    write_releases). latest=True (default for the app's own repo):
+    <api_dir>/repos/<repo>/releases/latest, what the app's self-update reads."""
+    if latest is None:
+        latest = repo == "gettic/AddonManager"
+    if not latest:
+        return write_releases(api_dir, repo, [release_json(tag, assets)], raw=raw)
     folder = os.path.join(api_dir, "repos", *repo.split("/"), "releases")
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "latest"), "w", encoding="utf-8") as f:
         if raw is not None:
             f.write(raw)
         else:
-            json.dump({"tag_name": tag, "name": tag, "draft": False, "prerelease": False,
-                       "assets": assets}, f, indent=2)
+            json.dump(release_json(tag, assets), f, indent=2)
     return api_dir
 
 

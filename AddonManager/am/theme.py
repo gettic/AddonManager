@@ -72,6 +72,13 @@ def apply(root):
               lightcolor=[("focus", SURFACE)],
               selectbackground=[("!focus", BUTTON_HOVER)],
               selectforeground=[("!focus", TEXT)])
+    s.configure("TCheckbutton", background=BG, foreground=TEXT, indicatorbackground=SURFACE,
+                indicatorforeground=ACCENT_TEXT, bordercolor=BORDER, focuscolor=BG,
+                padding=(2, 2))
+    s.map("TCheckbutton",
+          background=[("active", BG)],
+          foreground=[("disabled", DISABLED)],
+          indicatorbackground=[("disabled", BG), ("selected", ACCENT), ("pressed", BUTTON_HOVER)])
     s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=SURFACE,
                 bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT)
 

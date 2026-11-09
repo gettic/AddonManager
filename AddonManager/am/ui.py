@@ -1,6 +1,7 @@
 """The window: folder line, one row per addon, Install/Update buttons.
 Downloads run in one worker thread; it talks to the window through a queue."""
 
+import dataclasses
 import logging
 import os
 import queue
@@ -8,6 +9,7 @@ import threading
 import tkinter as tk
 import webbrowser
 from tkinter import filedialog, ttk
+from tkinter import font as tkfont
 
 from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, installer, selfupdate,
                 theme, toc, versions, wowpath)
@@ -30,6 +32,7 @@ BUTTON_TEXT = {
 }
 ALL_STATUSES = (versions.UPDATE, versions.NOT_INSTALLED)
 NOT_CHOSEN = "(not chosen)"
+VERSION_SAMPLE = "v10.10.10-beta.10"   # sets the Installed/Latest column widths
 
 
 class Tooltip:
@@ -57,6 +60,17 @@ class Tooltip:
             self.tip = None
 
 
+def _is_installed_beta(row, installed_v):
+    """An installed beta: a pre-release version text (the .toc has no flag), or the
+    version of the addon's newest GitHub pre-release (flagged, whatever its tag)."""
+    if not installed_v:
+        return False
+    if versions.is_prerelease(installed_v):
+        return True
+    beta_v = row.addon.beta_version if row.addon else ""
+    return bool(beta_v) and versions.same(installed_v, beta_v)
+
+
 class Row:
     """One addon line in the list."""
 
@@ -66,15 +80,21 @@ class Row:
         self.state = None   # None, "queued", "installing", "error"
         self.message = ""
         self.problem = ""   # short status when the latest release couldn't be read
+        self.problem_kind = ""   # its ReleaseError kind (e.g. no_release)
 
 
 class App:
     def __init__(self, root, manifest_location=None, allow_local=False, wow_override=None,
                  check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None,
                  github_api=None, app_exe=None, updated_from=None, restart=selfupdate.restart,
-                 open_link=None):
+                 open_link=None, confirm=None):
         """app_exe: the running .exe (self-update on); None = no self-update (from source,
-        self-test). updated_from: set when this run was started by an update."""
+        self-test). updated_from: set when this run was started by an update.
+        confirm(title, text, ok_text, cancel_text) -> bool: the yes/no question (tests
+        pass their own, so no dialog ever opens there)."""
+        self.confirm = confirm or self._confirm_dialog
+        self._widths = {}   # measured text widths (see _text_width)
+        self._rows_key, self._cells = None, []   # the list's widgets (see _build_rows)
         self.root = root
         self.app_exe = app_exe
         self.restart = restart
@@ -181,6 +201,13 @@ class App:
         self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all,
                                      style="Accent.TButton")
         self.all_button.pack(side="left", padx=(8, 0))
+        # App setting, off by default: also offer addons' newer GitHub pre-releases.
+        self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
+        self.beta_check = ttk.Checkbutton(buttons, text="Show beta versions",
+                                          variable=self.beta_var, command=self.toggle_betas)
+        self.beta_check.pack(side="right")
+        Tooltip(self.beta_check, "Also offer test (beta) versions of addons when they are "
+                                 "newer than the normal version.")
         self.progress = ttk.Progressbar(bottom, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(8, 2))
         self.message_var = tk.StringVar()
@@ -193,61 +220,126 @@ class App:
         ttk.Label(status_line, textvariable=self.message_var, wraplength=580,
                   justify="left").pack(side="left", fill="x", expand=True)
 
-    def render(self):
-        """Rebuild the addon rows from self.rows and the installed .toc files."""
+    def _text_width(self, text):
+        """Pixel width of text in the labels' font (measured once per text)."""
+        cache = self._widths
+        if text not in cache:
+            name = ttk.Style(self.root).lookup("TLabel", "font") or "TkDefaultFont"
+            try:
+                cache[text] = tkfont.Font(root=self.root, font=name).measure(text)
+            except tk.TclError:
+                cache[text] = tkfont.nametofont("TkDefaultFont").measure(text)
+        return cache[text]
+
+    def _build_rows(self, key):
+        """Create the list's widgets for self.rows (only when the addons change; render
+        then only updates their text and state, so nothing flickers)."""
         for child in self.list_frame.winfo_children():
             child.destroy()
         f = self.list_frame
+        for i in range(1, len(self._cells) + 1):   # the old rows' fixed heights
+            f.rowconfigure(i, minsize=0)
         headers = ("Addon", "Installed", "Latest", "Status", "")
         for col, text in enumerate(headers):
             ttk.Label(f, text=text, font=("Segoe UI", 9, "bold"), style="Muted.TLabel").grid(
                 row=0, column=col, sticky="w", padx=(0, 14), pady=(0, 4))
         f.columnconfigure(3, weight=1)
+        # Fixed widths for Installed and Latest, so Status and the buttons don't jump
+        # sideways when a version text gets longer (e.g. "v1.4.0-beta.1 (beta)").
+        for col, sample in ((1, VERSION_SAMPLE), (2, VERSION_SAMPLE + " (beta)")):
+            f.columnconfigure(col, minsize=self._text_width(sample) + 14)
+        self._cells = []
+        for i, _row in enumerate(self.rows, start=1):
+            name = ttk.Label(f)
+            name.grid(row=i, column=0, sticky="w", padx=(0, 14), pady=2)
+            installed = ttk.Label(f)
+            installed.grid(row=i, column=1, sticky="w", padx=(0, 14))
+            latest = ttk.Label(f)
+            latest.grid(row=i, column=2, sticky="w", padx=(0, 14))
+            status = ttk.Label(f)
+            status.grid(row=i, column=3, sticky="w")
+            button = ttk.Button(f, width=10)
+            button.grid(row=i, column=4, sticky="e")
+            button.grid_remove()
+            # Every row as tall as a button, so texts don't jump when a button shows or hides.
+            f.rowconfigure(i, minsize=button.winfo_reqheight())
+            self._cells.append({"name": name, "name_tip": Tooltip(name, ""),
+                                "installed": installed, "latest": latest, "status": status,
+                                "status_tip": Tooltip(status, ""), "button": button})
+        if not self.rows:
+            ttk.Label(f, text=self.manifest_note or "No addons to show.").grid(
+                row=1, column=0, columnspan=5, sticky="w")
+        self._rows_key = key
+
+    def render(self):
+        """Show self.rows and the installed .toc files. The widgets are made again only
+        when the addons (or the empty-list note) change; otherwise updated in place."""
+        key = (tuple((r.folder, r.name) for r in self.rows),
+               None if self.rows else (self.manifest_note or ""))
+        if getattr(self, "_rows_key", None) != key:
+            self._build_rows(key)
         self.row_widgets = {}
         any_action = False
         for i, row in enumerate(self.rows, start=1):
+            cells = self._cells[i - 1]
             exists, installed_v = self._installed(row.folder)
             status = versions.status(exists, installed_v, row.latest)
-            name = ttk.Label(f, text=row.name)
-            name.grid(row=i, column=0, sticky="w", padx=(0, 14), pady=2)
-            Tooltip(name, row.description)
-            ttk.Label(f, text=versions.display(installed_v) if exists else "-").grid(
-                row=i, column=1, sticky="w", padx=(0, 14))
-            ttk.Label(f, text=versions.display(row.latest) if row.latest else "?").grid(
-                row=i, column=2, sticky="w", padx=(0, 14))
+            cells["name"].configure(text=row.name)
+            cells["name_tip"].text = row.description
+            cells["installed"].configure(text=versions.display(installed_v) if exists else "-")
+            latest_text = versions.display(row.latest) if row.latest else "?"
+            if row.latest and row.addon and row.addon.beta:
+                latest_text += " (beta)"
+            cells["latest"].configure(text=latest_text)
             status_text = STATUS_TEXT[status]
             if exists and not installed_v and status == versions.NO_LATEST:
                 status_text = STATUS_TEXT[versions.UNKNOWN]
+            beta_on = bool(self.beta_var.get())
+            installed_beta = bool(exists and _is_installed_beta(row, installed_v))
+            # Box off and a beta installed that is newer than the normal version: offer going back.
+            go_back = (installed_beta and not beta_on and status == versions.NEWER
+                       and row.addon is not None and not row.addon.beta)
+            no_normal = (installed_beta and not beta_on and row.addon is None
+                         and row.problem_kind == "no_release")
+            if go_back or no_normal:
+                status_text = errors.BETA_INSTALLED
             if row.state == "queued":
                 status_text = "Waiting..."
             elif row.state == "installing":
                 status_text = "Installing..."
             elif row.state == "error":
                 status_text = "✖ Failed (see below)"
-            elif row.problem and not row.addon:
+            elif row.problem and not row.addon and not no_normal:
                 status_text = row.problem
+            status_label = cells["status"]
             if row.state == "error":
-                status_label = ttk.Label(f, text=status_text, style="Failed.TLabel")
+                status_label.configure(text=status_text, style="Failed.TLabel", foreground="")
             else:
-                status_label = ttk.Label(f, text=status_text, foreground=(
+                status_label.configure(text=status_text, style="TLabel", foreground=(
                     "" if row.state else theme.STATUS.get(status, "")))
-            status_label.grid(row=i, column=3, sticky="w")
-            button = None
-            if row.addon and status in BUTTON_TEXT and self.addons_dir:
-                button = ttk.Button(f, text=BUTTON_TEXT[status], width=10,
-                                    command=lambda r=row: self.install_rows([r]))
-                button.grid(row=i, column=4, sticky="e")
-                if self.busy:
-                    button.state(["disabled"])
+            cells["status_tip"].text = errors.NO_NORMAL_YET if no_normal and not row.state else ""
+            button = cells["button"]
+            if go_back and self.addons_dir:
+                text = errors.go_back_button(versions.display(row.latest))
+                button.configure(text=text, width=max(10, len(text)),
+                                 command=lambda r=row: self.go_back(r))
+            elif row.addon and status in BUTTON_TEXT and self.addons_dir:
+                button.configure(text=BUTTON_TEXT[status], width=10,
+                                 command=lambda r=row: self.install_rows([r]))
                 if status in ALL_STATUSES:
                     any_action = True
+            else:
+                button = None
+            if button is None:
+                cells["button"].grid_remove()
+            else:
+                self._set_enabled(button, not self.busy)
+                button.grid()
             self.row_widgets[row.folder] = (status_label, button, status)
-        if not self.rows:
-            ttk.Label(f, text=self.manifest_note or "No addons to show.").grid(
-                row=1, column=0, columnspan=5, sticky="w")
         self._set_enabled(self.all_button, any_action and not self.busy)
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
+        self._set_enabled(self.beta_check, not self.busy)
         self._render_update_bar()
 
     # ---------- the app's own update ----------
@@ -469,6 +561,58 @@ class App:
         finally:
             self.folder_menu.grab_release()
 
+    def _confirm_dialog(self, title, text, ok_text, cancel_text):
+        """A small dark modal question over the window. True if ok_text was clicked."""
+        result = {"ok": False}
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.title(title)
+        win.configure(background=theme.BG)
+        win.resizable(False, False)
+        win.transient(self.root)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=title, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(frame, text=text, wraplength=360, justify="left").pack(anchor="w",
+                                                                         pady=(6, 12))
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+
+        def answer(ok):
+            result["ok"] = ok
+            win.destroy()
+        ttk.Button(buttons, text=cancel_text, command=lambda: answer(False)).pack(side="right")
+        ok_button = ttk.Button(buttons, text=ok_text, style="Accent.TButton",
+                               command=lambda: answer(True))
+        ok_button.pack(side="right", padx=(0, 6))
+        win.protocol("WM_DELETE_WINDOW", lambda: answer(False))
+        win.bind("<Escape>", lambda _e: answer(False))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - win.winfo_reqwidth()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - win.winfo_reqheight()) // 3)
+        win.geometry(f"+{x}+{y}")
+        win.deiconify()
+        theme.dark_title_bar(win)
+        ok_button.focus_set()
+        win.grab_set()
+        self.root.wait_window(win)
+        return result["ok"]
+
+    def go_back(self, row):
+        """Installed beta -> the newest normal version of that addon, after a yes."""
+        if self.busy or not self.addons_dir or not row.addon or row.addon.beta:
+            return
+        exists, installed_v = self._installed(row.folder)
+        if not (exists and _is_installed_beta(row, installed_v)):
+            return
+        if not self.confirm(errors.GO_BACK_TITLE,
+                            errors.go_back_text(row.name, versions.display(installed_v),
+                                                versions.display(row.latest)),
+                            errors.GO_BACK_OK, errors.GO_BACK_CANCEL):
+            return
+        log.info("Going back from %s %s to %s", row.folder, installed_v, row.latest)
+        self.install_rows([row])
+
     def _ask_folder_dialog(self):
         return filedialog.askdirectory(parent=self.root, mustexist=True,
                                        title="Choose your WoW Forever folder")
@@ -505,7 +649,26 @@ class App:
         # Workers get plain values, never `self`, so no Tk object is freed in a thread.
         threading.Thread(target=_load_worker, daemon=True,
                          args=(self.queue, self.check_game, self.manifest_location,
-                               self.allow_local, self.github_api, force)).start()
+                               self.allow_local, self.github_api, force,
+                               bool(self.beta_var.get()))).start()
+
+    def toggle_betas(self):
+        """Show beta versions switched: save it and redo the list (cached releases)."""
+        if self.busy:   # the box is disabled while busy; put it back if clicked anyway
+            self.beta_var.set(self.settings.get("show_betas") is True)
+            return
+        self.settings = config.load_settings()
+        self.settings["show_betas"] = bool(self.beta_var.get())
+        config.save_settings(self.settings)
+        if self.manifest is None:   # no list yet: a normal check
+            self.check_again(force=False)
+            return
+        # Only re-sort the known addons from the cached releases: no game check, no list
+        # download, no "Checking..." and nothing greyed out; one redraw when it's done.
+        self.busy = True
+        threading.Thread(target=_resort_worker, daemon=True,
+                         args=(self.queue, self.manifest, self.allow_local, self.github_api,
+                               bool(self.beta_var.get()))).start()
 
     def _apply_manifest(self, m, error, problems=None):
         self.manifest = m
@@ -516,6 +679,7 @@ class App:
                 if a.folder in problems:
                     row = Row(a.folder, a.name, None, None, a.description)
                     row.problem, full = errors.release_message(problems[a.folder], a.name)
+                    row.problem_kind = getattr(problems[a.folder], "kind", "")
                     if full not in notes:
                         notes.append(full)
                 else:
@@ -676,19 +840,34 @@ def _game_running(check_game):
         return False
 
 
-def _load_worker(q, check_game, location, allow_local, github_api=None, force=True):
-    """Thread: game check + addon list + latest GitHub releases. Results go to the window
-    through q as ("manifest", Manifest or None, error text, {folder: ReleaseError})."""
+def _load_worker(q, check_game, location, allow_local, github_api=None, force=True,
+                 show_betas=False):
+    """Thread: game check + addon list + latest GitHub releases (pre-releases too if
+    show_betas). Results go to the window through q as
+    ("manifest", Manifest or None, error text, {folder: ReleaseError})."""
     q.put(("game", _game_running(check_game)))
     try:
         m = github.load_list(location, allow_local=allow_local)
         m.addons, problems = github.resolve_all(
             m.addons, github_api, allow_local, cache_file=config.cache_path(),
-            use_fresh_cache=not force)
+            use_fresh_cache=not force, show_betas=show_betas)
         q.put(("manifest", m, None, problems))
     except Exception as e:
         log.warning("Addon list failed: %s", e)
         q.put(("manifest", None, errors.manifest_message(e), None))
+
+
+def _resort_worker(q, manifest, allow_local, github_api, show_betas):
+    """Thread: the same addon list again with the beta switch changed, from the release
+    cache (GitHub only if the cache is old). Answers like _load_worker ("manifest", ...)."""
+    try:
+        addons, problems = github.resolve_all(
+            list(manifest.addons), github_api, allow_local, cache_file=config.cache_path(),
+            use_fresh_cache=True, show_betas=show_betas)
+        q.put(("manifest", dataclasses.replace(manifest, addons=addons), None, problems))
+    except Exception as e:   # never leave the window busy
+        log.warning("Re-sorting the list failed: %s", e)
+        q.put(("manifest", manifest, None, None))
 
 
 def _install_worker(q, check_game, rows, addons_dir):

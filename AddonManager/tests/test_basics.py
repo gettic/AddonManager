@@ -16,8 +16,37 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(versions.compare("1.10.0", "1.9.2"), 1)
         self.assertEqual(versions.compare("v1.3", "1.3.0"), 0)
         self.assertEqual(versions.compare("1.2.0", "1.3.0"), -1)
-        self.assertIsNone(versions.compare("1.2-beta", "1.2"))
+        # Pre-releases (semver style): older than their own release, newer than the one before.
+        self.assertEqual(versions.compare("1.2-beta", "1.2"), -1)
         self.assertEqual(versions.compare("1.2-beta", "v1.2-beta"), 0)
+        self.assertEqual(versions.compare("v0.1.0-beta.1", "0.0.1"), 1)
+        self.assertEqual(versions.compare("1.2.0-beta.2", "1.2.0-beta.1"), 1)
+        self.assertEqual(versions.compare("1.2.0-beta.10", "1.2.0-beta.9"), 1)
+        self.assertEqual(versions.compare("1.2.0-rc.1", "1.2.0-beta.3"), 1)
+        self.assertEqual(versions.compare("1.2.0-alpha", "1.2.0-alpha.1"), -1)
+        self.assertEqual(versions.compare("1.2.0-1", "1.2.0-alpha"), -1)
+        self.assertEqual(versions.compare("1.2.0-Beta.1", "1.2-beta.1"), 0)
+        self.assertEqual(versions.compare("1.2.0+build5", "1.2"), 0)
+        # Numbers inside a word count as numbers: beta10 > beta9, RC10 > RC9.
+        self.assertEqual(versions.compare("1.0.0-beta10", "1.0.0-beta9"), 1)
+        self.assertEqual(versions.compare("1.0.0-beta2", "1.0.0-beta10"), -1)
+        self.assertEqual(versions.compare("1.0.0-RC10", "1.0.0-rc9"), 1)
+        self.assertEqual(versions.compare("1.0.0-rc1", "1.0.0-rc.1"), 0)
+        self.assertEqual(versions.compare("1.0.0-beta", "1.0.0-beta1"), -1)
+        self.assertEqual(versions.compare("1.0.0-beta9", "1.0.0-rc1"), -1)
+        self.assertEqual(versions.status(True, "1.0.0-beta9", "1.0.0-beta10"), versions.UPDATE)
+        self.assertIsNone(versions.compare("1.2.0-be ta", "1.2"))
+        self.assertIsNone(versions.compare("1.2.0-", "1.2"))
+        self.assertIsNone(versions.compare("beta", "1.2"))
+        self.assertTrue(versions.is_prerelease("v1.4.0-beta.1"))
+        self.assertFalse(versions.is_prerelease("1.4.0"))
+
+    def test_show_betas_setting(self):
+        config.save_settings({"show_betas": True})
+        self.assertIs(config.load_settings()["show_betas"], True)
+        config.save_settings({"show_betas": "yes"})
+        self.assertNotIn("show_betas", config.load_settings())
+        config.save_settings({})
 
     def test_display(self):
         self.assertEqual(versions.display("1.3.0"), "v1.3.0")
@@ -33,6 +62,9 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(s(True, "2.0", "1.0"), versions.NEWER)
         self.assertEqual(s(True, "x", "y"), versions.UPDATE)
         self.assertEqual(s(True, "1.0", None), versions.NO_LATEST)
+        self.assertEqual(s(True, "1.1.0-beta.1", "1.0"), versions.NEWER)   # never go back
+        self.assertEqual(s(True, "1.1.0-beta.1", "1.1.0"), versions.UPDATE)
+        self.assertEqual(s(True, "1.1.0-beta.1", "1.1.0-beta.2"), versions.UPDATE)
 
 
 class TocTests(unittest.TestCase):
