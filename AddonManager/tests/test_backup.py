@@ -17,6 +17,36 @@ from am.backup import BackupError
 from tests import fixtures
 
 NOW = datetime.datetime(2026, 11, 10, 21, 30)
+SID = "S-1-5-21-1000-2000-3000-1001"
+
+
+class FakeReg:
+    """A fake registry for backup.cloud_folders: {"HKCU\\path": {value name: text}}."""
+
+    def __init__(self, keys):
+        self.keys = keys
+        self.read = []   # (key, value name) of every value read
+
+    def value(self, key, name):
+        self.read.append((key, name))
+        return self.keys.get(key, {}).get(name)
+
+    def subkeys(self, key):
+        start = key.lower() + "\\"
+        out = []
+        for k in self.keys:
+            if k.lower().startswith(start):
+                part = k[len(start):].split("\\")[0]
+                if part not in out:
+                    out.append(part)
+        return out
+
+    def values(self, key):
+        self.read.append((key, "*"))
+        return list(self.keys.get(key, {}).items())
+
+
+NO_CLOUD_PC = {"drives": [], "reg": FakeReg({}), "sid": SID}
 
 
 def write(path, text):
@@ -439,12 +469,145 @@ class BackupCoreTests(unittest.TestCase):
         one = os.path.join(self.base, "OneDrive - Guild")
         os.makedirs(one)
         found = backup.cloud_folders(home=home, env={"OneDrive": one,
-                                                     "OneDriveConsumer": os.path.join(home, "nope")})
+                                                     "OneDriveConsumer": os.path.join(home, "nope")},
+                                     **NO_CLOUD_PC)
         labels = [label for label, _p in found]
         self.assertIn("Dropbox", labels)
         self.assertEqual("OneDrive" in labels, os.name == "nt")
-        self.assertEqual(backup.cloud_folders(home=os.path.join(self.base, "empty"), env={}), [])
+        self.assertEqual(backup.cloud_folders(home=os.path.join(self.base, "empty"), env={},
+                                              **NO_CLOUD_PC), [])
         self.assertTrue(backup.safety_path(self.out, NOW).endswith("Before restore 2026-11-10 2130.zip"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows cloud apps")
+    def test_cloud_folders_windows_apps(self):
+        """Every app found from fake folders, drive labels, registry and config only."""
+        home = os.path.join(self.base, "cloudhome")
+        docs = os.path.join(self.base, "clouddocs")
+        cfg = os.path.join(self.base, "cloudcfg")
+        g_drive = os.path.join(self.base, "gdrive")      # stands in for G:\
+        g_label = os.path.join(self.base, "gdrive2")     # a second, label-only Google mount
+        p_drive = os.path.join(self.base, "pdrive")      # stands in for P:\ (pCloud)
+        other = os.path.join(self.base, "otherdrive")
+        nc = os.path.join(self.base, "Nextcloud sync")
+        box_root = os.path.join(self.base, "BoxRoot")
+        for d in (os.path.join(g_drive, "Meine Ablage"), os.path.join(g_drive, ".shortcut-targets-by-id"),
+                  os.path.join(g_label, "My Drive"), os.path.join(g_label, "Shared drives"),
+                  p_drive, other, nc, box_root, os.path.join(docs, "MEGA"),
+                  os.path.join(home, "Box"), os.path.join(home, "Proton Drive", "acct", "My files"),
+                  os.path.join(home, "Sync"), os.path.join(home, "iCloudDrive")):
+            os.makedirs(d, exist_ok=True)
+        write(os.path.join(cfg, "Nextcloud", "nextcloud.cfg"),
+              "[Accounts]\n0\\dav_user=someone@example.com\n"
+              f"0\\Folders\\1\\localPath={nc.replace(os.sep, '/')}/\n")
+        prefs = {"per_account_preferences": [
+            {"key": "123456789", "value": {"mount_point_path": g_drive}}]}
+        roots = backup.SYNC_ROOTS_KEY
+        reg = FakeReg({
+            backup.DRIVEFS_KEY: {"PerAccountPreferences": json.dumps(prefs)},
+            backup.UNINSTALL_KEYS[1] + "\\SyncApp": {"Publisher": "Sync.com Inc."},
+            roots + f"\\Box!{SID}!acct\\UserSyncRoots": {SID: box_root},
+            roots + f"\\Unknown!{SID}!x\\UserSyncRoots": {SID: other},
+            roots + "\\Dropbox!S-1-5-21-9!other\\UserSyncRoots": {"S-1-5-21-9": other},
+        })
+        found = backup.cloud_folders(
+            home=home, env={}, drives=[(g_label, "Google Drive"), (p_drive, "pCloud Drive"),
+                                       (other, "Data")],
+            reg=reg, cfg=cfg, docs=docs, sid=SID)
+        got = {(label, os.path.normcase(os.path.normpath(p))) for label, p in found}
+        want = {("Google Drive", os.path.join(g_drive, "Meine Ablage")),
+                ("Google Drive", os.path.join(g_label, "My Drive")),
+                ("iCloud Drive", os.path.join(home, "iCloudDrive")),
+                ("MEGA", os.path.join(docs, "MEGA")),
+                ("pCloud", p_drive),
+                ("Box", os.path.join(home, "Box")),
+                ("Proton Drive", os.path.join(home, "Proton Drive", "acct", "My files")),
+                ("Nextcloud", nc),
+                ("Sync.com", os.path.join(home, "Sync")),
+                ("Box", box_root)}
+        self.assertEqual(got, {(label, os.path.normcase(os.path.normpath(p))) for label, p in want})
+        # Only mount points / paths are read: never an account value.
+        self.assertNotIn("dav_user", repr(found))
+        self.assertFalse([r for r in reg.read if "account" in r[1].lower() and r[1] != "PerAccountPreferences"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows cloud apps")
+    def test_cloud_folders_need_proof(self):
+        """A plain Sync folder without Sync.com installed, a Google mount with two unknown
+        folders, another user's sync root: no buttons."""
+        home = os.path.join(self.base, "proofhome")
+        g = os.path.join(self.base, "proofg")
+        for d in (os.path.join(home, "Sync"), os.path.join(g, "Geteilte Ablagen"),
+                  os.path.join(g, "Xyz Drive")):
+            os.makedirs(d, exist_ok=True)
+        reg = FakeReg({backup.SYNC_ROOTS_KEY + "\\OneDrive!S-1-5-21-9!x\\UserSyncRoots":
+                       {"S-1-5-21-9": home}})
+        self.assertEqual(backup.cloud_folders(home=home, env={}, drives=[(g, "Google Drive")],
+                                              reg=reg, sid=SID), [])
+        self.assertEqual(backup._drive_root("g"), "G:\\")
+        self.assertEqual(backup._drive_root("G:"), "G:\\")
+        self.assertIsNone(backup._drive_root("nope"))
+
+    def test_cloud_folders_survive_bad_data(self):
+        home = os.path.join(self.base, "badhome")
+        cfg = os.path.join(self.base, "badcfg")
+        write(os.path.join(cfg, "Nextcloud", "nextcloud.cfg"), "\x00garbage=\n=\n")
+        reg = FakeReg({backup.DRIVEFS_KEY: {"PerAccountPreferences": "{not json"}})
+        self.assertEqual(backup.cloud_folders(home=home, env={}, drives=[], reg=reg, cfg=cfg,
+                                              sid=SID), [])
+
+    def test_find_backups(self):
+        docs = os.path.join(self.base, "finddocs", backup.FOLDER_NAME)
+        cloud = os.path.join(self.base, "findcloud")
+        cloud_backups = os.path.join(cloud, backup.FOLDER_NAME)
+        files = {
+            os.path.join(docs, "AddonManager backup 2026-11-10.zip"): 300,
+            os.path.join(docs, "Before restore 2026-11-10 2142.zip"): 400,
+            os.path.join(docs, "AddonManager backup 2026-11-11.zip.part"): 500,   # unfinished
+            os.path.join(docs, "holiday photos.zip"): 600,                        # not ours
+            os.path.join(cloud_backups, "addonmanager BACKUP 2026-11-03.zip"): 200,
+        }
+        for path, mtime in files.items():
+            write(path, "x" * 10)
+            os.utime(path, (mtime, mtime))
+        os.makedirs(os.path.join(docs, "AddonManager backup folder.zip"))       # a folder
+        found = backup.find_backups([("Documents", docs), ("Again", docs + os.sep),
+                                     ("OneDrive", cloud_backups),
+                                     ("Gone", os.path.join(self.base, "nothere")), ("x", None)])
+        self.assertEqual([(os.path.basename(f.path), f.place, f.safety, f.size) for f in found],
+                         [("Before restore 2026-11-10 2142.zip", "Documents", True, 10),
+                          ("AddonManager backup 2026-11-10.zip", "Documents", False, 10),
+                          ("addonmanager BACKUP 2026-11-03.zip", "OneDrive", False, 10)])
+        self.assertFalse(any(f.online for f in found))
+
+    def test_find_backups_never_opens_files(self):
+        """Online-only files: only the listing is used; no file is opened or read."""
+        folder = os.path.join(self.base, "findonline")
+        write(os.path.join(folder, "AddonManager backup 2026-11-10.zip"), "x")
+        with mock.patch("builtins.open", side_effect=AssertionError("opened")), \
+                mock.patch.object(backup, "read", side_effect=AssertionError("read")), \
+                mock.patch.object(zipfile, "ZipFile", side_effect=AssertionError("zip")):
+            found = backup.find_backups([("OneDrive", folder)])
+        self.assertEqual(len(found), 1)
+        for attrs, online in ((0, False), (0x20, False), (0x400000, True), (0x40000, True),
+                              (0x1000, True), (0x400020, True)):
+            st = mock.Mock(st_file_attributes=attrs)
+            self.assertIs(backup.online_only(st), online, hex(attrs))
+        self.assertFalse(backup.online_only(object()))   # Linux: no attributes
+
+    def test_place_labels(self):
+        docs = os.path.join(self.base, "labeldocs")
+        one = os.path.join(self.base, "labelone")
+        clouds = [("OneDrive", one)]
+        places = backup_ui.backup_places(os.path.join(self.base, "My Backups", backup.FOLDER_NAME),
+                                         clouds, docs)
+        self.assertEqual([p for p, _f in places], ["Documents", "My Backups", "OneDrive"])
+        # Documents synced by OneDrive: shown as OneDrive.
+        self.assertEqual(backup_ui.place_label(os.path.join(one, "Documents", backup.FOLDER_NAME),
+                                               clouds, os.path.join(one, "Documents")), "OneDrive")
+        long_name = os.path.join(self.base, "x" * 40)
+        self.assertEqual(len(backup_ui.place_label(long_name, [], docs)), backup_ui.PLACE_MAX)
+        self.assertEqual(errors.found_row("2026-11-10 21:30", 12 * 1024 * 1024, "Google Drive",
+                                          online=True),
+                         "2026-11-10 21:30 · 12 MB · Google Drive (online)")
 
     def test_linux_documents_from_user_dirs(self):
         home = os.path.join(self.base, "home")
@@ -473,6 +636,10 @@ class WindowBackupTests(unittest.TestCase):
         self.asked, self.answer, self.game = [], True, False
         self.opened = []
         config.save_settings({})
+        self.clouds = []   # the real PC's cloud folders are never looked at here
+        patcher = mock.patch.object(backup, "cloud_folders", lambda: list(self.clouds))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.root = tk.Tk()
         self.root.withdraw()
 
@@ -548,6 +715,153 @@ class WindowBackupTests(unittest.TestCase):
         dlg.close()
         self.assertIsNone(app.backup_dialog)
 
+    def test_cloud_buttons_grid(self):
+        names_ = ["OneDrive", "Google Drive", "iCloud Drive", "Dropbox", "MEGA", "pCloud",
+                  "Box", "Proton Drive", "Nextcloud", "Sync.com"]
+        self.clouds = [(n, os.path.join(self.work, "cloud", n)) for n in names_]
+        app = self.make_app()
+        app.open_settings(show=False)
+        dlg = app.open_backup(show=False)
+        self.assertEqual(dlg.cloud_buttons, [])   # filled from the thread, not at once
+        self.pump(app)
+        self.assertEqual([b.cget("text") for b in dlg.cloud_buttons], names_[:9])
+        cells = [(int(b.grid_info()["row"]), int(b.grid_info()["column"]))
+                 for b in dlg.cloud_buttons]
+        self.assertEqual(cells, [(r, c) for r in range(3) for c in range(3)])
+        dlg.win.update_idletasks()
+        self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
+        dlg.cloud_buttons[7].invoke()
+        self.assertEqual(dlg.folder, os.path.join(self.work, "cloud", "Proton Drive",
+                                                  backup.FOLDER_NAME))
+        self.assertEqual(dlg.folder_var.get(), errors.saved_to(dlg.folder))
+        dlg.handle(("backup_clouds", self.clouds[:1]))   # a late second message: no change
+        self.assertEqual(len(dlg.cloud_buttons), 9)
+        dlg.close()
+        path = backup.make(self.addons, os.path.join(self.work, "b"), now=NOW)[0]
+        rest = app.open_restore(show=False, path=path)
+        before = rest.status_var.get()
+        rest.handle(("backup_clouds", []))   # a late message: ignored by the Restore window
+        self.assertEqual(rest.status_var.get(), before)
+        self.assertFalse(rest.running)
+
+    def found_window(self, docs):
+        """A Backups found window over a per-test Documents (built hidden, never shown)."""
+        patcher = mock.patch.object(backup, "documents_dir", lambda: docs)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        app = self.make_app()
+        app.open_settings(show=False)
+        dlg = app.open_restore(show=False)   # the Settings button's call
+        self.assertIsInstance(dlg, backup_ui.BackupListDialog)
+        self.assertEqual(dlg.status_var.get(), errors.FOUND_LOOKING)
+        for _ in range(100):
+            if dlg.found is not None:
+                break
+            self.pump(app, timeout=0.1)
+        self.assertIsNotNone(dlg.found)
+        return app, dlg
+
+    def test_backups_found_list(self):
+        docs = os.path.join(self.work, "docs")
+        cloud = os.path.join(self.work, "Drive")
+        self.clouds = [("Google Drive", cloud)]
+        made = backup.make(self.addons, os.path.join(docs, backup.FOLDER_NAME), now=NOW)[0]
+        os.utime(made, (2000, 2000))
+        in_cloud = backup.make(self.addons, os.path.join(cloud, backup.FOLDER_NAME),
+                               now=NOW - datetime.timedelta(days=7))[0]
+        os.utime(in_cloud, (1000, 1000))
+        safety = os.path.join(docs, backup.FOLDER_NAME, "Before restore 2026-11-10 2142.zip")
+        write(safety, "x")
+        os.utime(safety, (3000, 3000))
+        app, dlg = self.found_window(docs)
+        texts = [b.cget("text") for b in dlg.row_buttons]
+        self.assertEqual(len(texts), 2)   # safety copies hidden by default
+        self.assertTrue(texts[0].endswith(" · Documents") and texts[1].endswith(" · Google Drive"))
+        self.assertNotIn(errors.FOUND_SAFETY_HEADING, self.texts(dlg.win))
+        dlg.safety_check.invoke()   # safety copies: their own list under the backups
+        self.assertIn(errors.FOUND_SAFETY_HEADING, self.texts(dlg.win))
+        self.assertEqual(len(dlg.row_buttons), 3)
+        self.assertEqual(dlg.shown_backups()[1][0].path, safety)
+        dlg.win.update_idletasks()
+        self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
+        # A late message for another window changes nothing here.
+        dlg.handle(("restore_opened", "other.zip", None))
+        dlg.handle(("restore_found", []))
+        self.assertEqual(len(dlg.row_buttons), 3)
+        dlg.row_buttons[1].invoke()   # the cloud one: one click -> Restore window
+        self.assertEqual(dlg.status_var.get(), errors.FOUND_OPENING)
+        self.assertTrue(dlg.browse_button.instate(["disabled"]))
+        self.pump(app)
+        for _ in range(50):
+            if isinstance(app.backup_dialog, backup_ui.RestoreDialog):
+                break
+            self.pump(app, timeout=0.1)
+        rest = app.backup_dialog
+        self.assertIsInstance(rest, backup_ui.RestoreDialog)
+        self.assertTrue(dlg.closed)
+        self.assertEqual(os.path.normcase(rest.info.path), os.path.normcase(in_cloud))
+        self.assertIn("From: ", " ".join(self.texts(rest.win)))
+
+    def test_backups_found_none_and_browse(self):
+        docs = os.path.join(self.work, "emptydocs")
+        app, dlg = self.found_window(docs)
+        self.assertEqual(dlg.row_buttons, [])
+        self.assertEqual(dlg.status_var.get(), errors.FOUND_NONE)
+        bad = os.path.join(self.work, "bad.zip")
+        write(bad, "no zip")
+        app.ask_backup_file = lambda: bad
+        dlg.browse()
+        for _ in range(50):
+            if not dlg.opening:
+                break
+            self.pump(app, timeout=0.1)
+        self.assertIn("isn't an Addon Manager backup", dlg.status_var.get())
+        self.assertFalse(dlg.browse_button.instate(["disabled"]))
+        self.assertIs(app.backup_dialog, dlg)
+        app.ask_backup_file = lambda: ""   # cancelled: nothing happens
+        dlg.browse()
+        self.assertIsNone(dlg.opening)
+        dlg.close()
+        self.assertIsNone(app.backup_dialog)
+
+    def test_backups_found_max_rows(self):
+        docs = os.path.join(self.work, "manydocs")
+        for i in range(10):
+            p = os.path.join(docs, backup.FOLDER_NAME, f"AddonManager backup 2026-10-{i + 1:02d}.zip")
+            write(p, "x")
+            os.utime(p, (1000 + i, 1000 + i))
+        app, dlg = self.found_window(docs)
+        self.assertEqual(len(dlg.row_buttons), backup_ui.MAX_FOUND_ROWS)
+        dlg.win.update_idletasks()
+        self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
+        self.assertIn("2026-10-10", os.path.basename(dlg.shown_backups()[0][0].path))
+        self.assertIn(errors.FOUND_MORE, self.texts(dlg.win))
+
+    def test_backups_found_odd_dates(self):
+        """A file dated before 1970: '?' as its date, listed last, every row drawn."""
+        docs = os.path.join(self.work, "olddocs")
+        old = os.path.join(docs, backup.FOLDER_NAME, "AddonManager backup 1968-12-01.zip")
+        new = os.path.join(docs, backup.FOLDER_NAME, "AddonManager backup 2026-11-10.zip")
+        write(old, "x")
+        write(new, "x")
+        os.utime(old, (-34560000, -34560000))
+        os.utime(new, (2000, 2000))
+        app, dlg = self.found_window(docs)
+        texts = [b.cget("text") for b in dlg.row_buttons]
+        self.assertEqual(len(texts), 2)
+        self.assertTrue(texts[1].startswith("? · "), texts)
+        self.assertNotEqual(dlg.status_var.get(), errors.FOUND_LOOKING)
+        for bad in (-34560000, 1e20, float("nan")):
+            self.assertEqual(backup_ui.found_date(bad), "?")
+
+    def test_no_cloud_buttons(self):
+        app = self.make_app()
+        dlg = app.open_backup(show=False)
+        self.pump(app)
+        self.assertEqual(dlg.cloud_buttons, [])
+        self.assertNotIn(errors.BACKUP_CLOUD, self.texts(dlg.win))
+        self.assertEqual(dlg.folder, backup.default_folder())   # Documents stays the default
+
     def test_make_backup_options_and_folder(self):
         app = self.make_app()
         dlg = app.open_backup(show=False)
@@ -616,8 +930,10 @@ class WindowBackupTests(unittest.TestCase):
         write(bad, "no zip")
         self.assertIsNone(app.open_restore(show=False, path=bad))
         self.assertIn("isn't an Addon Manager backup", app.backup_status.get())
-        app.ask_backup_file = lambda: ""
-        self.assertIsNone(app.open_restore(show=False))   # picker cancelled
+        listed = app.open_restore(show=False)   # no path: the Backups found window
+        self.assertIsInstance(listed, backup_ui.BackupListDialog)
+        self.assertIsNone(app.open_restore(show=False))   # one window at a time
+        listed.close()
         path = backup.make(self.addons, os.path.join(self.work, "b"), now=NOW)[0]
         before = fixtures.tree_snapshot(self.client)
         dlg = app.open_restore(show=False, path=path)

@@ -34,17 +34,16 @@ BUTTON_TEXT = {
 ALL_STATUSES = (versions.UPDATE, versions.NOT_INSTALLED)
 NOT_CHOSEN = "(not chosen)"
 VERSION_SAMPLE = "v10.10.10-beta.10"   # sets the Installed/Latest column widths
-# Linux fonts (Noto Sans / DejaVu 10) are wider: a slightly shorter sample, less space
-# between columns and next to the X keep every row inside the 680 px window there.
+# Linux fonts (Noto Sans / DejaVu 10) are wider: a slightly shorter sample and less space
+# between columns keep every row inside the 680 px window there.
 # Windows (Segoe UI 9) looks exactly as before.
 LINUX_VERSION_SAMPLE = "v1.10.0-beta.10"
 LINUX_COL_GAP = 6
-REMOVE_PAD = 4 if os.name == "nt" else 2   # space left of the X button
 if os.name != "nt":
     VERSION_SAMPLE = LINUX_VERSION_SAMPLE
 SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
 REMOVED_SETTING = "removed_addons"   # settings.json: guild addons the player removed
-REMOVE_BUTTON = "X"   # plain text: Linux fonts may have no symbol for it
+UNINSTALL_BUTTON = "Uninstall"   # the row's button when the addon is installed and current
 MIN_WIDTH = 560   # the window's smallest width (more if the rows need it)
 COL_GAP = 10 if os.name == "nt" else LINUX_COL_GAP   # space after the list's text columns
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
@@ -215,8 +214,6 @@ class App:
                                 foreground=theme.TEXT, activebackground=theme.ACCENT,
                                 activeforeground=theme.ACCENT_TEXT, borderwidth=1)
         self.row_menu.add_command(label="Remove...")
-        # The X button: same height as the other buttons, less space at the sides.
-        ttk.Style(self.root).configure("Remove.TButton", padding=(3, 4))
         self.folder_entry.bind("<Control-c>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_entry.bind("<Control-C>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder)
@@ -304,7 +301,7 @@ class App:
         f = self.list_frame
         for i in range(1, len(self._cells) + 1):   # the old rows' fixed heights
             f.rowconfigure(i, minsize=0)
-        headers = ("Addon", "Installed", "Latest", "Status", "", "")
+        headers = ("Addon", "Installed", "Latest", "Status", "")
         for col, text in enumerate(headers):
             ttk.Label(f, text=text, font=theme.font("bold"), style="Muted.TLabel").grid(
                 row=0, column=col, sticky="w", padx=(0, COL_GAP if col < 4 else 0), pady=(0, 4))
@@ -323,26 +320,22 @@ class App:
             latest.grid(row=i, column=2, sticky="w", padx=(0, COL_GAP))
             status = ttk.Label(f)
             status.grid(row=i, column=3, sticky="w", padx=(0, COL_GAP))
+            # One button per row: Install / Update / Reinstall / Use vX / Uninstall (render).
             button = ttk.Button(f, width=10)
             button.grid(row=i, column=4, sticky="e")
             button.grid_remove()
-            # Remove (X): only for installed guild addons; right-click on the row does the same.
-            remove = ttk.Button(f, text=REMOVE_BUTTON, width=2, style="Remove.TButton",
-                                command=lambda n=i - 1: self._remove_index(n))
-            remove.grid(row=i, column=5, sticky="e", padx=(REMOVE_PAD, 0))
-            remove.grid_remove()
-            Tooltip(remove, errors.REMOVE_TIP)
-            for widget in (name, installed, latest, status):
+            # Right-click on the row (or its button): Remove <name>...
+            for widget in (name, installed, latest, status, button):
                 widget.bind("<Button-3>", lambda e, n=i - 1: self._row_menu_popup(e, n))
             # Every row as tall as a button, so texts don't jump when a button shows or hides.
             f.rowconfigure(i, minsize=button.winfo_reqheight())
             self._cells.append({"name": name, "name_tip": Tooltip(name, ""),
                                 "installed": installed, "latest": latest, "status": status,
                                 "status_tip": Tooltip(status, ""), "button": button,
-                                "remove": remove})
+                                "button_tip": Tooltip(button, "")})
         if not self.rows:
             ttk.Label(f, text=self.manifest_note or "No addons to show.").grid(
-                row=1, column=0, columnspan=6, sticky="w")
+                row=1, column=0, columnspan=5, sticky="w")
         self._rows_key = key
 
     def render(self):
@@ -401,32 +394,35 @@ class App:
                 status_label.configure(text=status_text, style="TLabel", foreground=(
                     "" if row.state else theme.STATUS.get(status, "")))
             cells["status_tip"].text = errors.NO_NORMAL_YET if no_normal and not row.state else ""
+            # One button: the action the row needs; Uninstall when installed and nothing
+            # else is needed. Right-click Remove works on every installed row.
             button = cells["button"]
+            uninstall = None
             if go_back and self.addons_dir:
                 text = errors.go_back_button(versions.display(row.latest))
-                button.configure(text=text, width=max(10, len(text)),
+                button.configure(text=text, width=max(10, len(text)), style="TButton",
                                  command=lambda r=row: self.go_back(r))
             elif row.addon and status in BUTTON_TEXT and self.addons_dir:
-                button.configure(text=BUTTON_TEXT[status], width=10,
+                button.configure(text=BUTTON_TEXT[status], width=10, style="TButton",
                                  command=lambda r=row: self.install_rows([r]))
                 if status in ALL_STATUSES and not was_removed:
                     any_action = True
+            elif exists and self.addons_dir:
+                button.configure(text=UNINSTALL_BUTTON, width=10, style="Uninstall.TButton",
+                                 command=lambda r=row: self.remove_row(r))
+                uninstall = button
             else:
                 button = None
             if button is None:
                 cells["button"].grid_remove()
+                cells["button_tip"].text = ""
             else:
                 self._set_enabled(button, not self.busy)
                 button.grid()
+                cells["button_tip"].text = (errors.REMOVE_TIP if uninstall else
+                                            errors.REMOVE_RIGHT_CLICK if exists else "")
             self.row_widgets[row.folder] = (status_label, button, status)
-            remove = cells["remove"]
-            if exists and self.addons_dir:
-                self._set_enabled(remove, not self.busy)
-                remove.grid()
-                self.remove_widgets[row.folder] = remove
-            else:
-                remove.grid_remove()
-                self.remove_widgets[row.folder] = None
+            self.remove_widgets[row.folder] = uninstall
         self._set_enabled(self.all_button, any_action and not self.busy)
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
@@ -440,7 +436,7 @@ class App:
 
     def _fit_min_width(self):
         """Never let the window get narrower than the list's rows (wider Linux fonts), so
-        the Install and X buttons can't be cut off. At least MIN_WIDTH."""
+        the row buttons can't be cut off. At least MIN_WIDTH."""
         self.list_frame.update_idletasks()
         need = max(MIN_WIDTH, self.list_frame.winfo_reqwidth() + 20)   # + outer padding
         if need != self._min_width:
@@ -743,10 +739,6 @@ class App:
             return {a.folder for a in self.manifest.addons}
         return {r.folder for r in self.rows}
 
-    def _remove_index(self, index):
-        if 0 <= index < len(self.rows):
-            self.remove_row(self.rows[index])
-
     def _row_menu_popup(self, event, index):
         if not 0 <= index < len(self.rows):
             return
@@ -1000,12 +992,15 @@ class App:
         return self.backup_dialog
 
     def open_restore(self, show=True, path=None):
-        """Pick a backup .zip, check it, then the Restore window (nothing changes until
-        the player says yes there). Returns the window, or None."""
+        """No path: the Backups found window (backup_ui.BackupListDialog). With a path:
+        check it, then the Restore window (nothing changes until the player says yes
+        there). Returns the window, or None."""
         if self.busy or not self.addons_dir or self.backup_dialog is not None:
             return None
         self._backup_note("")
-        path = path or self.ask_backup_file()
+        if not path:
+            self.backup_dialog = backup_ui.BackupListDialog(self, show=show)
+            return self.backup_dialog
         if self.settings_win is not None and show:
             try:
                 self.settings_win.grab_set()

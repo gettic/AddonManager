@@ -16,6 +16,7 @@ BUTTON = "#2b2b2b"
 BUTTON_HOVER = "#383838"
 BUTTON_PRESSED = "#1a1a1a"
 DISABLED = "#5e5e5e"
+UNINSTALL_TEXT = "#bdbdbd"   # Uninstall button: a bit dimmer than TEXT (still 9:1 on BUTTON)
 ACCENT = "#c62828"      # red: main button + progress bar (white text 5.6:1)
 ACCENT_HOVER = "#d32f2f"
 ACCENT_TEXT = "#ffffff"
@@ -62,6 +63,10 @@ def apply(root):
           foreground=[("disabled", DISABLED)],
           lightcolor=[("pressed", BUTTON_PRESSED), ("active", BUTTON_HOVER)],
           darkcolor=[("pressed", BUTTON_PRESSED), ("active", BUTTON_HOVER)])
+    # Uninstall: the normal button with slightly dimmer text (its own disabled colour,
+    # since a style's own foreground wins over the parent's state map).
+    s.configure("Uninstall.TButton", foreground=UNINSTALL_TEXT)
+    s.map("Uninstall.TButton", foreground=[("disabled", DISABLED)])
     s.configure("Accent.TButton", background=ACCENT, foreground=ACCENT_TEXT,
                 lightcolor=ACCENT, darkcolor=ACCENT, bordercolor=ACCENT)
     s.map("Accent.TButton",

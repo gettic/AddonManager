@@ -4,7 +4,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.6.1
+Current version: v0.7.0
 
 ## Get it
 
@@ -84,7 +84,7 @@ A beta is a test version of an addon. It may have bugs. The checkbox **Show beta
 
 ## Removing an addon
 
-To remove a guild addon, click the **X** at the end of its row (or right-click the row and choose **Remove...**). After you say yes:
+Each row has one button. When the addon is installed and up to date, it says **Uninstall**. Click it. If the row shows **Update** (or another button), right-click the row and choose **Remove <name>...**. After you say yes:
 
 - The addon's folder goes to the Recycle Bin (on Linux: the Trash). You can put it back from there.
 - If the drive has no Recycle Bin or Trash, the question says the folder will be deleted for good.
@@ -103,13 +103,18 @@ Click **Settings**, then look under **Backup**. Close WoW first.
 **Make a backup...** saves your addons and their settings (saved variables, key bindings and macros) in one file called `AddonManager backup <date>.zip`.
 
 - It goes to `Documents\AddonManager backups` unless you click **Change...** and pick another folder.
-- If OneDrive, Dropbox or Google Drive is on the PC, a button saves it into that synced folder. The app never logs in to a cloud itself.
+- If a cloud folder is on the PC, a button saves it there. Documents stays the default. The app only looks for the synced folder, it never logs in to a cloud.
+
+  | System | Cloud places it looks for |
+  | --- | --- |
+  | Windows | OneDrive, Google Drive (also on its own drive letter), iCloud Drive, Dropbox, MEGA, pCloud, Box, Proton Drive, Nextcloud, Sync.com |
+  | Linux | Dropbox, MEGA, pCloud (while it is running), Nextcloud |
 - You can untick the addons or the settings.
 - The file holds your account and character names. Don't share it.
 - `Config.wtf` and the chat history are never included.
 - A backup folder can't be inside the WoW folder. The app asks for another one.
 
-**Restore a backup...** (for example on a new PC): pick the file and choose what to restore (addons, addon settings, key bindings and macros).
+**Restore a backup...** (for example on a new PC): a list of **Backups found** opens (Documents, your backup folder and the cloud folders), newest first with date, size and place. Click one. Safety copies show under their own heading when ticked. A cloud file marked (online) is only downloaded when you click it. **Browse...** picks any other file. Then choose what to restore (addons, addon settings, key bindings and macros).
 
 - If the account name here is different, you pick which account gets the settings. With two accounts in the backup and one here, you choose which one goes there.
 - It merges: addons and settings that aren't in the backup stay.

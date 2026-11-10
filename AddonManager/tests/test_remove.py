@@ -1,4 +1,4 @@
-"""Removing a guild addon (X button / right-click Remove): installer.remove, the trash
+"""Removing a guild addon (the row's Uninstall button / right-click Remove): installer.remove, the trash
 helpers and the window. Fake WoW folder and a fake trash only: the real Recycle Bin,
 Trash and WoW folder are never used."""
 
@@ -303,7 +303,8 @@ class LinuxTrashTests(unittest.TestCase):
 
 
 class WindowRemoveTests(unittest.TestCase):
-    """The hidden window: X button, right-click, confirm, Removed rows, Update all."""
+    """The hidden window: Uninstall button, right-click, confirm, Removed rows, Update all.
+    Taxi Time is installed and up to date (its button says Uninstall); Guild Hub isn't."""
 
     @classmethod
     def setUpClass(cls):
@@ -317,6 +318,7 @@ class WindowRemoveTests(unittest.TestCase):
     def setUp(self):
         self.work = fixtures.temp_dir("remove_ui_")
         self.root_dir, self.addons = fixtures.make_fake_wow(self.work)
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.3.0")   # up to date
         self.client = os.path.dirname(os.path.dirname(self.addons))
         self.wtf = fixtures.tree_snapshot(os.path.join(self.client, "WTF"))
         self.trash = FakeTrash(os.path.join(self.work, "bin"))
@@ -361,11 +363,48 @@ class WindowRemoveTests(unittest.TestCase):
         label, button, _ = app.row_widgets[folder]
         return label.cget("text"), button.cget("text") if button else None
 
-    def test_x_only_for_installed(self):
+    def test_one_button_per_row(self):
+        """Installed and current: Uninstall (dimmer style) in the row's only button.
+        Not installed: Install. An update: Update, with the right-click hint."""
         app = self.make_app()
-        self.assertIsNotNone(app.remove_widgets["TaxiTime"])
+        self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
+        self.assertIs(app.remove_widgets["TaxiTime"], app.row_widgets["TaxiTime"][1])
+        self.assertEqual(app.remove_widgets["TaxiTime"].cget("style"), "Uninstall.TButton")
+        self.assertEqual(self.status(app, "GuildHub"), ("Not installed", "Install"))
         self.assertIsNone(app.remove_widgets["GuildHub"])
-        self.assertEqual(app.remove_widgets["TaxiTime"].cget("text"), "X")
+        self.assertEqual(app.row_widgets["GuildHub"][1].cget("style"), "TButton")
+        cells = app._cells[[r.folder for r in app.rows].index("GuildHub")]
+        self.assertEqual(cells["button_tip"].text, "")
+        # No X column any more: nothing in grid column 5.
+        self.assertEqual(app.list_frame.grid_slaves(column=5), [])
+        # An update available: Update, no Uninstall, a tip pointing to right-click.
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.2.0")
+        app.render()
+        self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
+        self.assertIsNone(app.remove_widgets["TaxiTime"])
+        cells = app._cells[[r.folder for r in app.rows].index("TaxiTime")]
+        self.assertEqual(cells["button_tip"].text, errors.REMOVE_RIGHT_CLICK)
+        self.assertEqual(app.row_widgets["TaxiTime"][1].cget("style"), "TButton")
+        # Busy: the Uninstall button is greyed out like the others.
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.3.0")
+        app.busy = True
+        app.render()
+        self.assertIn("disabled", app.remove_widgets["TaxiTime"].state())
+        app.busy = False
+        app.render()
+
+    def test_update_finished_then_uninstall_asks(self):
+        """After Update the same button says Uninstall; a click still asks first."""
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.2.0")
+        app = self.make_app()
+        app.row_widgets["TaxiTime"][1].invoke()   # Update
+        self.pump(app)
+        self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
+        self.answer = False
+        app.row_widgets["TaxiTime"][1].invoke()
+        self.pump(app)
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
 
     def test_x_when_folder_already_gone(self):
         """L3: the folder was deleted by hand after the list was drawn: say so, show Removed."""
@@ -452,7 +491,7 @@ class WindowRemoveTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.addons, "TaxiTime")))
         self.assertIn("nothing was removed", app.message_var.get())
         self.assertNotIn("removed_addons", config.load_settings())
-        self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
+        self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
 
     def test_needed_by_warning(self):
         fixtures.make_addon_folder(self.addons, "GuildHub", "0.4.1")
@@ -464,7 +503,11 @@ class WindowRemoveTests(unittest.TestCase):
         self.assertIn("Guild Hub needs Taxi Time", self.asked[0][1])
 
     def test_right_click_menu(self):
+        """Right-click Remove... also on a row whose button says Update (and on the button)."""
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.2.0")
         app = self.make_app()
+        self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
+        self.assertTrue(app.row_widgets["TaxiTime"][1].bind("<Button-3>"))
         with mock.patch.object(app.row_menu, "tk_popup"):
             app._row_menu_popup(mock.Mock(x_root=0, y_root=0), 0)
             idx = [r.folder for r in app.rows].index("TaxiTime")
@@ -481,18 +524,19 @@ class WindowRemoveTests(unittest.TestCase):
     def test_back_by_hand_clears_mark(self):
         config.save_settings({"removed_addons": ["TaxiTime"]})
         app = self.make_app()   # TaxiTime is installed: the mark is dropped
-        self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
+        self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
         self.assertNotIn("removed_addons", config.load_settings())
 
     def test_rows_fit_smallest_window(self):
-        """Linux fonts are wider: every row (version texts, status, button and X) must fit
-        the 560 px window (an earlier Linux build failed at 570 > 540)."""
-        fixtures.make_addon_folder(self.addons, "GuildHub", "0.4.1")
+        """Linux fonts are wider: every row (version texts, status and its button) must fit
+        the 680 px window (v0.6.0's Linux build failed at 711 > 680)."""
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.2.0")   # Update available
+        fixtures.make_addon_folder(self.addons, "GuildHub", "0.4.1")   # Uninstall
         app = self.make_app()
         self.root.update_idletasks()
-        self.assertIsNotNone(app.remove_widgets["TaxiTime"])
+        self.assertIsNotNone(app.remove_widgets["GuildHub"])
         width = app.list_frame.winfo_reqwidth()
-        # The window can never get narrower than the rows (so the X is never cut off)...
+        # The window can never get narrower than the rows (so no button is ever cut off)...
         self.assertLessEqual(width, self.root.minsize()[0] - 20)
         # ...and the default 680 px window still shows them all.
         self.assertLessEqual(self.root.minsize()[0], 680)

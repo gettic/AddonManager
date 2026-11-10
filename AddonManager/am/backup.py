@@ -128,12 +128,270 @@ def default_folder():
     return os.path.join(documents_dir(), FOLDER_NAME)
 
 
-def cloud_folders(home=None, env=None):
+# ---------- cloud folders (Backup window buttons) ----------
+# Only local folders, drive labels, registry values and config lines are looked at: never
+# a cloud service, a login or an account. From the Google and Nextcloud settings only the
+# mount point / folder path is taken; account IDs and e-mails are skipped, never kept,
+# logged or sent. Nothing found here is logged (paths can hold a user name).
+DRIVEFS_KEY = "HKCU\\Software\\Google\\DriveFS"
+DRIVEFS_POLICY_KEY = "HKLM\\Software\\Google\\DriveFS"
+SYNC_ROOTS_KEY = "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SyncRootManager"
+UNINSTALL_KEYS = ("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                  "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                  "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall")
+# Google Drive's "My Drive" folder in the languages its app uses most.
+MY_DRIVE_NAMES = ("My Drive", "Meine Ablage", "Mon Drive", "Mi unidad", "Il mio Drive",
+                  "Meu Drive", "O meu disco", "Mijn Drive", "Mój dysk", "Мой диск", "Min enhet",
+                  "Mit drev", "Oma Drive", "Můj disk", "Saját meghajtó", "Drive'ım",
+                  "Ο Δίσκος μου", "Мій диск", "Contul meu Drive")
+GOOGLE_SKIP = {"shared drives", "other computers", "computers", "system volume information"}
+# Windows sync-root provider name (lower case, letters/digits only) -> button label.
+SYNC_ROOT_LABELS = (("onedrive", "OneDrive"), ("googledrive", "Google Drive"),
+                    ("drivefs", "Google Drive"), ("icloud", "iCloud Drive"),
+                    ("dropbox", "Dropbox"), ("boxdrive", "Box"), ("protondrive", "Proton Drive"),
+                    ("nextcloud", "Nextcloud"), ("megasync", "MEGA"), ("mega", "MEGA"),
+                    ("pcloud", "pCloud"), ("synccom", "Sync.com"))
+DRIVE_FIXED, DRIVE_RAMDISK = 3, 6
+
+
+class _Registry:
+    """Read-only registry access by "HKCU\\path" / "HKLM\\path" (tests pass a fake with
+    the same three methods). Every miss returns None / []."""
+
+    def _open(self, key):
+        import winreg
+        root, _, sub = key.partition("\\")
+        hive = {"HKCU": winreg.HKEY_CURRENT_USER, "HKLM": winreg.HKEY_LOCAL_MACHINE}[root]
+        return winreg.OpenKey(hive, sub)
+
+    def value(self, key, name):
+        import winreg
+        try:
+            with self._open(key) as k:
+                data, _kind = winreg.QueryValueEx(k, name)
+        except (OSError, KeyError):
+            return None
+        return data if isinstance(data, str) else None
+
+    def subkeys(self, key):
+        import winreg
+        out = []
+        try:
+            with self._open(key) as k:
+                for i in range(winreg.QueryInfoKey(k)[0]):
+                    out.append(winreg.EnumKey(k, i))
+        except (OSError, KeyError):
+            pass
+        return out
+
+    def values(self, key):
+        import winreg
+        out = []
+        try:
+            with self._open(key) as k:
+                for i in range(winreg.QueryInfoKey(k)[1]):
+                    name, data, _kind = winreg.EnumValue(k, i)
+                    if isinstance(data, str):
+                        out.append((name, data))
+        except (OSError, KeyError):
+            pass
+        return out
+
+
+def _windows_drives():
+    """[(root, volume label)] of local fixed drives C: to Z:. Network, removable and CD
+    drives are skipped (they can be slow or ask for a disk)."""
+    out = []
+    try:
+        k32 = ctypes.windll.kernel32
+        mask = k32.GetLogicalDrives()
+        for i in range(2, 26):
+            if not mask & (1 << i):
+                continue
+            root = f"{chr(65 + i)}:\\"
+            if k32.GetDriveTypeW(root) not in (DRIVE_FIXED, DRIVE_RAMDISK):
+                continue
+            buf = ctypes.create_unicode_buffer(261)
+            if k32.GetVolumeInformationW(root, buf, 261, None, None, None, None, 0):
+                out.append((root, buf.value))
+    except Exception as e:
+        log.info("Drive list failed (%s)", type(e).__name__)
+    return out
+
+
+def _user_sid():
+    """The current Windows user's SID as text, or None."""
+    try:
+        from ctypes import wintypes
+        advapi = ctypes.WinDLL("advapi32")
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.LocalFree.argtypes = [ctypes.c_void_p]
+        advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                            ctypes.POINTER(wintypes.HANDLE)]
+        advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                               wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p,
+                                                  ctypes.POINTER(ctypes.c_wchar_p)]
+        token = wintypes.HANDLE()
+        if not advapi.OpenProcessToken(k32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+            return None
+        try:
+            size = wintypes.DWORD()
+            advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))   # TokenUser
+            buf = ctypes.create_string_buffer(size.value)
+            if not advapi.GetTokenInformation(token, 1, buf, size, ctypes.byref(size)):
+                return None
+            psid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+            text = ctypes.c_wchar_p()
+            if not advapi.ConvertSidToStringSidW(psid, ctypes.byref(text)):
+                return None
+            try:
+                return text.value
+            finally:
+                k32.LocalFree(text)
+        finally:
+            k32.CloseHandle(token)
+    except Exception as e:
+        log.info("User SID lookup failed (%s)", type(e).__name__)
+        return None
+
+
+def _drive_root(point):
+    """A DriveFS mount point ("G", "G:", "G:\\" or a folder) as a folder path."""
+    point = (point or "").strip()
+    if len(point) == 1 and point.isalpha():
+        return point.upper() + ":\\"
+    if len(point) == 2 and point[1] == ":" and point[0].isalpha():
+        return point.upper() + "\\"
+    return point if os.path.isabs(point) else None
+
+
+def _google_mount_points(reg):
+    """Mount points from Google Drive's own settings: only "mount_point_path" (and the
+    DefaultMountPoint value) is taken; the account keys next to it are ignored."""
+    points = []
+    raw = reg.value(DRIVEFS_KEY, "PerAccountPreferences")
+    if raw:
+        try:
+            prefs = json.loads(raw).get("per_account_preferences") or []
+            for item in prefs:
+                value = item.get("value") if isinstance(item, dict) else None
+                if isinstance(value, dict) and isinstance(value.get("mount_point_path"), str):
+                    points.append(value["mount_point_path"])
+        except (ValueError, AttributeError, TypeError):
+            pass
+    for key in (DRIVEFS_KEY, DRIVEFS_POLICY_KEY):
+        point = reg.value(key, "DefaultMountPoint")
+        if point:
+            points.append(point)
+    return [r for r in (_drive_root(p) for p in points) if r]
+
+
+def _google_my_drive(root):
+    """The "My Drive" folder (any language) on a Google Drive mount, or None."""
+    for name in MY_DRIVE_NAMES:
+        if os.path.isdir(os.path.join(root, name)):
+            return os.path.join(root, name)
+    try:
+        with os.scandir(root) as entries:
+            dirs = [e.name for e in entries if e.is_dir()
+                    and not e.name.startswith((".", "$")) and e.name.lower() not in GOOGLE_SKIP]
+    except OSError:
+        return None
+    # Only when it's the one folder there (else it could be a translated "Shared drives").
+    return os.path.join(root, dirs[0]) if len(dirs) == 1 else None
+
+
+def _proton_folder(home):
+    """Proton Drive's "My files" folder (one or two levels down), else its main folder."""
+    base = os.path.join(home, "Proton Drive")
+    if not os.path.isdir(base):
+        return None
+    mine = os.path.join(base, "My files")
+    if os.path.isdir(mine):
+        return mine
+    try:
+        with os.scandir(base) as entries:
+            for e in entries:
+                if e.is_dir() and os.path.isdir(os.path.join(e.path, "My files")):
+                    return os.path.join(e.path, "My files")
+    except OSError:
+        pass
+    return base
+
+
+def _nextcloud_folders(cfg):
+    """Synced folders from nextcloud.cfg: only "...\\localPath=" lines are read, so the
+    account lines (user name, server) are never parsed or kept."""
+    path = os.path.join(cfg, "Nextcloud", "nextcloud.cfg")
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, sep, value = line.partition("=")
+                if sep and key.strip().lower().endswith("\\localpath"):
+                    value = value.strip().strip('"')
+                    if value:
+                        out.append(os.path.normpath(value))
+    except OSError:
+        pass
+    return out
+
+
+def _sync_com_installed(reg):
+    for key in UNINSTALL_KEYS:
+        for sub in reg.subkeys(key):
+            publisher = reg.value(key + "\\" + sub, "Publisher") or ""
+            if "sync.com" in publisher.lower():
+                return True
+    return False
+
+
+def _sync_root_label(provider):
+    norm = "".join(c for c in provider.lower() if c.isalnum())
+    if norm == "box":
+        return "Box"
+    for start, label in SYNC_ROOT_LABELS:
+        if norm.startswith(start):
+            return label
+    return None
+
+
+def _sync_roots(reg, sid):
+    """[(label, folder)] from Windows' sync-root list, for this user only. Of a key name
+    "<provider>!<SID>!<account>" only the provider and the SID are looked at."""
+    out = []
+    if not sid:
+        return out
+    for name in reg.subkeys(SYNC_ROOTS_KEY):
+        parts = name.split("!")
+        if len(parts) < 2 or parts[1] != sid:
+            continue
+        label = _sync_root_label(parts[0])
+        if not label:
+            continue
+        for value_name, folder in reg.values(SYNC_ROOTS_KEY + "\\" + name + "\\UserSyncRoots"):
+            if value_name == sid:
+                out.append((label, folder))
+    return out
+
+
+def cloud_folders(home=None, env=None, drives=None, reg=None, cfg=None, docs=None, sid=None):
     """Synced cloud folders that exist on this PC: [(label, folder)]. Only folders the
-    cloud's own program syncs; the app never talks to a cloud service itself."""
+    cloud's own program syncs; the app never talks to a cloud service itself. Slow-ish
+    (drive and registry lookups): call it from a thread.
+
+    Test hooks: home, env, drives ([(root, label)]), reg (see _Registry), cfg (the
+    config folder: %APPDATA% / ~/.config), docs (Documents) and sid."""
     env = os.environ if env is None else env
     if home is None:
         home = os.path.expanduser("~")
+    windows = os.name == "nt"
+    if cfg is None:
+        cfg = env.get("APPDATA") if windows else (
+            env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"))
     found, seen = [], set()
 
     def add(label, path):
@@ -142,14 +400,151 @@ def cloud_folders(home=None, env=None):
             if key not in seen:
                 seen.add(key)
                 found.append((label, path))
-    if os.name == "nt":
-        add("OneDrive", env.get("OneDriveConsumer"))
-        add("OneDrive", env.get("OneDriveCommercial"))
-        add("OneDrive", env.get("OneDrive"))
-        add("Google Drive", os.path.join(home, "Google Drive"))
-        add("Google Drive", os.path.join(home, "My Drive"))
-        add("iCloud Drive", os.path.join(home, "iCloudDrive"))
-    add("Dropbox", os.path.join(home, "Dropbox"))
+
+    def step(name, fn):   # one failing app never hides the others
+        try:
+            fn()
+        except Exception as e:
+            log.info("Cloud folder check %s failed (%s)", name, type(e).__name__)
+
+    if windows:
+        reg = _Registry() if reg is None else reg
+        drive_list = None
+
+        def labelled(label):
+            nonlocal drive_list
+            if drive_list is None:
+                drive_list = _windows_drives() if drives is None else list(drives)
+            return [root for root, vol in drive_list if (vol or "").casefold() == label]
+
+        def onedrive():
+            for name in ("OneDriveConsumer", "OneDriveCommercial", "OneDrive"):
+                add("OneDrive", env.get(name))
+
+        def google():
+            for root in _google_mount_points(reg):
+                if os.path.isdir(root):
+                    add("Google Drive", _google_my_drive(root))
+            for root in labelled("google drive"):
+                add("Google Drive", _google_my_drive(root))
+            add("Google Drive", os.path.join(home, "Google Drive"))   # Backup and Sync
+            for name in MY_DRIVE_NAMES:                                # mirror mode
+                add("Google Drive", os.path.join(home, name))
+
+        step("onedrive", onedrive)
+        step("google", google)
+        step("icloud", lambda: add("iCloud Drive", os.path.join(home, "iCloudDrive")))
+    step("dropbox", lambda: add("Dropbox", os.path.join(home, "Dropbox")))
+
+    def mega():
+        places = [home]
+        if docs or windows:
+            places.insert(0, docs if docs else documents_dir())
+        for place in places:
+            for name in ("MEGA", "MEGAsync"):
+                add("MEGA", os.path.join(place, name))
+    step("mega", mega)
+
+    def pcloud():
+        if windows:
+            for root in labelled("pcloud drive"):
+                add("pCloud", root)
+        else:
+            path = os.path.join(home, "pCloudDrive")
+            if os.path.ismount(path):   # only while pCloud runs (else it's a plain folder)
+                add("pCloud", path)
+    step("pcloud", pcloud)
+    if windows:
+        step("box", lambda: add("Box", os.path.join(home, "Box")))
+        step("proton", lambda: add("Proton Drive", _proton_folder(home)))
+    if cfg:
+        step("nextcloud", lambda: [add("Nextcloud", p) for p in _nextcloud_folders(cfg)])
+    if windows:
+        sync = os.path.join(home, "Sync")
+        step("sync.com", lambda: os.path.isdir(sync) and _sync_com_installed(reg)
+             and add("Sync.com", sync))
+
+        def roots():
+            for label, path in _sync_roots(reg, _user_sid() if sid is None else sid):
+                add(label, path)
+        step("sync roots", roots)
+    return found
+
+
+# ---------- Backups found (Restore window list) ----------
+# Windows file attributes of cloud files that aren't downloaded yet ("online-only").
+FILE_ATTRIBUTE_OFFLINE = 0x1000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x40000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
+ONLINE_ONLY = (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN
+               | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+SAFETY_PREFIX = "before restore "
+BACKUP_PREFIX = f"{BACKUP_APP} backup ".lower()
+
+
+@dataclasses.dataclass
+class FoundBackup:
+    path: str
+    place: str      # where it is, e.g. "OneDrive" or "Documents"
+    size: int
+    mtime: float
+    safety: bool    # a "Before restore" safety copy
+    online: bool    # online-only cloud file: opening it downloads it first
+
+
+def online_only(st):
+    """True for a cloud placeholder that isn't downloaded yet (from its attributes only)."""
+    return bool(getattr(st, "st_file_attributes", 0) & ONLINE_ONLY)
+
+
+def is_under(path, folder):
+    """path is folder or inside it (same drive, case-insensitive on Windows)."""
+    try:
+        a = os.path.normcase(os.path.realpath(path))
+        b = os.path.normcase(os.path.realpath(folder))
+        return os.path.commonpath([a, b]) == b
+    except (ValueError, OSError):
+        return False
+
+
+def find_backups(places):
+    """Backups in the given [(place label, folder)], newest first: [FoundBackup].
+    Only the folder listing is used (name, size, date, attributes): no file is opened,
+    so online-only cloud files are never downloaded just to list them. Only names this
+    app writes ("AddonManager backup ....zip", "Before restore ....zip") are listed;
+    the same folder or file reached twice is listed once (first place wins)."""
+    found, seen_dirs, seen_files = [], set(), set()
+    for label, folder in places:
+        if not folder:
+            continue
+        key = os.path.normcase(os.path.realpath(folder))
+        if key in seen_dirs:
+            continue
+        seen_dirs.add(key)
+        try:
+            with os.scandir(folder) as entries:
+                for e in entries:
+                    low = e.name.lower()
+                    if not low.endswith(".zip"):
+                        continue
+                    safety = low.startswith(SAFETY_PREFIX)
+                    if not (safety or low.startswith(BACKUP_PREFIX)):
+                        continue
+                    try:
+                        if e.is_symlink() or not e.is_file(follow_symlinks=False):
+                            continue
+                        st = e.stat(follow_symlinks=False)   # from the listing: no open
+                    except OSError:
+                        continue
+                    fkey = os.path.join(key, os.path.normcase(e.name))
+                    if fkey in seen_files:
+                        continue
+                    seen_files.add(fkey)
+                    found.append(FoundBackup(e.path, label, st.st_size, st.st_mtime,
+                                             safety, online_only(st)))
+        except OSError:
+            continue
+    found.sort(key=lambda f: f.mtime, reverse=True)
     return found
 
 

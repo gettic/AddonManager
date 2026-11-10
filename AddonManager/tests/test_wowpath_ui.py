@@ -189,7 +189,7 @@ class WindowTests(unittest.TestCase):
         app.row_widgets["GuildHub"][1].invoke()
         self.pump(app)
         self.assertEqual(toc.installed(self.addons, "GuildHub"), (True, "0.4.1"))
-        self.assertEqual(self.status(app, "GuildHub"), ("Up to date", None))
+        self.assertEqual(self.status(app, "GuildHub"), ("Up to date", "Uninstall"))
         self.assertIn("v0.4.1 installed", app.message_var.get())
 
     def test_update_all(self):
@@ -265,7 +265,9 @@ class WindowTests(unittest.TestCase):
         app = self.make_app()
         self.assertEqual([r.folder for r in app.rows], ["TaxiTime"])
         self.assertEqual(self.latest_text(app, "TaxiTime"), "?")
-        self.assertIsNone(app.row_widgets["TaxiTime"][1])
+        # Installed, newest unknown yet: Uninstall, locked until the check is done.
+        self.assertEqual(self.status(app, "TaxiTime")[1], "Uninstall")
+        self.assertIn("disabled", app.row_widgets["TaxiTime"][1].state())
         self.assertFalse(os.path.exists(config.cache_path()))
         self.pump(app)
         self.assertEqual([r.folder for r in app.rows], ["TaxiTime", "GuildHub"])
@@ -311,7 +313,7 @@ class WindowTests(unittest.TestCase):
             app.row_widgets["TaxiTime"][1].invoke()
             self.pump(app)
             self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.4.0-beta.1"))
-            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
+            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
             # Off again: the beta stays (no "Update" to an older version), but the row
             # offers going back to the normal version.
             self.beta_box(app).invoke()
@@ -344,7 +346,7 @@ class WindowTests(unittest.TestCase):
             app.row_widgets["TaxiTime"][1].invoke()
             self.pump(app)
             self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
-            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
+            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
             self.assertEqual(before, fixtures.tree_snapshot(wtf))
 
     def test_flagged_beta_with_plain_tag_can_go_back(self):
@@ -388,11 +390,11 @@ class WindowTests(unittest.TestCase):
                          github_api=server.url + "api",
                          confirm=lambda *a: self.fail("asked"))
             self.pump(app)
-            self.assertEqual(self.status(app, "TaxiTime"), ("Beta installed", None))
+            self.assertEqual(self.status(app, "TaxiTime"), ("Beta installed", "Uninstall"))
             # A hand-installed normal version newer than the list keeps its old status.
             fixtures.make_addon_folder(self.addons, "GuildHub", "9.0")
             app.render()
-            self.assertEqual(self.status(app, "GuildHub"), ("Newer than the list", None))
+            self.assertEqual(self.status(app, "GuildHub"), ("Newer than the list", "Uninstall"))
 
     def test_beta_switch_no_flicker(self):
         with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
@@ -470,15 +472,15 @@ class WindowTests(unittest.TestCase):
             # Box off: "Use v1.3.0" on Taxi Time, "Install" on Guild Hub.
             self.assertEqual(self.status(app, "TaxiTime")[1], "Use v1.3.0")
             geometry = self.row_geometry(app)
-            # Box on: Taxi Time is up to date, no button.
+            # Box on: Taxi Time is up to date, its button says Uninstall.
             self.beta_box(app).invoke()
             self.pump(app)
-            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", None))
+            self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
             self.assertEqual(self.row_geometry(app), geometry)
-            # Install Guild Hub: its button goes away.
+            # Install Guild Hub: its button turns into Uninstall.
             app.row_widgets["GuildHub"][1].invoke()
             self.pump(app)
-            self.assertEqual(self.status(app, "GuildHub"), ("Up to date", None))
+            self.assertEqual(self.status(app, "GuildHub"), ("Up to date", "Uninstall"))
             self.assertEqual(self.row_geometry(app), geometry)
             # Box off again: the go-back button comes back, the rows stay put.
             self.beta_box(app).invoke()

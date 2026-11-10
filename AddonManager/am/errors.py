@@ -183,9 +183,10 @@ def go_back_text(name, beta_text, normal_text):
             f"{normal_text}. Your {name} settings are kept.")
 
 
-# Removing an addon (the X button / right-click Remove).
+# Removing an addon (the row's Uninstall button / right-click Remove).
 BIN_NAME = "Recycle Bin" if os.name == "nt" else "Trash"
 REMOVE_TIP = "Remove this addon"
+REMOVE_RIGHT_CLICK = "Right-click the row to remove."
 REMOVED = "Removed"
 REMOVING = "Removing..."
 REMOVE_OK = "Remove"
@@ -288,6 +289,18 @@ RESTORE_SKIP = "(skip)"
 RESTORE_PICK_FILE = "Choose a backup to restore"
 RESTORE_UNDONE = ("A restore was cut off last time, so it was undone: your addons and "
                   "settings are as they were before it. You can restore again.")
+FOUND_HEADING = "Backups found (newest first):"
+FOUND_LOOKING = "Looking for backups..."
+FOUND_NONE = "No backups found in your backup folders. Use Browse... to pick one."
+FOUND_SAFETY = "Show safety copies (made before a restore)"
+FOUND_NOTE = "Click a backup to restore it. Files marked online download first."
+FOUND_BROWSE = "Browse..."
+FOUND_OPENING = "Opening the backup..."
+FOUND_DOWNLOADING = "Downloading the backup from your cloud first..."
+FOUND_MORE = "Older backups: use Browse..."
+FOUND_SAFETY_HEADING = "Safety copies (made before a restore):"
+PLACE_DOCUMENTS = "Documents"
+ONLINE_MARK = "online"
 NO_ACCOUNT = ("No account folder on this PC yet: log in to the game once, close it, then "
               "restore to get your settings back.")
 
@@ -325,6 +338,11 @@ def backup_from(info):
             parts.append(f"{c} character{'s' if c != 1 else ''}")
     head = "Safety copy from" if info.kind == "safety" else "From"
     return f"{head}: " + ", ".join(parts)
+
+
+def found_row(when, size, place, online=False):
+    """One Backups found row: '2026-11-10 21:30 · 12 MB · OneDrive (online)'."""
+    return " · ".join((when, size_text(size), f"{place} ({ONLINE_MARK})" if online else place))
 
 
 def account_line(name):
