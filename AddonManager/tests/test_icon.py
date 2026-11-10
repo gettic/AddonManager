@@ -84,6 +84,32 @@ class Loading(unittest.TestCase):
         finally:
             fixtures.remove(work)
 
+    def test_one_bad_png_keeps_the_others(self):
+        work = fixtures.temp_dir("icon_one_bad_")
+        try:
+            bad = os.path.join(work, "bad.png")
+            with open(bad, "wb") as f:
+                f.write(b"not a png")
+            with mock.patch.object(icon, "PNGS", [icon.PNGS[0], bad] + icon.PNGS[1:]), \
+                    self.assertLogs("am.icon", "WARNING") as logs:
+                images = icon.apply(self.root)
+            self.assertEqual([i.width() for i in images], [256, 48, 32, 16])
+            self.assertIn("bad.png", "\n".join(logs.output))
+        finally:
+            fixtures.remove(work)
+
+    def test_missing_assets_folder_is_logged(self):
+        gone = os.path.join(fixtures.temp_dir("icon_gone_"), "assets")
+        try:
+            with mock.patch.object(icon, "ASSETS", gone), \
+                    mock.patch.object(icon, "ICO", os.path.join(gone, "a.ico")), \
+                    mock.patch.object(icon, "PNGS", [os.path.join(gone, "a.png")]), \
+                    self.assertLogs("am.icon", "INFO") as logs:
+                self.assertEqual(icon.apply(self.root), [])
+            self.assertIn("Icon folder missing", "\n".join(logs.output))
+        finally:
+            fixtures.remove(os.path.dirname(gone))
+
     def test_main_window_gets_the_icon(self):
         from am import ui
         work = fixtures.temp_dir("icon_app_")

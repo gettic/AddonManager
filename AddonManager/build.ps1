@@ -5,9 +5,12 @@
 #
 #   powershell -ExecutionPolicy Bypass -File build.ps1            (full build)
 #   powershell -ExecutionPolicy Bypass -File build.ps1 -TestOnly  (compile check + tests only)
+#   ... build.ps1 -DistPath <folder> -WorkPath <folder>  (test build that leaves dist\ alone)
 param(
     [switch]$TestOnly,
-    [string]$TempRoot = $env:TEMP
+    [string]$TempRoot = $env:TEMP,
+    [string]$DistPath = 'dist',     # where the .exe goes (e.g. a plan folder for a test build)
+    [string]$WorkPath = 'build'
 )
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -38,9 +41,9 @@ try {
 
     Write-Host 'PyInstaller ...'
     & (Join-Path $here '.venv-build\Scripts\pyinstaller.exe') --noconfirm --clean --log-level WARN `
-        --distpath dist --workpath build AddonManager.spec
+        --distpath $DistPath --workpath $WorkPath AddonManager.spec
     if ($LASTEXITCODE) { throw 'PyInstaller failed.' }
-    $exe = Join-Path $here 'dist\AddonManager.exe'
+    $exe = Join-Path (Resolve-Path -LiteralPath $DistPath) 'AddonManager.exe'
 
     Write-Host 'Self-test of the .exe (hidden, fake WoW folder) ...'
     $data = & $py -m tests.make_selftest_data (Join-Path $work 'selftest')

@@ -4,7 +4,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.5.0
+Current version: v0.6.0
 
 ## Get it
 
@@ -81,6 +81,41 @@ A beta is a test version of an addon. It may have bugs. The checkbox **Show beta
 - **Install/update all** never goes back by itself.
 - If an addon has no normal version yet, the row just says "Beta installed".
 - The Addon Manager's own updates always use normal versions.
+
+## Removing an addon
+
+To remove a guild addon, click the **X** at the end of its row (or right-click the row and choose **Remove...**). After you say yes:
+
+- The addon's folder goes to the Recycle Bin (on Linux: the Trash). You can put it back from there.
+- If the drive has no Recycle Bin or Trash, the question says the folder will be deleted for good.
+- Your settings for it in the game (the `WTF` folder) are kept.
+- The row then says **Removed**. **Install/update all** skips it. Its own **Install** button brings it back.
+- If WoW is open and a file is in use, nothing is removed and a message tells you.
+- If a delete for good can only be done partly, the app says so and finishes it the next time it starts. WoW won't load what is left.
+- If another addon needs it, the question tells you.
+
+Only the guild's addons can be removed, never other addons.
+
+## Backup and restore
+
+Click **Settings**, then look under **Backup**. Close WoW first.
+
+**Make a backup...** saves your addons and their settings (saved variables, key bindings and macros) in one file called `AddonManager backup <date>.zip`.
+
+- It goes to `Documents\AddonManager backups` unless you click **Change...** and pick another folder.
+- If OneDrive, Dropbox or Google Drive is on the PC, a button saves it into that synced folder. The app never logs in to a cloud itself.
+- You can untick the addons or the settings.
+- The file holds your account and character names. Don't share it.
+- `Config.wtf` and the chat history are never included.
+- A backup folder can't be inside the WoW folder. The app asks for another one.
+
+**Restore a backup...** (for example on a new PC): pick the file and choose what to restore (addons, addon settings, key bindings and macros).
+
+- If the account name here is different, you pick which account gets the settings. With two accounts in the backup and one here, you choose which one goes there.
+- It merges: addons and settings that aren't in the backup stay.
+- Before it replaces anything it saves a safety copy, `Before restore <date> <time>.zip`, in the same backup folder. It can't be inside the WoW folder either.
+- If a restore is cut off (power cut, crash), the app undoes it the next time it starts and tells you. You can restore again.
+- If there is no account folder yet, log in to the game once, close it, then restore.
 
 ## Where the addons come from
 

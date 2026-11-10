@@ -13,13 +13,16 @@ import stat
 import tempfile
 import zipfile
 
-from am import download, toc, versions
+from am import download, toc, trash, versions
 from am.manifest import is_safe_folder
 
 log = logging.getLogger(__name__)
 
 STAGING_PREFIX = ".addonmanager-staging-"
 BACKUP_PREFIX = ".addonmanager-backup-"
+REMOVING_PREFIX = ".addonmanager-removing-"   # a guild addon on its way out (see remove)
+DELETING_PREFIX = ".addonmanager-deleting-"   # being deleted for good: finished, never put back
+RESTORE_JOURNAL = ".addonmanager-restore.json"   # in AddOns while a restore swaps (see backup)
 MAX_DOWNLOAD = 50 * 1024 * 1024
 MAX_UNCOMPRESSED = 200 * 1024 * 1024
 MAX_RATIO = 200          # compressed -> uncompressed, per file over 1 MB
@@ -28,7 +31,9 @@ MAX_ENTRIES = 5000
 
 class InstallError(Exception):
     """kind: bad_folder, link, unsafe, bad_zip, mismatch, locked, permission,
-    disk_full, other. download errors are re-raised as download.DownloadError."""
+    disk_full, other; for remove also not_guild, missing, no_trash, trash, partly
+    (deleted for good only in part: the rest is hidden and retried next start).
+    download errors are re-raised as download.DownloadError."""
 
     def __init__(self, kind, detail=""):
         super().__init__(f"{kind}: {detail}")
@@ -137,15 +142,46 @@ def extract(zf, checked, staging):
 
 
 def _remove_tree(path):
-    """Delete a folder we made (staging/backup). Never follows links."""
+    """Delete a folder we made (staging/backup), read-only files too. Never follows links."""
     if _is_link(path):
         log.warning("Not removing link %s", path)
         return False
     try:
-        shutil.rmtree(path)
+        shutil.rmtree(path, onexc=_clear_read_only)
         return True
     except OSError:
         log.exception("Could not remove %s (will retry next start)", path)
+        return False
+
+
+def _clear_read_only(func, path, exc):
+    """rmtree onexc: a read-only file/folder (or its read-only parent) can't be deleted;
+    make it writable and try once more. Anything else (in use...) is raised."""
+    if not isinstance(exc, PermissionError):
+        raise exc
+    try:
+        for p in (path, os.path.dirname(path)):
+            mode = os.lstat(p).st_mode
+            if not stat.S_ISLNK(mode):
+                os.chmod(p, stat.S_IMODE(mode) | stat.S_IWRITE)
+        func(path)
+    except OSError:
+        raise exc from None
+
+
+def _force_rmtree(path, raise_errors=False):
+    """Delete a folder for good, read-only files too. Never follows links (a link inside
+    is removed as a link). Returns True when it's gone."""
+    if _is_link(path):
+        log.warning("Not removing link %s", path)
+        return False
+    try:
+        shutil.rmtree(path, onexc=_clear_read_only)
+        return True
+    except OSError:
+        if raise_errors:
+            raise
+        log.exception("Could not delete %s (will retry next start)", path)
         return False
 
 
@@ -161,26 +197,76 @@ def _os_error(e, what):
     return InstallError("other", f"{what}: {e}")
 
 
+_BAD_CHARS = set('<>:"/\\|?*')
+_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} \
+    | {f"lpt{i}" for i in range(1, 10)}
+
+
+def safe_name(name):
+    """One plain file/folder name that is the same on Windows and Linux (any addon folder
+    a player can have, e.g. "!BugGrabber" or names with spaces): no slashes, drive,
+    '..', reserved device names, control characters or trailing dot/space."""
+    if not isinstance(name, str) or not 0 < len(name) <= 255 or name in (".", ".."):
+        return False
+    if name.endswith((" ", ".")) or any(c in _BAD_CHARS or ord(c) < 32 for c in name):
+        return False
+    return name.split(".")[0].lower() not in _RESERVED
+
+
+def _leftover_folder_ok(folder):
+    """A folder name recover may put back: any plain addon name a backup accepts (guild
+    list names, "!BugGrabber", names with spaces...); never '..', a path or a dot folder."""
+    return safe_name(folder) and not folder.startswith(".")
+
+
 def recover(addons_dir):
     """Clean up after an interrupted install. Only touches our own prefixed folders.
+    While a restore journal is there (a restore was cut off), the .addonmanager-backup-*
+    folders belong to it: backup.recover_restore undoes that restore first.
     Returns a list of (action, name)."""
     actions = []
     try:
         entries = list(os.scandir(addons_dir))
     except OSError:
         return actions
+    restore_pending = os.path.lexists(os.path.join(addons_dir, RESTORE_JOURNAL))
     for entry in entries:
         name = entry.name
-        if not (name.startswith(STAGING_PREFIX) or name.startswith(BACKUP_PREFIX)):
+        if not (name.startswith(STAGING_PREFIX) or name.startswith(BACKUP_PREFIX)
+                or name.startswith(REMOVING_PREFIX) or name.startswith(DELETING_PREFIX)):
             continue
         if _is_link(entry.path) or not entry.is_dir(follow_symlinks=False):
             continue
+        if name.startswith(DELETING_PREFIX):
+            # A delete for good that stopped half-way (app closed, read-only file): the
+            # player said yes to deleting it, so finish it rather than put a broken half back.
+            if _force_rmtree(entry.path):
+                actions.append(("deleted", name))
+            continue
+        if name.startswith(REMOVING_PREFIX):
+            # A remove stopped half-way: the folder is whole (only renamed), so put it back
+            # (the player can remove it again). If the addon is back already, the leftover
+            # is a stale copy of our own: clear it so it never blocks a later remove.
+            folder = name[len(REMOVING_PREFIX):]
+            target = os.path.join(addons_dir, folder)
+            if not _leftover_folder_ok(folder):
+                continue
+            if os.path.lexists(target):
+                if _force_rmtree(entry.path):
+                    actions.append(("removed", name))
+                continue
+            try:
+                os.replace(entry.path, target)
+                actions.append(("restored", folder))
+            except OSError:
+                log.exception("Could not restore %s", name)
+            continue
         if name.startswith(STAGING_PREFIX):
-            if _remove_tree(entry.path):
+            if not restore_pending and _remove_tree(entry.path):
                 actions.append(("removed", name))
             continue
         folder = name[len(BACKUP_PREFIX):]
-        if not is_safe_folder(folder):
+        if restore_pending or not _leftover_folder_ok(folder):
             continue
         target = os.path.join(addons_dir, folder)
         if os.path.lexists(target):
@@ -265,3 +351,146 @@ def install(addon, addons_dir, progress=None, timeout=30, tmp_root=None):
         if staging:
             _remove_tree(staging)
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- removing a guild addon ----------
+_DEPS_RE = re.compile(r"^\s*##\s*(?:RequiredDeps|Dependencies|Dep[A-Za-z0-9_]*)\s*:\s*(.*?)\s*$",
+                      re.IGNORECASE)
+
+
+def needed_by(addons_dir, folder, others):
+    """Folders from `others` (installed guild addons) whose _Forever.toc says they
+    need `folder` (## Dependencies / ## RequiredDeps / ## Dep...). Never raises."""
+    found = []
+    for other in others:
+        if other == folder or not is_safe_folder(other):
+            continue
+        try:
+            with open(toc.toc_path(addons_dir, other), "rb") as f:
+                text = toc.decode(f.read(1024 * 1024))
+        except OSError:
+            continue
+        for line in text.splitlines():
+            m = _DEPS_RE.match(line)
+            if m and folder.lower() in {d.strip().lower() for d in m.group(1).split(",")}:
+                found.append(other)
+                break
+    return found
+
+
+MAX_IN_USE_CHECK = 5000   # files looked at when Windows says "access denied"
+
+
+def _windows_in_use(path):
+    """Windows: is a file in this folder open by a program (so it can't be moved)? Asks
+    for delete access on each file with full sharing: a program holding the file without
+    delete sharing gives a sharing violation. Never changes anything. False if unsure."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel32.CreateFileW
+        create.restype = wintypes.HANDLE
+        create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        close = kernel32.CloseHandle
+        invalid = wintypes.HANDLE(-1).value
+        seen = 0
+        for dirpath, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if not _is_link(os.path.join(dirpath, d))]
+            for name in files:
+                seen += 1
+                if seen > MAX_IN_USE_CHECK:
+                    return False
+                h = create(os.path.join(dirpath, name), 0x00010000, 0x7, None, 3, 0, None)
+                if h == invalid or h is None:
+                    if ctypes.get_last_error() in (32, 33):
+                        return True
+                else:
+                    close(h)
+    except Exception:
+        log.exception("In-use check failed")
+    return False
+
+
+def _remove_error(e, folder, path=None):
+    """An OSError while moving the addon's folder: a file in use, or no permission.
+    Windows says "access denied" for both when a folder can't be renamed, so the files
+    are checked: only a really open file counts as "in use"."""
+    err = _os_error(e, f"removing {folder}")
+    if err.kind == "permission" and path and _windows_in_use(path):
+        err = InstallError("locked", err.detail)
+    return err
+
+
+def _delete_for_good(folder, target, addons_dir):
+    """send=None: rename to a hidden .addonmanager-deleting-* folder (fails at once, with
+    nothing changed, if a file inside is in use), then delete it, read-only files too.
+    If some files still can't be deleted, the rest stays hidden there (WoW doesn't load
+    it; the next start tries again) and InstallError("partly") says so honestly."""
+    doomed = os.path.join(addons_dir, DELETING_PREFIX + folder)
+    n = 2
+    while os.path.lexists(doomed):
+        doomed = os.path.join(addons_dir, f"{DELETING_PREFIX}{folder}-{n}")
+        n += 1
+    try:
+        os.replace(target, doomed)
+    except OSError as e:
+        raise _remove_error(e, folder, target) from e
+    try:
+        _force_rmtree(doomed, raise_errors=True)
+    except OSError as e:
+        log.exception("Could not delete all of %s", doomed)
+        raise InstallError("partly", f"{folder}: {e}") from e
+    log.info("Deleted %s from %s (no trash on this drive)", folder, addons_dir)
+
+
+def remove(folder, addons_dir, guild_folders, send=trash.send):
+    """Remove one guild addon's folder from AddOns. send(path) moves it to the Recycle
+    Bin / Trash; send=None deletes it for good (only after the player was warned).
+    Only a folder named in guild_folders, directly inside Interface\\AddOns, never a
+    link, Blizzard_* or the AddOns folder itself. WTF\\ (SavedVariables) is never touched.
+    A rename first checks that nothing inside is in use, so a failed remove changes nothing.
+    Raises InstallError."""
+    addons_dir = check_addons_dir(addons_dir)
+    if folder not in set(guild_folders or ()):
+        raise InstallError("not_guild", folder)
+    if not is_safe_folder(folder) or folder.lower().startswith("blizzard_"):
+        raise InstallError("not_guild", folder)
+    target = target_path(addons_dir, folder)
+    if os.path.normcase(os.path.abspath(target)) == os.path.normcase(addons_dir):
+        raise InstallError("unsafe", target)
+    if _is_link(target):
+        raise InstallError("link", target)
+    if not os.path.isdir(target):
+        raise InstallError("missing", target)
+    recover(addons_dir)   # also clears leftovers (old backup, stale remove/delete folders)
+    if send is None:
+        _delete_for_good(folder, target, addons_dir)
+        return
+    probe = os.path.join(addons_dir, REMOVING_PREFIX + folder)
+    if os.path.lexists(probe):
+        raise InstallError("other", f"{probe} is in the way")
+    try:
+        os.replace(target, probe)   # fails at once if a file inside is open (Windows)
+    except OSError as e:
+        raise _remove_error(e, folder, target) from e
+    try:
+        os.replace(probe, target)   # the Recycle Bin keeps the addon's real name
+    except OSError as e:
+        log.exception("Could not rename %s back; recover() will next start", probe)
+        raise _remove_error(e, folder, probe) from e
+    try:
+        send(target)
+    except trash.TrashError as e:
+        log.warning("Could not move %s to the trash: %s", target, e)
+        kind = e.kind if e.kind in ("locked", "permission", "no_trash") else "trash"
+        raise InstallError(kind, str(e)) from e
+    except OSError as e:
+        log.exception("Could not move %s to the trash", target)
+        raise _remove_error(e, folder, target) from e
+    if os.path.lexists(target):
+        raise InstallError("trash", f"{target} is still there")
+    log.info("Moved %s from %s to the trash", folder, addons_dir)

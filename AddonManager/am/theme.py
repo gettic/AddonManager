@@ -90,6 +90,12 @@ def apply(root):
           background=[("active", BG)],
           foreground=[("disabled", DISABLED)],
           indicatorbackground=[("disabled", BG), ("selected", ACCENT), ("pressed", BUTTON_HOVER)])
+    # A pick-one button with a dark drop-down menu (Restore: which account).
+    s.configure("TMenubutton", background=BUTTON, foreground=TEXT, bordercolor=BORDER,
+                lightcolor=BUTTON, darkcolor=BUTTON, arrowcolor=TEXT, padding=(8, 3))
+    s.map("TMenubutton",
+          background=[("disabled", BG), ("active", BUTTON_HOVER)],
+          foreground=[("disabled", DISABLED)])
     s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=SURFACE,
                 bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT)
 

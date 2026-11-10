@@ -56,6 +56,11 @@ class ParallelFetch(unittest.TestCase):
             status, err = results[repo]
             self.assertEqual((status, err.kind), ("error", "rate_limited"))
         self.assertEqual(results["g/A"][1].wait, 120)
+        # The repos not asked carry the same wait, so the window says one time, not two.
+        for repo in ("g/D", "g/E", "g/F"):
+            self.assertEqual(results[repo][1].wait, 120)
+            self.assertEqual(errors.release_message(results[repo][1], "X"),
+                             errors.release_message(results["g/A"][1], "X"))
 
     def test_plain_403_also_stops_new_requests(self):
         calls = []

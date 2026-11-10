@@ -70,7 +70,9 @@ def cache_path():
 # settings.json) is dropped on load, as if it had never been saved.
 SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": str,
                  "update_failed": str, "known_addons": list, "show_betas": bool,
-                 "stats_sent_day": str, "stats_sent_week": str, "share_stats": bool}
+                 "stats_sent_day": str, "stats_sent_week": str, "share_stats": bool,
+                 "removed_addons": list, "backup_folder": str, "backup_addons": bool,
+                 "backup_settings": bool}
 
 
 def load_settings():

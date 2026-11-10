@@ -183,5 +183,202 @@ def go_back_text(name, beta_text, normal_text):
             f"{normal_text}. Your {name} settings are kept.")
 
 
+# Removing an addon (the X button / right-click Remove).
+BIN_NAME = "Recycle Bin" if os.name == "nt" else "Trash"
+REMOVE_TIP = "Remove this addon"
+REMOVED = "Removed"
+REMOVING = "Removing..."
+REMOVE_OK = "Remove"
+DELETE_OK = "Delete"
+REMOVE_CANCEL = "Cancel"
+
+
+def remove_menu_label(name):
+    return f"Remove {name}..."
+
+
+def remove_title(name):
+    return f"Remove {name}?"
+
+
+def remove_text(name, where, needed_by=()):
+    """The question before removing. where: "bin"/"trash" or None (deleted for good)."""
+    if where:
+        first = f"The {name} folder is moved to the {BIN_NAME}."
+    else:
+        first = (f"This drive has no {BIN_NAME}, so the {name} folder will be deleted "
+                 "for good.")
+    text = (f"{first} Your settings for it in the game are kept, so if you install it again "
+            "later, it is set up like before. Install/update all won't put it back; use its "
+            "Install button if you want it again.")
+    if needed_by:
+        names = ", ".join(needed_by)
+        verb = "needs" if len(needed_by) == 1 else "need"
+        text += f"\n\n{names} {verb} {name} and will stop working."
+    return text
+
+
+def removed_message(name, where):
+    place = f" (it's in the {BIN_NAME})" if where else ""
+    return (f"{name} was removed{place}. If WoW is running, type /reload or restart it.")
+
+
+def remove_message(exc, name):
+    """Message when removing the addon called `name` didn't work (nothing was changed)."""
+    kind = getattr(exc, "kind", "")
+    if kind == "locked":
+        return (f"Some files of {name} are in use, so nothing was removed. Close WoW (or "
+                "the program using them) and try again.")
+    if kind == "permission":
+        return (f"{SYSTEM} didn't give me permission to change the {name} folder, so nothing "
+                "was removed. Check that folder's permissions (or whether it's protected), "
+                "then try again.")
+    if kind == "partly":
+        return (f"{name} was only partly deleted: some of its files couldn't be deleted. "
+                "WoW won't load what's left, and I'll try to delete the rest the next time "
+                "the Addon Manager starts.")
+    if kind == "link":
+        return (f"The {name} folder is a link to somewhere else (a developer setup), "
+                "so I left it alone.")
+    if kind == "not_guild":
+        return f"I only remove the guild's addons, so I left {name} alone."
+    if kind == "missing":
+        return f"{name} isn't installed any more."
+    if kind == "bad_folder":
+        return FOLDER_GONE
+    if kind == "no_trash":
+        return (f"{name} couldn't be moved to the {BIN_NAME}, so nothing was removed. "
+                "Try again.")
+    return (f"{name} couldn't be removed, so nothing was changed. Try again; if it keeps "
+            "happening, close WoW first." + DETAILS)
+
+
 def success_message(name, version_text):
     return f"{name} {version_text} installed. Restart WoW or type /reload to use it."
+
+
+# ---------- Backup and restore (Settings window) ----------
+BACKUP_HEADING = "Backup"
+BACKUP_BUTTON = "Make a backup..."
+RESTORE_BUTTON = "Restore a backup..."
+BACKUP_NOTE = "Your addons and their settings in one file, to use on another PC."
+BACKUP_TITLE = "Make a backup"
+BACKUP_SETTINGS = "Addon settings (key bindings and macros too)"
+BACKUP_ADDONS = "Addons themselves"
+BACKUP_PRIVATE = ("This file contains your account and character names and addon data. "
+                  "Don't share it.")
+BACKUP_CLOUD = "To keep a copy online, save it in a folder your cloud app syncs:"
+BACKUP_PICK_ONE = "Tick at least one of the two."
+BACKUP_MAKE = "Make backup"
+BACKUP_MAKING = "Making the backup..."
+BACKUP_OPEN_FOLDER = "Open folder"
+BACKUP_CHANGE = "Change..."
+CLOSE = "Close"
+CANCEL = "Cancel"
+GAME_OPEN = "Close WoW first, then try again."
+RESTORE_TITLE = "Restore a backup"
+RESTORE_ADDONS = "Addons"
+RESTORE_SETTINGS = "Addon settings"
+RESTORE_BINDINGS = "Key bindings and macros"
+RESTORE_MERGE = "Addons and settings you have here that are not in the backup are kept."
+RESTORE_SAFETY = "A safety copy of what gets replaced is saved first."
+RESTORE_OK = "Restore"
+RESTORING = "Restoring..."
+RESTORE_SKIP = "(skip)"
+RESTORE_PICK_FILE = "Choose a backup to restore"
+RESTORE_UNDONE = ("A restore was cut off last time, so it was undone: your addons and "
+                  "settings are as they were before it. You can restore again.")
+NO_ACCOUNT = ("No account folder on this PC yet: log in to the game once, close it, then "
+              "restore to get your settings back.")
+
+
+def size_text(size):
+    """Bytes as a short 'NN MB' text."""
+    if size < 1024 * 1024:
+        return f"{max(1, round(size / 1024))} KB"
+    return f"{size / (1024 * 1024):.0f} MB"
+
+
+def addons_label(size):
+    return f"{BACKUP_ADDONS} (about {size_text(size)})" if size else BACKUP_ADDONS
+
+
+def saved_to(folder):
+    return f"Saved to: {folder}"
+
+
+def backup_saved(name, size):
+    return f"Backup saved: {name} ({size_text(size)})."
+
+
+def backup_from(info):
+    """'From: 2026-11-10, 23 addons, settings for 1 account, 4 characters'."""
+    parts = [info.created.split(" ")[0] if info.created else "an unknown date"]
+    n = len(info.addons)
+    if n:
+        parts.append(f"{n} addon{'s' if n != 1 else ''}")
+    a = len(info.accounts)
+    if a:
+        parts.append(f"settings for {a} account{'s' if a != 1 else ''}")
+        c = info.characters
+        if c:
+            parts.append(f"{c} character{'s' if c != 1 else ''}")
+    head = "Safety copy from" if info.kind == "safety" else "From"
+    return f"{head}: " + ", ".join(parts)
+
+
+def account_line(name):
+    return f'Settings of account "{name}" go to:'
+
+
+def restore_confirm(addons, files, folder):
+    """The yes/no question before a restore."""
+    what = []
+    if addons:
+        what.append(f"{addons} addon{'s' if addons != 1 else ''}")
+    if files:
+        what.append(f"{files} settings file{'s' if files != 1 else ''}")
+    return (f"This replaces {' and '.join(what)} here with the ones from the backup. "
+            f"Everything else stays. A safety copy of what gets replaced is saved first in "
+            f"{folder}.")
+
+
+def restored_message(result):
+    text = "Restored."
+    if result.safety:
+        text += f" Safety copy: {result.safety}"
+    return text + " Restart WoW to use them."
+
+
+def backup_message(exc):
+    """Backup or restore didn't work (nothing was changed)."""
+    kind = getattr(exc, "kind", "")
+    if kind == "game":
+        return GAME_OPEN
+    if kind in ("not_backup", "bad_zip"):
+        return "That file isn't an Addon Manager backup (or it is damaged). Nothing was changed."
+    if kind == "newer_format":
+        return "That backup was made by a newer Addon Manager. Update this one first."
+    if kind == "unsafe":
+        return ("That backup holds files in places it shouldn't, so I didn't use it. "
+                "Nothing was changed." + DETAILS)
+    if kind == "nothing":
+        return "There was nothing to back up or restore."
+    if kind == "inside_game":
+        return "Pick a folder outside the WoW Forever folder for backups."
+    if kind == "no_account":
+        return NO_ACCOUNT
+    if kind == "same_account":
+        return ("Two accounts from the backup would go to the same account here. Pick a "
+                "different account for each, or (skip) one of them.")
+    if kind == "bad_folder":
+        return FOLDER_GONE
+    if kind == "locked":
+        return ("Some files are in use, so nothing was changed. Close WoW (or the program "
+                "using them) and try again.")
+    if kind == "permission":
+        return (f"{SYSTEM} won't let me write there, so nothing was changed. Pick another "
+                "folder or close WoW and try again.")
+    if kind == "disk_full":
+        return "The disk is full, so nothing was changed. Free some space and try again."
+    return "That didn't work, so nothing was changed. Try again." + DETAILS

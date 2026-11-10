@@ -83,6 +83,7 @@ def selftest(args):
                                versions.display(v))
             except Exception as e:
                 all_ok = step(f"install {addon.folder}", False, repr(e))
+        all_ok &= _selftest_backup(addons_dir, step)
         # The window toolkit must be bundled: build the window hidden, load, close.
         import tkinter as tk
         from am import ui
@@ -104,6 +105,29 @@ def selftest(args):
     except Exception as e:
         step("error", False, repr(e))
     return report
+
+
+def _selftest_backup(addons_dir, step):
+    """Backup + restore round trip on the self-test's fake WoW folder (zip + safety copy
+    in a temp folder that is removed afterwards)."""
+    import shutil
+    import tempfile
+    from am import backup
+    tmp = tempfile.mkdtemp(prefix="backup_restore_selftest_")
+    try:
+        path, size, counts = backup.make(addons_dir, os.path.join(tmp, "backups"))
+        info = backup.read(path)
+        made = step("backup", info.addons and size > 0, f"{counts}, {size} bytes")
+        amap = backup.default_map(info.accounts, backup.local_accounts(addons_dir))
+        result = backup.restore(path, addons_dir, os.path.join(tmp, "safety"), account_map=amap)
+        restored = step("restore", sorted(result.addons) == sorted(info.addons)
+                        and result.safety and os.path.isfile(result.safety),
+                        f"{len(result.addons)} addons, {result.files} settings files")
+        return bool(made and restored)
+    except Exception as e:
+        return step("backup", False, repr(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def selftest_update(args, exe=None):

@@ -11,9 +11,9 @@ import webbrowser
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
-from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, icon, installer,
-                selfupdate,
-                stats, theme, toc, versions, wowpath)
+from am import (APP_NAME, APP_VERSION, backup, backup_ui, config, errors, gamecheck, github,
+                icon, installer, selfupdate,
+                stats, theme, toc, trash, versions, wowpath)
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,10 @@ ALL_STATUSES = (versions.UPDATE, versions.NOT_INSTALLED)
 NOT_CHOSEN = "(not chosen)"
 VERSION_SAMPLE = "v10.10.10-beta.10"   # sets the Installed/Latest column widths
 SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
+REMOVED_SETTING = "removed_addons"   # settings.json: guild addons the player removed
+REMOVE_BUTTON = "X"   # plain text: Linux fonts may have no symbol for it
+MIN_WIDTH = 560   # the window's smallest width (more if the rows need it)
+COL_GAP = 10   # space after the list's text columns (keeps rows inside the 560 px window)
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
 SETTINGS_BUTTON = "⚙ Settings" if os.name == "nt" else "Settings"
 BETA_TEXT = "Show beta versions"
@@ -104,7 +108,7 @@ class App:
     def __init__(self, root, manifest_location=None, allow_local=False, wow_override=None,
                  check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None,
                  github_api=None, app_exe=None, updated_from=None, restart=selfupdate.restart,
-                 open_link=None, confirm=None, stats_url=None):
+                 open_link=None, confirm=None, stats_url=None, trash_api=None):
         """app_exe: the running .exe (self-update on); None = no self-update (from source,
         self-test). updated_from: set when this run was started by an update.
         confirm(title, text, ok_text, cancel_text) -> bool: the yes/no question (tests
@@ -112,6 +116,9 @@ class App:
         count goes; None = config.STATS_URL for the built app only (never dev runs or
         self-tests), "" = never."""
         self.confirm = confirm or self._confirm_dialog
+        # trash_api: available(path) -> "bin"/"trash"/None and send(path); tests pass a fake
+        # so the real Recycle Bin is never used there.
+        self.trash = trash_api or trash
         self._widths = {}   # measured text widths (see _text_width)
         self._rows_key, self._cells = None, []   # the list's widgets (see _build_rows)
         self.root = root
@@ -147,10 +154,17 @@ class App:
         self.manifest_note = ""
         self.folder_note = ""   # folder warning/notice kept in the message line
         self.clipboard = self._set_clipboard   # tests swap this; never the real clipboard
+        # Backup and restore (Settings window): the open Make/Restore window, and the
+        # file/folder pickers + "Open folder" (tests swap these; no dialog opens there).
+        self.backup_dialog = None
+        self.ask_backup_file = self._ask_backup_file_dialog
+        self.ask_backup_folder = self._ask_backup_folder_dialog
+        self.open_folder = backup_ui.open_folder
 
         root.title(APP_NAME)
         root.geometry("680x420")
-        root.minsize(560, 320)
+        root.minsize(MIN_WIDTH, 320)
+        self._min_width = MIN_WIDTH   # grows if the list's rows need more (see _fit_min_width)
         root.protocol("WM_DELETE_WINDOW", self.close)
         theme.apply(root)
         icon.apply(root)
@@ -188,6 +202,13 @@ class App:
                                    activeforeground=theme.ACCENT_TEXT, borderwidth=1)
         self.folder_menu.add_command(label="Copy", command=self.copy_folder)
         self.folder_entry.bind("<Button-3>", self._folder_menu_popup)
+        # Right-click on an addon row: Remove <name>... (see _row_menu_popup).
+        self.row_menu = tk.Menu(self.root, tearoff=0, background=theme.SURFACE,
+                                foreground=theme.TEXT, activebackground=theme.ACCENT,
+                                activeforeground=theme.ACCENT_TEXT, borderwidth=1)
+        self.row_menu.add_command(label="Remove...")
+        # The X button: same height as the other buttons, less space at the sides.
+        ttk.Style(self.root).configure("Remove.TButton", padding=(3, 4))
         self.folder_entry.bind("<Control-c>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_entry.bind("<Control-C>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder)
@@ -234,6 +255,7 @@ class App:
         self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
         self.share_var = tk.BooleanVar(value=_share_on(self.settings))
         self.settings_win = self.beta_check = self.share_check = None
+        self.backup_button = self.restore_button = None   # in the Settings window
         self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON,
                                           command=self.open_settings)
         self.settings_button.pack(side="right")
@@ -274,36 +296,45 @@ class App:
         f = self.list_frame
         for i in range(1, len(self._cells) + 1):   # the old rows' fixed heights
             f.rowconfigure(i, minsize=0)
-        headers = ("Addon", "Installed", "Latest", "Status", "")
+        headers = ("Addon", "Installed", "Latest", "Status", "", "")
         for col, text in enumerate(headers):
             ttk.Label(f, text=text, font=theme.font("bold"), style="Muted.TLabel").grid(
-                row=0, column=col, sticky="w", padx=(0, 14), pady=(0, 4))
+                row=0, column=col, sticky="w", padx=(0, COL_GAP if col < 4 else 0), pady=(0, 4))
         f.columnconfigure(3, weight=1)
         # Fixed widths for Installed and Latest, so Status and the buttons don't jump
         # sideways when a version text gets longer (e.g. "v1.4.0-beta.1 (beta)").
         for col, sample in ((1, VERSION_SAMPLE), (2, VERSION_SAMPLE + " (beta)")):
-            f.columnconfigure(col, minsize=self._text_width(sample) + 14)
+            f.columnconfigure(col, minsize=self._text_width(sample) + COL_GAP)
         self._cells = []
         for i, _row in enumerate(self.rows, start=1):
             name = ttk.Label(f)
-            name.grid(row=i, column=0, sticky="w", padx=(0, 14), pady=2)
+            name.grid(row=i, column=0, sticky="w", padx=(0, COL_GAP), pady=2)
             installed = ttk.Label(f)
-            installed.grid(row=i, column=1, sticky="w", padx=(0, 14))
+            installed.grid(row=i, column=1, sticky="w", padx=(0, COL_GAP))
             latest = ttk.Label(f)
-            latest.grid(row=i, column=2, sticky="w", padx=(0, 14))
+            latest.grid(row=i, column=2, sticky="w", padx=(0, COL_GAP))
             status = ttk.Label(f)
-            status.grid(row=i, column=3, sticky="w")
+            status.grid(row=i, column=3, sticky="w", padx=(0, COL_GAP))
             button = ttk.Button(f, width=10)
             button.grid(row=i, column=4, sticky="e")
             button.grid_remove()
+            # Remove (X): only for installed guild addons; right-click on the row does the same.
+            remove = ttk.Button(f, text=REMOVE_BUTTON, width=2, style="Remove.TButton",
+                                command=lambda n=i - 1: self._remove_index(n))
+            remove.grid(row=i, column=5, sticky="e", padx=(4, 0))
+            remove.grid_remove()
+            Tooltip(remove, errors.REMOVE_TIP)
+            for widget in (name, installed, latest, status):
+                widget.bind("<Button-3>", lambda e, n=i - 1: self._row_menu_popup(e, n))
             # Every row as tall as a button, so texts don't jump when a button shows or hides.
             f.rowconfigure(i, minsize=button.winfo_reqheight())
             self._cells.append({"name": name, "name_tip": Tooltip(name, ""),
                                 "installed": installed, "latest": latest, "status": status,
-                                "status_tip": Tooltip(status, ""), "button": button})
+                                "status_tip": Tooltip(status, ""), "button": button,
+                                "remove": remove})
         if not self.rows:
             ttk.Label(f, text=self.manifest_note or "No addons to show.").grid(
-                row=1, column=0, columnspan=5, sticky="w")
+                row=1, column=0, columnspan=6, sticky="w")
         self._rows_key = key
 
     def render(self):
@@ -314,6 +345,8 @@ class App:
         if getattr(self, "_rows_key", None) != key:
             self._build_rows(key)
         self.row_widgets = {}
+        self.remove_widgets = {}
+        removed = self._removed()
         any_action = False
         for i, row in enumerate(self.rows, start=1):
             cells = self._cells[i - 1]
@@ -338,10 +371,15 @@ class App:
                          and row.problem_kind == "no_release")
             if go_back or no_normal:
                 status_text = errors.BETA_INSTALLED
+            was_removed = not exists and row.folder in removed
+            if was_removed:
+                status_text = errors.REMOVED
             if row.state == "queued":
                 status_text = "Waiting..."
             elif row.state == "installing":
                 status_text = "Installing..."
+            elif row.state == "removing":
+                status_text = errors.REMOVING
             elif row.state == "error":
                 status_text = "✖ Failed (see below)"
             elif row.problem and not row.addon and not no_normal:
@@ -349,6 +387,8 @@ class App:
             status_label = cells["status"]
             if row.state == "error":
                 status_label.configure(text=status_text, style="Failed.TLabel", foreground="")
+            elif was_removed and not row.state:
+                status_label.configure(text=status_text, style="Muted.TLabel", foreground="")
             else:
                 status_label.configure(text=status_text, style="TLabel", foreground=(
                     "" if row.state else theme.STATUS.get(status, "")))
@@ -361,7 +401,7 @@ class App:
             elif row.addon and status in BUTTON_TEXT and self.addons_dir:
                 button.configure(text=BUTTON_TEXT[status], width=10,
                                  command=lambda r=row: self.install_rows([r]))
-                if status in ALL_STATUSES:
+                if status in ALL_STATUSES and not was_removed:
                     any_action = True
             else:
                 button = None
@@ -371,13 +411,33 @@ class App:
                 self._set_enabled(button, not self.busy)
                 button.grid()
             self.row_widgets[row.folder] = (status_label, button, status)
+            remove = cells["remove"]
+            if exists and self.addons_dir:
+                self._set_enabled(remove, not self.busy)
+                remove.grid()
+                self.remove_widgets[row.folder] = remove
+            else:
+                remove.grid_remove()
+                self.remove_widgets[row.folder] = None
         self._set_enabled(self.all_button, any_action and not self.busy)
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
         self._set_enabled(self.beta_main_check, not self.busy)
         if self.beta_check is not None:   # only while the Settings window is open
             self._set_enabled(self.beta_check, not self.busy)
+            for b in (self.backup_button, self.restore_button):
+                self._set_enabled(b, not self.busy and bool(self.addons_dir))
         self._render_update_bar()
+        self._fit_min_width()
+
+    def _fit_min_width(self):
+        """Never let the window get narrower than the list's rows (wider Linux fonts), so
+        the Install and X buttons can't be cut off. At least MIN_WIDTH."""
+        self.list_frame.update_idletasks()
+        need = max(MIN_WIDTH, self.list_frame.winfo_reqwidth() + 20)   # + outer padding
+        if need != self._min_width:
+            self._min_width = need
+            self.root.minsize(need, 320)
 
     # ---------- the app's own update ----------
     def _render_update_bar(self):
@@ -507,6 +567,10 @@ class App:
         self.folder_entry.configure(style="Path.TEntry")
         self.folder_button.configure(text="Change...")
         if os.path.isdir(addons_dir):
+            # A restore that was cut off is undone first (it owns its backup folders).
+            if ("undone", "restore") in backup.recover_restore(addons_dir):
+                self.folder_note = errors.RESTORE_UNDONE   # kept after "Checking..."
+                self.set_message(errors.RESTORE_UNDONE)
             for action, name in installer.recover(addons_dir):
                 log.info("Recovered %s %s", action, name)
         if save:
@@ -650,6 +714,80 @@ class App:
         log.info("Going back from %s %s to %s", row.folder, installed_v, row.latest)
         self.install_rows([row])
 
+    # ---------- removing an addon ----------
+    def _removed(self):
+        """Folders of guild addons the player removed (Install/update all skips them)."""
+        value = config.load_settings().get(REMOVED_SETTING) or []
+        return {f for f in value if isinstance(f, str) and manifest_mod.is_safe_folder(f)}
+
+    def _set_removed(self, folders):
+        self.settings = config.load_settings()
+        if set(self.settings.get(REMOVED_SETTING) or []) == set(folders):
+            return
+        if folders:
+            self.settings[REMOVED_SETTING] = sorted(folders)
+        else:
+            self.settings.pop(REMOVED_SETTING, None)
+        config.save_settings(self.settings)
+
+    def _guild_folders(self):
+        if self.manifest is not None:
+            return {a.folder for a in self.manifest.addons}
+        return {r.folder for r in self.rows}
+
+    def _remove_index(self, index):
+        if 0 <= index < len(self.rows):
+            self.remove_row(self.rows[index])
+
+    def _row_menu_popup(self, event, index):
+        if not 0 <= index < len(self.rows):
+            return
+        row = self.rows[index]
+        can = bool(self.addons_dir and not self.busy and self._installed(row.folder)[0])
+        self.row_menu.entryconfigure(0, label=errors.remove_menu_label(row.name),
+                                     state="normal" if can else "disabled",
+                                     command=lambda r=row: self.remove_row(r))
+        try:
+            self.row_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.row_menu.grab_release()
+
+    def remove_row(self, row):
+        """Ask, then move the addon's folder to the Recycle Bin / Trash (or delete it for
+        good on a drive without one, after saying so). Only guild addons; never WTF."""
+        if self.busy or not self.addons_dir:
+            return False
+        if not self._installed(row.folder)[0]:
+            # Already gone (deleted by hand since the last check): say so and show it as
+            # Removed, so the row matches what's on disk.
+            self._set_removed(self._removed() | {row.folder})
+            self.set_message(errors.remove_message(installer.InstallError("missing"), row.name))
+            self.render()
+            return False
+        try:
+            where = self.trash.available(self.addons_dir)
+        except Exception:
+            log.exception("Trash check failed")
+            where = None
+        others = [r.folder for r in self.rows
+                  if r.folder != row.folder and self._installed(r.folder)[0]]
+        needs = installer.needed_by(self.addons_dir, row.folder, others)
+        needs = [next((r.name for r in self.rows if r.folder == f), f) for f in needs]
+        if not self.confirm(errors.remove_title(row.name),
+                            errors.remove_text(row.name, where, needs),
+                            errors.REMOVE_OK if where else errors.DELETE_OK,
+                            errors.REMOVE_CANCEL):
+            return False
+        log.info("Removing %s (%s)", row.folder, where or "delete for good")
+        self.busy = True
+        row.state = "removing"
+        self.render()
+        threading.Thread(target=_remove_worker, daemon=True,
+                         args=(self.queue, row.folder, row.name, self.addons_dir,
+                               sorted(self._guild_folders()),
+                               self.trash.send if where else None, where)).start()
+        return True
+
     def _ask_folder_dialog(self):
         extra = {}
         if os.name != "nt":
@@ -769,6 +907,24 @@ class App:
                       justify="left").pack(anchor="w", padx=(22, 0))
             checks.append(check)
         self.beta_check, self.share_check = checks
+        # Backup: both buttons side by side, one short note and a line for problems.
+        ttk.Label(frame, text=errors.BACKUP_HEADING, font=theme.font("bold")).pack(
+            anchor="w", pady=(14, 0))
+        line = ttk.Frame(frame)
+        line.pack(anchor="w", pady=(4, 0))
+        self.backup_button = ttk.Button(line, text=errors.BACKUP_BUTTON,
+                                        command=self.open_backup)
+        self.backup_button.pack(side="left")
+        self.restore_button = ttk.Button(line, text=errors.RESTORE_BUTTON,
+                                         command=self.open_restore)
+        self.restore_button.pack(side="left", padx=(8, 0))
+        ttk.Label(frame, text=errors.BACKUP_NOTE, style="Muted.TLabel", wraplength=320,
+                  justify="left").pack(anchor="w", padx=(0, 0), pady=(2, 0))
+        self.backup_status = tk.StringVar()
+        ttk.Label(frame, textvariable=self.backup_status, wraplength=320,
+                  justify="left").pack(anchor="w")
+        for b in (self.backup_button, self.restore_button):
+            self._set_enabled(b, not self.busy and bool(self.addons_dir))
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(14, 0))
         self.settings_close = ttk.Button(buttons, text="Close", command=self.close_settings)
@@ -789,14 +945,90 @@ class App:
         return win
 
     def close_settings(self):
+        if self.backup_dialog is not None:
+            if self.backup_dialog.running:
+                return   # a backup/restore is running: its window stays until it's done
+            self.backup_dialog.close()
         win, self.settings_win = self.settings_win, None
         self.beta_check = self.share_check = None
+        self.backup_button = self.restore_button = None
         if win is not None:
             try:
                 win.grab_release()
                 win.destroy()
             except tk.TclError:
                 pass
+
+    # ---------- backup and restore (from the Settings window; see am\backup_ui.py) ----------
+    def _backup_note(self, text):
+        if self.settings_win is not None and self.backup_button is not None:
+            self.backup_status.set(text)
+        else:
+            self.set_message(text)
+
+    def _ask_backup_file_dialog(self):
+        parent = self.settings_win or self.root
+        start = backup_ui.backup_folder(config.load_settings())
+        return filedialog.askopenfilename(
+            parent=parent, title=errors.RESTORE_PICK_FILE,
+            initialdir=start if os.path.isdir(start) else None,
+            filetypes=[("Backup", "*.zip"), ("All files", "*.*")])
+
+    def _ask_backup_folder_dialog(self, start):
+        parent = (self.backup_dialog.win if self.backup_dialog is not None
+                  else self.settings_win or self.root)
+        if os.name != "nt":
+            _show_hidden_folders(self.root)
+        return filedialog.askdirectory(parent=parent, mustexist=False,
+                                       initialdir=start if os.path.isdir(start) else None,
+                                       title=errors.BACKUP_TITLE)
+
+    def open_backup(self, show=True):
+        """The Make a backup window (show=False in tests: built, never shown)."""
+        if self.busy or not self.addons_dir or self.backup_dialog is not None:
+            return self.backup_dialog
+        self._backup_note("")
+        self.backup_dialog = backup_ui.BackupDialog(self, show=show)
+        return self.backup_dialog
+
+    def open_restore(self, show=True, path=None):
+        """Pick a backup .zip, check it, then the Restore window (nothing changes until
+        the player says yes there). Returns the window, or None."""
+        if self.busy or not self.addons_dir or self.backup_dialog is not None:
+            return None
+        self._backup_note("")
+        path = path or self.ask_backup_file()
+        if self.settings_win is not None and show:
+            try:
+                self.settings_win.grab_set()
+            except tk.TclError:
+                pass
+        if not path:
+            return None
+        try:
+            info = backup.read(path)
+        except Exception as e:
+            log.warning("Not a usable backup: %s (%s)", path, e)
+            self._backup_note(errors.backup_message(e))
+            return None
+        self.backup_dialog = backup_ui.RestoreDialog(self, info, show=show)
+        return self.backup_dialog
+
+    def _backup_event(self, msg):
+        kind = msg[0]
+        final = kind in ("backup_done", "backup_error", "restore_done", "restore_error")
+        if final:
+            self.busy = False
+        dialog = self.backup_dialog
+        if dialog is not None and dialog.alive():
+            dialog.handle(msg)
+        elif kind in ("backup_error", "restore_error"):
+            self.set_message(msg[1])
+        if not final:
+            return
+        if kind == "restore_done":
+            self.set_message(errors.restored_message(msg[1]))
+        self.render()   # the rows read the installed versions from disk again
 
     def _apply_manifest(self, m, error, problems=None):
         self.manifest = m
@@ -816,6 +1048,10 @@ class App:
             self.settings = config.load_settings()
             self.settings["known_addons"] = [[a.folder, a.name] for a in m.addons]
             config.save_settings(self.settings)
+            # A removed addon that is back (from the bin, or by hand) counts as normal again.
+            back = {f for f in self._removed() if self._installed(f)[0]}
+            if back:
+                self._set_removed(self._removed() - back)
             self.manifest_note = "The guild's addon list is empty."
             note = ""
             if (m.app_version and versions.compare(m.app_version, APP_VERSION) == 1
@@ -843,10 +1079,13 @@ class App:
     # ---------- installing ----------
     def update_all(self):
         rows = []
+        removed = self._removed()
         for row in self.rows:
             if not row.addon:
                 continue
             exists, v = self._installed(row.folder)
+            if not exists and row.folder in removed:
+                continue   # the player removed it: only its own Install button brings it back
             if versions.status(exists, v, row.latest) in ALL_STATUSES:
                 rows.append(row)
         if rows:
@@ -861,6 +1100,7 @@ class App:
             return
         self.busy = True
         self.installing = True
+        self._set_removed(self._removed() - {r.folder for r in rows})
         for row in rows:
             row.state, row.message = "queued", ""
         self.progress.configure(value=0)
@@ -925,6 +1165,25 @@ class App:
             if row:
                 row.state, row.message = "error", msg[2]
             self.render()
+        elif kind == "removed":
+            folder, where = msg[1], msg[2]
+            self.busy = False
+            self._set_removed(self._removed() | {folder})
+            row = self._row(folder)
+            if row:
+                row.state = None
+                self.set_message(msg[3] if len(msg) > 3
+                                 else errors.removed_message(row.name, where))
+            self.render()
+        elif kind == "remove_error":
+            self.busy = False
+            row = self._row(msg[1])
+            if row:
+                row.state = None
+            self.set_message(msg[2])
+            self.render()
+        elif kind.startswith(("backup_", "restore_")):
+            self._backup_event(msg)
         elif kind == "stats_sent":
             self.settings = config.load_settings()
             self.settings[stats.DAY_SETTING], self.settings[stats.WEEK_SETTING] = msg[1], msg[2]
@@ -993,6 +1252,8 @@ class App:
                                stats.day(), stats.week())).start()
 
     def close(self):
+        if self.backup_dialog is not None and self.backup_dialog.running:
+            return   # never stop a backup/restore half-way; it finishes in seconds
         self.closed = True
         self.root.destroy()
 
@@ -1081,6 +1342,19 @@ def _install_worker(q, check_game, rows, addons_dir):
             log.exception("Install of %s failed", row.folder)
             q.put(("error", row.folder, errors.install_message(e, row.name)))
     q.put(("finished", done_msgs))
+
+
+def _remove_worker(q, folder, name, addons_dir, guild_folders, send, where):
+    """Thread: remove one guild addon; ("removed", folder, where) or ("remove_error", ...)."""
+    try:
+        installer.remove(folder, addons_dir, guild_folders, send=send)
+        q.put(("removed", folder, where))
+    except Exception as e:
+        log.exception("Removing %s failed", folder)
+        if getattr(e, "kind", "") == "partly":   # gone from the game; the rest is hidden
+            q.put(("removed", folder, None, errors.remove_message(e, name)))
+        else:
+            q.put(("remove_error", folder, errors.remove_message(e, name)))
 
 
 def _stats_worker(q, url, payload, allow_local, today, this_week):

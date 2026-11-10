@@ -38,13 +38,25 @@ def apply(root):
     also kept on root (Tk drops an image whose Python object is freed). Never raises."""
     import tkinter as tk
     images = []
-    try:
-        if os.name == "nt" and os.path.isfile(ICO):
+    if not os.path.isdir(ASSETS):
+        log.info("Icon folder missing: %s", ASSETS)
+    if os.name == "nt" and os.path.isfile(ICO):
+        try:
             root.iconbitmap(default=ICO)   # sharp small sizes in title bars, Alt+Tab
-        images = [tk.PhotoImage(master=root, file=p) for p in PNGS if os.path.isfile(p)]
-        if images:
+        except Exception as e:   # tk.TclError, a damaged file...
+            log.warning("Window icon file not used: %s", e)
+    for p in PNGS:   # each on its own: one bad file never drops the others
+        if not os.path.isfile(p):
+            continue
+        try:
+            images.append(tk.PhotoImage(master=root, file=p))
+        except Exception as e:
+            log.warning("Icon %s skipped: %s", os.path.basename(p), e)
+    if images:
+        try:
             root.iconphoto(True, *images)
-    except Exception as e:   # tk.TclError, a damaged file...
-        log.warning("Window icon not set: %s", e)
+        except Exception as e:
+            log.warning("Window icon not set: %s", e)
+            images = []
     root._am_icons = images
     return images

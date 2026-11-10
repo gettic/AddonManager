@@ -15,6 +15,10 @@ if os.environ.get("ADDONMANAGER_TEST_TMP"):
 os.environ["ADDONMANAGER_HOME"] = tempfile.mkdtemp(
     prefix="v1core_home_", dir=os.environ.get("ADDONMANAGER_TEST_TMP"))
 atexit.register(shutil.rmtree, os.environ["ADDONMANAGER_HOME"], True)
+# Backups never go into the real Documents folder.
+os.environ["ADDONMANAGER_DOCUMENTS"] = tempfile.mkdtemp(
+    prefix="backup_restore_docs_", dir=os.environ.get("ADDONMANAGER_TEST_TMP"))
+atexit.register(shutil.rmtree, os.environ["ADDONMANAGER_DOCUMENTS"], True)
 
 # Tests never go online: no real addon list, and "GitHub" is a closed local port.
 from am import config  # noqa: E402

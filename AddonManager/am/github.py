@@ -335,13 +335,14 @@ def _stops_others(exc):
 def _fetch_all(repos, base, fetch=None):
     """newest_releases for each repo (each once), at most MAX_PARALLEL at a time.
     Returns {repo: ("ok", pair) or ("error", exception)}. After a 403/429 no new request
-    is started: the rest get ReleaseError("rate_limited") (callers then use the cache,
+    is started: the rest get ReleaseError("rate_limited") with the stopping error's wait (callers then use the cache,
     as for a real rate limit). Never raises."""
     fetch = fetch or newest_releases
     todo = list(dict.fromkeys(repos))
     results = {}
     lock = threading.Lock()
     stop = threading.Event()
+    stop_wait = [0]   # the stopping error's wait, given to the repos not asked
 
     def worker():
         while True:
@@ -351,13 +352,18 @@ def _fetch_all(repos, base, fetch=None):
                 repo = todo.pop(0)
                 if stop.is_set():
                     results[repo] = ("error", ReleaseError(
-                        "rate_limited", "not asked: GitHub refused an earlier request"))
+                        "rate_limited", "not asked: GitHub refused an earlier request",
+                        wait=stop_wait[0]))
                     continue
             try:
                 value = ("ok", fetch(repo, base))
             except Exception as e:   # handled per addon by the caller, as before
                 value = ("error", e)
                 if _stops_others(e):
+                    with lock:
+                        wait = getattr(e, "wait", 0)
+                        if isinstance(wait, (int, float)) and wait > stop_wait[0]:
+                            stop_wait[0] = wait
                     stop.set()
             with lock:
                 results[repo] = value
