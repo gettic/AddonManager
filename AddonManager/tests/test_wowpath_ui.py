@@ -2,6 +2,7 @@
 
 import gc
 import os
+import pathlib
 import time
 import tkinter as tk
 import unittest
@@ -225,6 +226,49 @@ class WindowTests(unittest.TestCase):
             app.row_widgets["TaxiTime"][1].invoke()
             self.pump(app)
             self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
+
+    def test_last_known_list_shown_at_once(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            api, location = server.url + "api", os.path.join(gh, "addons.json")
+            # A first start fills known_addons and cache.json.
+            app = ui.App(self.root, location, True, self.root_dir, check_game=lambda: False,
+                         detect=lambda: [], github_api=api)
+            self.pump(app)
+            app.root.destroy()
+            self.root = tk.Tk()
+            self.root.withdraw()
+            saved = {p: pathlib.Path(p).read_bytes() for p in (config.settings_path(), config.cache_path())}
+            # Next start: the rows are there before any answer, buttons locked.
+            app = ui.App(self.root, location, True, self.root_dir, check_game=lambda: False,
+                         detect=lambda: [], github_api=api)
+            self.assertTrue(app.busy)
+            self.assertEqual([r.folder for r in app.rows], ["TaxiTime", "GuildHub"])
+            self.assertEqual(self.latest_text(app, "TaxiTime"), "v1.3.0")
+            self.assertEqual(app.message_var.get(), "Checking for updates...")
+            label, button, _ = app.row_widgets["TaxiTime"]
+            self.assertEqual(label.cget("text"), "Update available")
+            self.assertIn("disabled", button.state())
+            self.assertIn("disabled", app.all_button.state())
+            self.assertIn("disabled", app.check_button.state())
+            button.invoke()   # locked: nothing happens
+            self.assertEqual({p: pathlib.Path(p).read_bytes() for p in saved}, saved)
+            self.pump(app)
+            self.assertFalse(app.busy)
+            self.assertEqual(self.status(app, "TaxiTime"), ("Update available", "Update"))
+            self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.2.0"))
+
+    def test_last_known_list_without_cache(self):
+        config.save_settings({"known_addons": [["TaxiTime", "Taxi Time"]]})
+        if os.path.exists(config.cache_path()):
+            os.remove(config.cache_path())
+        app = self.make_app()
+        self.assertEqual([r.folder for r in app.rows], ["TaxiTime"])
+        self.assertEqual(self.latest_text(app, "TaxiTime"), "?")
+        self.assertIsNone(app.row_widgets["TaxiTime"][1])
+        self.assertFalse(os.path.exists(config.cache_path()))
+        self.pump(app)
+        self.assertEqual([r.folder for r in app.rows], ["TaxiTime", "GuildHub"])
 
     def column_xs(self, app):
         """x of the Installed, Latest and Status columns (header labels)."""

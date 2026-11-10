@@ -94,9 +94,13 @@ def selftest(args):
             root.update()
             time.sleep(0.05)
         rows = len(app.rows)
+        from am import icon
+        icons = len(getattr(root, "_am_icons", []))
+        icon_ok = step("icon", icons == len(icon.PNGS) and os.path.isfile(icon.ICO),
+                       f"{icons} window icon sizes loaded")
         app.close()
         window_ok = step("window", not app.busy and rows == len(m.addons), f"{rows} rows")
-        report["ok"] = bool(all_ok and window_ok)
+        report["ok"] = bool(all_ok and window_ok and icon_ok)
     except Exception as e:
         step("error", False, repr(e))
     return report
@@ -164,7 +168,8 @@ def main(argv=None):
     if args.updated_from:
         log.info("Started after an update from %s", args.updated_from)
     set_dpi_aware()
-    from am import ui
+    from am import icon, ui
+    icon.set_app_id()   # before the first window, so the taskbar shows the app's icon
     ui.run(args.manifest, allow_local=bool(args.manifest), wow_override=args.wow,
            hidden=args.hidden, github_api=args.github_api if args.manifest else None,
            updated_from=args.updated_from)

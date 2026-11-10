@@ -16,6 +16,122 @@ def _addon(folder="TaxiTime", repo="gettic/TaxiTime"):
     return manifest.Addon(folder=folder, name=folder, version="", url="", repo=repo)
 
 
+class ParallelFetch(unittest.TestCase):
+    """resolve_all asks GitHub a few repos at a time (_fetch_all)."""
+
+    def test_at_most_three_at_once_and_each_repo_once(self):
+        import threading
+        lock, running, peak, calls = threading.Lock(), [0], [0], []
+
+        def fetch(repo, base):
+            with lock:
+                calls.append(repo)
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            time.sleep(0.1)
+            with lock:
+                running[0] -= 1
+            return ({"tag": repo}, None)
+
+        repos = [f"g/R{i}" for i in range(7)] + ["g/R0"]
+        results = github._fetch_all(repos, "b", fetch)
+        self.assertEqual(sorted(calls), sorted(set(repos)))
+        self.assertEqual(peak[0], github.MAX_PARALLEL)
+        self.assertEqual(results["g/R3"], ("ok", ({"tag": "g/R3"}, None)))
+
+    def test_429_stops_new_requests(self):
+        calls = []
+
+        def fetch(repo, base):
+            calls.append(repo)
+            if repo == "g/A":
+                raise github.ReleaseError("rate_limited", "429", wait=120)
+            time.sleep(0.3)
+            return ({"tag": "v1"}, None)
+
+        results = github._fetch_all(["g/A", "g/B", "g/C", "g/D", "g/E", "g/F"], "b", fetch)
+        # Only the requests already running when the 429 came back were made.
+        self.assertLessEqual(set(calls), {"g/A", "g/B", "g/C"})
+        for repo in ("g/D", "g/E", "g/F"):
+            status, err = results[repo]
+            self.assertEqual((status, err.kind), ("error", "rate_limited"))
+        self.assertEqual(results["g/A"][1].wait, 120)
+
+    def test_plain_403_also_stops_new_requests(self):
+        calls = []
+
+        def fetch(repo, base):
+            calls.append(repo)
+            if repo == "g/A":
+                try:
+                    raise download.DownloadError("http", "403", code=403)
+                except download.DownloadError as e:
+                    raise github.ReleaseError("bad", "403") from e
+            time.sleep(0.3)
+            return ({"tag": "v1"}, None)
+
+        results = github._fetch_all(["g/A", "g/B", "g/C", "g/D"], "b", fetch)
+        self.assertNotIn("g/D", calls)
+        self.assertEqual(results["g/A"][1].kind, "bad")
+        self.assertEqual(results["g/D"][1].kind, "rate_limited")
+
+    def test_one_failing_never_stops_the_others(self):
+        def fetch(repo, base):
+            if repo == "g/B":
+                raise github.ReleaseError("offline", "x")
+            if repo == "g/C":
+                raise ValueError("odd")
+            return ({"tag": "v1"}, None)
+
+        results = github._fetch_all(["g/A", "g/B", "g/C", "g/D"], "b", fetch)
+        self.assertEqual([results[r][0] for r in ("g/A", "g/B", "g/C", "g/D")],
+                         ["ok", "error", "error", "ok"])
+
+    def test_nothing_to_ask(self):
+        self.assertEqual(github._fetch_all([], "b", lambda *a: self.fail("asked")), {})
+
+
+class CachedPreview(unittest.TestCase):
+    """The last known list shown at start, from settings + cache.json only."""
+
+    def setUp(self):
+        self.work = fixtures.temp_dir("preview_")
+        self.cache = os.path.join(self.work, "cache.json")
+
+    def tearDown(self):
+        fixtures.remove(self.work)
+
+    def release(self, tag, prerelease=False):
+        return {"tag": tag, "prerelease": prerelease, "assets": [{
+            "name": f"TaxiTime-{tag}.zip", "size": 5, "digest": "", "state": "uploaded",
+            "url": f"https://github.com/gettic/TaxiTime/releases/download/{tag}/TaxiTime-{tag}.zip"}]}
+
+    def test_versions_from_cache_any_age(self):
+        github.save_cache(self.cache, {github.cache_key(config.GITHUB_API, "gettic/TaxiTime"): {
+            "time": 1, "release": self.release("v1.3.0"), "beta": self.release("v1.4.0-beta.1", True)}})
+        known = [["TaxiTime", "Taxi Time"], ["GuildHub", "Guild Hub"], ["../x", "Bad"], 5, ["A"]]
+        before = pathlib.Path(self.cache).read_bytes()
+        taxi, hub = github.cached_preview(known, cache_file=self.cache)
+        self.assertEqual((taxi.name, taxi.version, taxi.beta), ("Taxi Time", "1.3.0", False))
+        self.assertEqual((hub.folder, hub.version), ("GuildHub", ""))
+        (taxi,) = github.cached_preview(known[:1], cache_file=self.cache, show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta), ("1.4.0-beta.1", True))
+        self.assertEqual(pathlib.Path(self.cache).read_bytes(), before)   # nothing saved
+
+    def test_missing_empty_or_damaged_cache(self):
+        known = [["TaxiTime", "Taxi Time"]]
+        for content in (None, "", "{}", "not json", '{"x": 5}'):
+            if content is None:
+                if os.path.exists(self.cache):
+                    os.remove(self.cache)
+            else:
+                pathlib.Path(self.cache).write_text(content, encoding="utf-8")
+            addons = github.cached_preview(known, cache_file=self.cache)
+            self.assertEqual([(a.folder, a.version) for a in addons], [("TaxiTime", "")], content)
+        self.assertEqual(github.cached_preview(None, cache_file=self.cache), [])
+        self.assertEqual(github.cached_preview("x", cache_file=self.cache), [])
+
+
 class Basics(unittest.TestCase):
     def test_real_defaults(self):
         self.assertEqual(tests.REAL_GITHUB_API, "https://api.github.com")

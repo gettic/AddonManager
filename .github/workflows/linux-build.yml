@@ -106,7 +106,9 @@ jobs:
           mkdir -p out pkg
           install -m 755 /home/builder/repo/AddonManager/dist/AddonManager out/AddonManager-linux-x86_64
           install -m 755 /home/builder/repo/AddonManager/dist/AddonManager pkg/AddonManager
-          tar -C pkg --owner=0 --group=0 --numeric-owner -czf out/AddonManager-linux-x86_64.tar.gz AddonManager
+          # The app's icon, for a desktop shortcut or Steam's "Add a Non-Steam Game".
+          install -m 644 AddonManager/am/assets/AddonManager.png pkg/AddonManager.png
+          tar -C pkg --owner=0 --group=0 --numeric-owner -czf out/AddonManager-linux-x86_64.tar.gz AddonManager AddonManager.png
           cd out
           sha256sum AddonManager-linux-x86_64 AddonManager-linux-x86_64.tar.gz | tee SHA256SUMS
           ls -l

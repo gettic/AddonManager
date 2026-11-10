@@ -1,6 +1,7 @@
 # PyInstaller build config: one windowed AddonManager.exe. Run through build.ps1.
 # On Linux (the GitHub Actions workflow linux-build.yml) the same spec makes the one-file
-# program dist/AddonManager (no Windows file properties or icon there).
+# program dist/AddonManager (no Windows file properties or file icon there; the window
+# icon comes from the bundled am/assets PNGs on both systems).
 # The version comes from am\__init__.py (APP_VERSION), so it is kept in one place.
 # tos rule: no "World of Warcraft", "WoW", "Warcraft" or "Blizzard" in the names below.
 import os
@@ -37,13 +38,21 @@ if WINDOWS:
             VarFileInfo([VarStruct("Translation", [1033, 1200])]),
         ],
     )
-    icon = os.path.join(HERE, "assets", "icon.ico")
-    if not os.path.isfile(icon):
-        icon = None
+    icon = os.path.join(HERE, "am", "assets", "AddonManager.ico")   # the .exe file's icon
+
+# The window/taskbar icons (am/icon.py), inside the program on both systems.
+ASSETS = os.path.join(HERE, "am", "assets")
+assets = [(os.path.join(ASSETS, n), os.path.join("am", "assets"))
+          for n in ("AddonManager.ico", "AddonManager.png", "AddonManager_48.png",
+                    "AddonManager_32.png", "AddonManager_16.png")]
+for src, _dest in assets + ([(icon, "")] if icon else []):
+    if not os.path.isfile(src):
+        raise SystemExit(f"Missing icon file: {src}")
 
 a = Analysis(
     [os.path.join(HERE, "main.py")],
     pathex=[HERE],
+    datas=assets,
     excludes=["tests", "unittest", "pydoc", "doctest", "pdb"],
 )
 # Faster start: the one-file program unpacks every bundled file on each start (antivirus

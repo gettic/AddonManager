@@ -1,10 +1,10 @@
 # Guild Addon Manager
 
-An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. You don't need to install anything else. It opens in about a second.
+An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. You don't need to install anything else. It opens in about a second. It has its own icon (the guild logo) on the file, in the window, on the taskbar and in Alt+Tab.
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.4.2
+Current version: v0.5.0
 
 ## Get it
 
@@ -28,6 +28,8 @@ Made for Desktop Mode.
 2. Right-click it, choose Extract (here), then double-click `AddonManager`.
 3. Keep it in your home folder (for example Downloads or `~/Applications`), not inside the game folder. It updates itself like the Windows version.
 
+The `.tar.gz` also holds `AddonManager.png`. Use it as the picture for a desktop shortcut or a Steam "Non-Steam Game".
+
 It finds WoW Forever installed through Battle.net with Proton (as a non-Steam game), Lutris, Heroic, Bottles or Wine, also on the SD card. If it can't, click **Choose folder** and pick the Battle.net Proton folder (`~/.local/share/Steam/steamapps/compatdata/<number>`; hidden folders are shown) or the `World of Warcraft` folder inside it.
 
 Game Mode may work if you add it as a non-Steam game, but don't force Proton on it: it is a Linux program.
@@ -39,7 +41,7 @@ Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Pro
 ## How to use it
 
 1. Open `AddonManager.exe`. It looks for your WoW Forever folder by itself (for example `World of Warcraft\_forever_`). It only picks a real WoW Forever folder, never Beta, PTR, Classic or Retail. If it can't find it, click **Choose folder** and pick the folder where WoW Forever is installed.
-2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The guild's addons are listed in the guild's order, Guild Hub first. The window is dark (black and grey with red). The app's own version is shown at the bottom right. The status is colour-coded:
+2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The guild's addons are listed in the guild's order, Guild Hub first. The window is dark (black and grey with red). The app's own version is shown at the bottom right. When the app opens, the list shows at once with the versions it knew last time, while it checks for updates. The buttons stay greyed out until the check is done. The status is colour-coded:
 
    | Status | Colour |
    | --- | --- |

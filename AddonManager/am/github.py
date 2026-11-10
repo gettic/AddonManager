@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.parse
 
@@ -266,6 +267,113 @@ def save_cache(path, cache):
         log.warning("Could not save the GitHub cache %s", path)
 
 
+def _apply_pair(addon, pair, allow_local, show_betas):
+    """addon filled in from (newest normal release, newest pre-release)."""
+    release, is_beta = choose(pair[0], pair[1], show_betas)
+    # The beta's version, if it's one the box would offer (so an installed normal
+    # version is never mistaken for it).
+    beta_version = ""
+    if pair[1] is not None and choose(pair[0], pair[1], True)[1]:
+        beta_version = plain_tag(pair[1]["tag"])
+    stable_version = plain_tag(pair[0]["tag"]) if pair[0] is not None else ""
+    return apply_release(addon, release, allow_local, is_beta, beta_version, stable_version)
+
+
+def cached_preview(known, base=None, allow_local=False, cache_file=None, show_betas=False):
+    """The last known list for the instant start-up view, from what is already on this PC
+    (no network, nothing saved): known = settings' [[folder, name], ...]; the latest
+    versions come from cache.json (any age). The repo of a folder is the one in
+    BUILTIN_LIST, else the only cached repo with that name. Returns Addons; those without
+    cached data have version "". Never raises."""
+    base = base or config.GITHUB_API
+    out = []
+    try:
+        cache = load_cache(cache_file) if cache_file else {}
+        builtin = {a.get("folder"): a.get("repo") for a in config.BUILTIN_LIST.get("addons", [])
+                   if isinstance(a, dict)}
+        by_name = {}
+        prefix, suffix = base + "|", "|releases"
+        for k in cache:
+            if isinstance(k, str) and k.startswith(prefix) and k.endswith(suffix):
+                repo = k[len(prefix):-len(suffix)]
+                by_name.setdefault(repo.rsplit("/", 1)[-1].lower(), []).append(repo)
+        for item in known if isinstance(known, list) else []:
+            if not (isinstance(item, (list, tuple)) and len(item) == 2
+                    and all(isinstance(x, str) for x in item)
+                    and manifest_mod.is_safe_folder(item[0])):
+                continue
+            folder, name = item
+            addon = manifest_mod.Addon(folder=folder, name=name, version="", url="")
+            same = by_name.get(folder.lower(), [])
+            repo = builtin.get(folder) or (same[0] if len(same) == 1 else "")
+            if repo and manifest_mod.is_safe_repo(repo):
+                addon = dataclasses.replace(addon, repo=repo)
+                entry = _cached_releases(cache, cache_key(base, repo))
+                if entry is not None:
+                    try:
+                        addon = _apply_pair(addon, (entry["release"], entry["beta"]),
+                                            allow_local, show_betas)
+                    except Exception:
+                        pass   # shown without a latest version until the check is done
+            out.append(addon)
+    except Exception:
+        log.exception("Last known list unreadable")
+    return out
+
+
+MAX_PARALLEL = 3   # GitHub asks clients not to flood it: at most 3 requests at once
+
+
+def _stops_others(exc):
+    """A 403/429 from GitHub (rate limit or refusal): start no further requests this run."""
+    if isinstance(exc, ReleaseError) and exc.kind == "rate_limited":
+        return True
+    cause = getattr(exc, "__cause__", None)
+    return isinstance(cause, download.DownloadError) and cause.code in (403, 429)
+
+
+def _fetch_all(repos, base, fetch=None):
+    """newest_releases for each repo (each once), at most MAX_PARALLEL at a time.
+    Returns {repo: ("ok", pair) or ("error", exception)}. After a 403/429 no new request
+    is started: the rest get ReleaseError("rate_limited") (callers then use the cache,
+    as for a real rate limit). Never raises."""
+    fetch = fetch or newest_releases
+    todo = list(dict.fromkeys(repos))
+    results = {}
+    lock = threading.Lock()
+    stop = threading.Event()
+
+    def worker():
+        while True:
+            with lock:
+                if not todo:
+                    return
+                repo = todo.pop(0)
+                if stop.is_set():
+                    results[repo] = ("error", ReleaseError(
+                        "rate_limited", "not asked: GitHub refused an earlier request"))
+                    continue
+            try:
+                value = ("ok", fetch(repo, base))
+            except Exception as e:   # handled per addon by the caller, as before
+                value = ("error", e)
+                if _stops_others(e):
+                    stop.set()
+            with lock:
+                results[repo] = value
+
+    n = min(MAX_PARALLEL, len(todo))
+    if n <= 1:
+        worker()
+        return results
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
+
+
 def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh_cache=True,
                 now=None, show_betas=False):
     """Fill in repo-based addons from GitHub. Returns (addons, problems) where
@@ -279,9 +387,11 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
     cache = load_cache(cache_file) if cache_file else {}
     changed = False
     result, problems = [], {}
+    # 1. What each addon has in the cache, and which repos must be asked (in list order).
+    plans = []
     for addon in addons:
         if not addon.repo:
-            result.append(addon)
+            plans.append(None)
             continue
         # An entry from v0.2.0 (latest normal release only): kept as a stale fallback until
         # the first successful fetch replaces it.
@@ -300,13 +410,26 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
         if fallback is None and old is not None:
             fallback = {"time": old["time"],
                         "release": dict(old["release"], prerelease=False), "beta": None}
+        fresh = bool(cached and use_fresh_cache and 0 <= now - cached["time"] < CACHE_SECONDS)
+        plans.append((old_key, key, cached, fallback, fresh))
+    # 2. Ask GitHub for the repos that need it: a few at a time (see _fetch_all).
+    fetched = _fetch_all([a.repo for a, p in zip(addons, plans) if p and not p[4]], base)
+    # 3. Results in list order, exactly as before (one addon's problem never stops another).
+    for addon, plan in zip(addons, plans):
+        if plan is None:
+            result.append(addon)
+            continue
+        old_key, key, cached, fallback, fresh = plan
         try:
             pair = None
-            if cached and use_fresh_cache and 0 <= now - cached["time"] < CACHE_SECONDS:
+            if fresh:
                 pair = cached["release"], cached["beta"]
             if pair is None:
                 try:
-                    pair = newest_releases(addon.repo, base)
+                    status, value = fetched[addon.repo]
+                    if status == "error":
+                        raise value
+                    pair = value
                     cache[key] = {"time": now, "release": pair[0], "beta": pair[1]}
                     if cache.pop(old_key, None) is not None:
                         log.info("Old cache entry for %s replaced", addon.repo)
@@ -317,15 +440,7 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
                         pair = fallback["release"], fallback["beta"]
                     else:
                         raise
-            release, is_beta = choose(pair[0], pair[1], show_betas)
-            # The beta's version, if it's one the box would offer (so an installed normal
-            # version is never mistaken for it).
-            beta_version = ""
-            if pair[1] is not None and choose(pair[0], pair[1], True)[1]:
-                beta_version = plain_tag(pair[1]["tag"])
-            stable_version = plain_tag(pair[0]["tag"]) if pair[0] is not None else ""
-            result.append(apply_release(addon, release, allow_local, is_beta, beta_version,
-                                        stable_version))
+            result.append(_apply_pair(addon, pair, allow_local, show_betas))
         except ReleaseError as e:
             log.warning("Release of %s: %s", addon.repo, e)
             problems[addon.folder] = e

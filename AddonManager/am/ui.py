@@ -11,7 +11,8 @@ import webbrowser
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
-from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, installer, selfupdate,
+from am import (APP_NAME, APP_VERSION, config, errors, gamecheck, github, icon, installer,
+                selfupdate,
                 stats, theme, toc, versions, wowpath)
 from am import manifest as manifest_mod
 
@@ -152,10 +153,12 @@ class App:
         root.minsize(560, 320)
         root.protocol("WM_DELETE_WINDOW", self.close)
         theme.apply(root)
+        icon.apply(root)
         self._build()
         self._resolve_folder(wow_override)
         self._after = None
         root.bind("<Destroy>", self._on_destroy, add="+")
+        self._show_known_list()
         self.check_again(force=False)
         if updated_from:
             # Started by an update: tell the old exe we're up, and don't offer updates now.
@@ -712,6 +715,21 @@ class App:
                          args=(self.queue, self.manifest, self.allow_local, self.github_api,
                                bool(self.beta_var.get()))).start()
 
+    def _show_known_list(self):
+        """At start: the last known list straight away, from settings (known_addons) and
+        cache.json (latest versions) plus the installed .toc versions, shown while
+        "Checking for updates..." runs (buttons locked: busy) until the fresh list
+        replaces it. Reads only; nothing is saved."""
+        try:
+            addons = github.cached_preview(
+                self.settings.get("known_addons") or [], self.github_api, self.allow_local,
+                config.cache_path(), bool(self.beta_var.get()))
+        except Exception:   # never stop the window from opening
+            log.exception("Last known list failed")
+            addons = []
+        self.rows = [Row(a.folder, a.name, a.version or None, a if a.version else None,
+                         a.description) for a in addons]
+
     def toggle_share(self):
         """Share anonymous counts switched: save it. On again: send today's count now if it
         wasn't sent yet (off: nothing is sent from now on)."""
@@ -1015,17 +1033,23 @@ def _load_worker(q, check_game, location, allow_local, github_api=None, force=Tr
                  show_betas=False):
     """Thread: game check + addon list + latest GitHub releases (pre-releases too if
     show_betas). Results go to the window through q as
-    ("manifest", Manifest or None, error text, {folder: ReleaseError})."""
-    q.put(("game", _game_running(check_game)))
+    ("manifest", Manifest or None, error text, {folder: ReleaseError}).
+    The game check (tasklist, ~0.4 s) runs at the same time as the downloads; its answer
+    still reaches the window before the list."""
+    game = threading.Thread(target=lambda: q.put(("game", _game_running(check_game))),
+                            daemon=True)
+    game.start()
     try:
         m = github.load_list(location, allow_local=allow_local)
         m.addons, problems = github.resolve_all(
             m.addons, github_api, allow_local, cache_file=config.cache_path(),
             use_fresh_cache=not force, show_betas=show_betas)
-        q.put(("manifest", m, None, problems))
+        msg = ("manifest", m, None, problems)
     except Exception as e:
         log.warning("Addon list failed: %s", e)
-        q.put(("manifest", None, errors.manifest_message(e), None))
+        msg = ("manifest", None, errors.manifest_message(e), None)
+    game.join(10)
+    q.put(msg)
 
 
 def _resort_worker(q, manifest, allow_local, github_api, show_betas):
