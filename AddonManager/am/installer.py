@@ -213,6 +213,25 @@ def safe_name(name):
     return name.split(".")[0].lower() not in _RESERVED
 
 
+def addon_name_ok(folder):
+    """Any addon folder name the app may install from a file or remove (guild names, and
+    "!BugGrabber", names with spaces...): a plain name, no leading dot (our own
+    .addonmanager-* folders), never Blizzard_*, at most 100 characters."""
+    return (safe_name(folder) and len(folder) <= 100 and not folder.startswith(".")
+            and not folder.lower().startswith("blizzard_"))
+
+
+def addon_target(addons_dir, folder):
+    """addons_dir\\folder for any addon_name_ok name (target_path is the stricter one for
+    the guild list); checks the result is directly inside AddOns."""
+    if not addon_name_ok(folder):
+        raise InstallError("unsafe", f"folder name {folder!r}")
+    path = os.path.join(addons_dir, folder)
+    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(addons_dir):
+        raise InstallError("unsafe", f"folder name {folder!r}")
+    return path
+
+
 def _leftover_folder_ok(folder):
     """A folder name recover may put back: any plain addon name a backup accepts (guild
     list names, "!BugGrabber", names with spaces...); never '..', a path or a dot folder."""
@@ -283,6 +302,29 @@ def recover(addons_dir):
     return actions
 
 
+def swap_in(staged, target, backup, folder):
+    """Put a staged addon folder in place by renaming: old -> backup, staged -> target,
+    then the backup is removed. If the second rename fails the old one is put back (or
+    recover() puts it back next start). Raises InstallError; the old version stays."""
+    had_old = os.path.isdir(target)
+    if had_old:
+        try:
+            os.replace(target, backup)
+        except OSError as e:
+            raise _os_error(e, f"moving old {folder}") from e
+    try:
+        os.replace(staged, target)
+    except OSError as e:
+        if had_old:
+            try:
+                os.replace(backup, target)
+            except OSError:
+                log.exception("Rollback failed; recover() will restore %s next start", backup)
+        raise _os_error(e, f"putting new {folder} in place") from e
+    if had_old:
+        _remove_tree(backup)
+
+
 def install(addon, addons_dir, progress=None, timeout=30, tmp_root=None):
     """Download, check and install one addon (a manifest.Addon).
     Returns the installed version. Raises InstallError or download.DownloadError.
@@ -327,24 +369,7 @@ def install(addon, addons_dir, progress=None, timeout=30, tmp_root=None):
         staged = os.path.join(staging, addon.folder)
         if not os.path.isdir(staged):
             raise InstallError("bad_zip", "addon folder missing after unpacking")
-
-        had_old = os.path.isdir(target)
-        if had_old:
-            try:
-                os.replace(target, backup)
-            except OSError as e:
-                raise _os_error(e, f"moving old {addon.folder}") from e
-        try:
-            os.replace(staged, target)
-        except OSError as e:
-            if had_old:
-                try:
-                    os.replace(backup, target)
-                except OSError:
-                    log.exception("Rollback failed; recover() will restore %s next start", backup)
-            raise _os_error(e, f"putting new {addon.folder} in place") from e
-        if had_old:
-            _remove_tree(backup)
+        swap_in(staged, target, backup, addon.folder)
         log.info("Installed %s %s into %s", addon.folder, addon.version, addons_dir)
         return toc.installed(addons_dir, addon.folder)[1] or addon.version
     finally:
@@ -363,13 +388,18 @@ def needed_by(addons_dir, folder, others):
     need `folder` (## Dependencies / ## RequiredDeps / ## Dep...). Never raises."""
     found = []
     for other in others:
-        if other == folder or not is_safe_folder(other):
+        if other == folder or not addon_name_ok(other):
             continue
         try:
             with open(toc.toc_path(addons_dir, other), "rb") as f:
                 text = toc.decode(f.read(1024 * 1024))
         except OSError:
-            continue
+            # An addon from a file: the toc WoW Forever loads for it (any suffix).
+            other_dir = os.path.join(addons_dir, other)
+            chosen = toc.describe(other_dir, other)[0]
+            if not chosen:
+                continue
+            text = toc.read_text(os.path.join(other_dir, chosen))
         for line in text.splitlines():
             m = _DEPS_RE.match(line)
             if m and folder.lower() in {d.strip().lower() for d in m.group(1).split(",")}:
@@ -450,6 +480,8 @@ def _delete_for_good(folder, target, addons_dir):
 def remove(folder, addons_dir, guild_folders, send=trash.send):
     """Remove one guild addon's folder from AddOns. send(path) moves it to the Recycle
     Bin / Trash; send=None deletes it for good (only after the player was warned).
+    guild_folders: the folders the manager installs (the guild list, plus addons it
+    installed from a file: am\\fileinstall.tracked).
     Only a folder named in guild_folders, directly inside Interface\\AddOns, never a
     link, Blizzard_* or the AddOns folder itself. WTF\\ (SavedVariables) is never touched.
     A rename first checks that nothing inside is in use, so a failed remove changes nothing.
@@ -457,9 +489,9 @@ def remove(folder, addons_dir, guild_folders, send=trash.send):
     addons_dir = check_addons_dir(addons_dir)
     if folder not in set(guild_folders or ()):
         raise InstallError("not_guild", folder)
-    if not is_safe_folder(folder) or folder.lower().startswith("blizzard_"):
+    if not addon_name_ok(folder):
         raise InstallError("not_guild", folder)
-    target = target_path(addons_dir, folder)
+    target = addon_target(addons_dir, folder)
     if os.path.normcase(os.path.abspath(target)) == os.path.normcase(addons_dir):
         raise InstallError("unsafe", target)
     if _is_link(target):

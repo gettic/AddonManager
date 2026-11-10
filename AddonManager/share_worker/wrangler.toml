@@ -1,0 +1,49 @@
+# The send-a-backup relay (see SETUP.md). No secrets here.
+name = "guild-share"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+# Logs OFF: nothing about a request (IP address included) is kept.
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "BOX"
+class_name = "ShareBox"
+
+[[durable_objects.bindings]]
+name = "RATE"
+class_name = "RateBox"
+
+# Free plan: only SQLite-backed Durable Objects. Never edit an old migration; add a new one.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ShareBox"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RateBox"]
+
+# Per-IP limits (the IP is hashed and never stored). Approximate, per Cloudflare location.
+[[ratelimits]]
+name = "OPEN_LIMIT"
+namespace_id = "7301"
+simple = { limit = 6, period = 60 }
+
+[[ratelimits]]
+name = "JOIN_LIMIT"
+namespace_id = "7302"
+simple = { limit = 6, period = 60 }
+
+[vars]
+MAX_CHANNEL = "499"          # codes 1-499
+TTL_SECONDS = "600"          # a code waits 10 minutes for the other PC
+IDLE_SECONDS = "120"         # a transfer stops after 2 minutes without a call
+MAX_SECONDS = "3600"         # and after 1 hour in any case
+BUFFER = "4"                 # chunks waiting at most (4 MiB per mailbox)
+CHUNK_MAX = "1048640"        # 1 MiB + tag + a little
+MAX_BYTES = "545259520"      # 520 MiB per transfer (the app sends at most 500 MiB)
+HARD_OPEN = "20"             # hard cap per IP: new codes ...
+HARD_JOIN = "30"             # ... and code tries ...
+HARD_WINDOW = "600"          # ... per 10 minutes (RateBox, memory only)

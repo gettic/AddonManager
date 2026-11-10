@@ -24,6 +24,13 @@ if (-not (Test-Path -LiteralPath $py)) {
     & $py -m pip install --disable-pip-version-check -q -r requirements-build.txt
     if ($LASTEXITCODE) { throw 'Could not install the build requirements.' }
 }
+# The app's own packages (requirements-app.txt, pinned with hashes); only installed when missing.
+& $py -c "import cryptography, spake2, tkinterdnd2" 2>$null
+if ($LASTEXITCODE) {
+    Write-Host 'Installing the app packages (requirements-app.txt) ...'
+    & $py -m pip install --disable-pip-version-check -q --only-binary=:all: --require-hashes -r requirements-app.txt
+    if ($LASTEXITCODE) { throw 'Could not install the app packages.' }
+}
 
 $work = Join-Path $TempRoot ('AddonManager_build_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $work | Out-Null

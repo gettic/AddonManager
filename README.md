@@ -4,7 +4,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.7.0
+Current version: v0.8.0
 
 ## Get it
 
@@ -94,7 +94,7 @@ Each row has one button. When the addon is installed and up to date, it says **U
 - If a delete for good can only be done partly, the app says so and finishes it the next time it starts. WoW won't load what is left.
 - If another addon needs it, the question tells you.
 
-Only the guild's addons can be removed, never other addons.
+Only the guild's addons and the ones you added from a file can be removed, never other addons.
 
 ## Backup and restore
 
@@ -111,7 +111,7 @@ Click **Settings**, then look under **Backup**. Close WoW first.
   | Linux | Dropbox, MEGA, pCloud (while it is running), Nextcloud |
 - You can untick the addons or the settings.
 - The file holds your account and character names. Don't share it.
-- `Config.wtf` and the chat history are never included.
+- `Config.wtf` and the saved chat history (also of chat addons like Elephant or WIM) are never included.
 - A backup folder can't be inside the WoW folder. The app asks for another one.
 
 **Restore a backup...** (for example on a new PC): a list of **Backups found** opens (Documents, your backup folder and the cloud folders), newest first with date, size and place. Click one. Safety copies show under their own heading when ticked. A cloud file marked (online) is only downloaded when you click it. **Browse...** picks any other file. Then choose what to restore (addons, addon settings, key bindings and macros).
@@ -121,6 +121,39 @@ Click **Settings**, then look under **Backup**. Close WoW first.
 - Before it replaces anything it saves a safety copy, `Before restore <date> <time>.zip`, in the same backup folder. It can't be inside the WoW folder either.
 - If a restore is cut off (power cut, crash), the app undoes it the next time it starts and tells you. You can restore again.
 - If there is no account folder yet, log in to the game once, close it, then restore.
+
+### Send a backup to another PC
+
+In **Settings**, under **Backup**, click **Send to another PC...**. Choose a new backup, your newest one, or another file. The app shows a short code like `37-amber-lamp-river`. On the other PC click **Receive...** (or **Use a code...** in the Restore list) and type the code. Spaces work too.
+
+- The code works once and for 10 minutes. Files can be up to 500 MB.
+- Before the code appears, the app warns you: the file has your account and character names and data your addons saved about other players. Only give the code to yourself or someone you trust.
+- The file is encrypted from end to end. The code never leaves the two PCs.
+- The relay in the middle is a Cloudflare Worker run by the app's maker. It only sees encrypted bytes, the code's channel number, sizes and times. Nothing is kept: it is deleted when the transfer ends, is cancelled or times out. Logs are off and IP addresses are not stored. The code of the relay is public: see `AddonManager\share_worker\`.
+- Nothing changes on the receiving PC yet. The normal Restore window opens and you choose what to restore.
+
+A file received this way is handled with extra care:
+
+- **Addons** is unticked. Get the guild's addons with **Install / Update**. The window lists addons that aren't the guild's. Tick **Addons** only if you trust the sender.
+- You always pick which of your accounts gets the settings. Nothing is picked for you.
+- `Config.wtf`, chat logs and the saved chat history of chat addons are never sent. A received file that holds them is refused.
+- The app keeps a "received" mark in the file, so it is never offered as **Newest backup** to send on.
+
+## Adding an addon from a file
+
+For an addon that isn't in the guild's list (from CurseForge, Wago or a friend), click **Add file...** in the bottom row and pick a `.zip`, `.rar` or `.7z` file. Other ways:
+
+- Drop the file on the app's window, or on the program's icon. If the app is already open, the open window gets it.
+- Right-click **Add file...** and choose **Install from folder...** for an addon you already unpacked.
+
+A window lists the addons found, each with a tick. Nothing is installed until you click Install.
+
+- Only files WoW uses are installed. A file with a program in it (`.exe`, `.dll`, `.bat`...) is refused. `Blizzard_` folders are never installed.
+- Guild addons in a file are never replaced. They come from the guild's list.
+- If an addon is already there, the app first saves it as `Before install <date>.zip` in your backup folder. **Restore a backup...** can put it back.
+- These addons show under **Other addons** with their version and **Uninstall**. They are not updated automatically and are not counted in the anonymous usage data.
+- `.rar` and `.7z` need Windows 11. On Linux they need `bsdtar` installed. Otherwise unpack the file first and use **Install from folder...**.
+- On Linux, drag and drop may not work everywhere. **Add file...** always works.
 
 ## Where the addons come from
 
@@ -190,7 +223,7 @@ To publish a beta, make it a GitHub pre-release (tick "Set as a pre-release") wi
 
 ## For developers
 
-The app is written in Python (standard library only) and lives in `AddonManager\`.
+The app is written in Python and lives in `AddonManager\`. Apart from the standard library it uses a few packages, pinned in `requirements-app.txt`.
 
 Run the tests from the `AddonManager` folder:
 
@@ -205,6 +238,20 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
 The build compiles and tests the code, builds the .exe, then runs a hidden self-test of the .exe on fake data and prints its size and sha256. Use `-TestOnly` to stop after the tests.
+
+## Credits and licences
+
+The app is built with Python (PSF licence) and packed with PyInstaller (GPL-2.0 with bootloader exception). It bundles:
+
+| Package | Licence |
+| --- | --- |
+| cryptography (includes OpenSSL) | Apache-2.0 OR BSD-3-Clause |
+| cffi | MIT-0 |
+| pycparser | BSD-3-Clause |
+| spake2 | MIT |
+| tkinterdnd2 (with the tkdnd library) | MIT (tkdnd: BSD-style) |
+
+The full licence texts are in [`AddonManager/THIRD-PARTY-NOTICES.txt`](AddonManager/THIRD-PARTY-NOTICES.txt). In the app, click **Licences** at the bottom of **Settings**. The file is also in the Linux download.
 
 ## Not affiliated with Blizzard
 

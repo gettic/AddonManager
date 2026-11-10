@@ -12,7 +12,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from am import backup, config, errors, theme
+from am import backup, config, errors, theme, versions
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ MAX_CLOUD_BUTTONS = 9   # 3 rows
 MAX_FOUND_ROWS = 8      # Backups found: older ones via Browse...
 MAX_SAFETY_ROWS = 4     # safety copies, when ticked
 PLACE_MAX = 12 if LINUX else 16        # characters of a folder name shown as a place
+MENU_CHARS = 14 if LINUX else 16       # Restore's account pick: fixed width, long names cut
 
 
 def open_folder(path):
@@ -143,6 +144,54 @@ class _Dialog:
 
     def _end(self):
         self.running = False
+
+
+NOTICES_NAME = "THIRD-PARTY-NOTICES.txt"
+NOTICES_CHARS = 46 if LINUX else 52     # text width: the window stays under 420 px
+
+
+def notices_path():
+    """THIRD-PARTY-NOTICES.txt: inside the built program (next to its unpacked files),
+    or the AddonManager folder when run from source."""
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))
+    return os.path.join(base, NOTICES_NAME)
+
+
+def read_notices():
+    try:
+        with open(notices_path(), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return errors.LICENCES_MISSING
+
+
+class LicenceDialog(_Dialog):
+    """Licences (from Settings): the bundled THIRD-PARTY-NOTICES.txt, read-only."""
+
+    def __init__(self, app, show=True):
+        super().__init__(app, errors.LICENCES_TITLE, show)
+        box = ttk.Frame(self.frame)
+        box.pack(fill="both", expand=True, pady=(8, 0))
+        self.text = tk.Text(box, width=NOTICES_CHARS, height=24, wrap="word",
+                            background=theme.SURFACE, foreground=theme.TEXT,
+                            insertbackground=theme.TEXT, relief="flat", borderwidth=0,
+                            highlightthickness=1, highlightbackground=theme.BORDER,
+                            font=theme.font(bigger=-1), padx=6, pady=4)
+        bar = ttk.Scrollbar(box, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        self.text.insert("1.0", read_notices())
+        self.text.configure(state="disabled")   # read-only (selecting and copying work)
+        self.buttons = ttk.Frame(self.frame)
+        self.buttons.pack(fill="x", pady=(10, 0))
+        self.close_button = ttk.Button(self.buttons, text=errors.CLOSE, command=self.close)
+        self.close_button.pack(side="right")
+        self._show(self.close_button)
+
+    def handle(self, msg):
+        return
 
 
 class BackupDialog(_Dialog):
@@ -304,6 +353,11 @@ class BackupListDialog(_Dialog):
         self.browse_button = ttk.Button(self.buttons, text=errors.FOUND_BROWSE,
                                         command=self.browse)
         self.browse_button.pack(side="left")
+        self.code_button = None
+        if app.share_url:   # Receive from another PC instead (am\share_ui.py)
+            self.code_button = ttk.Button(self.buttons, text=errors.USE_CODE,
+                                          command=self.use_code)
+            self.code_button.pack(side="left", padx=(6, 0))
         self.set_status(errors.FOUND_LOOKING)
         threading.Thread(target=_find_worker, daemon=True,
                          args=(app.queue, backup_folder(config.load_settings()))).start()
@@ -353,11 +407,20 @@ class BackupListDialog(_Dialog):
         if self.opening or self.closed or not path:
             return
         self.opening = path
-        for w in (*self.row_buttons, self.browse_button, self.safety_check):
+        for w in (*self.row_buttons, self.browse_button, self.safety_check,
+                  *([self.code_button] if self.code_button else [])):
             w.state(["disabled"])
         self.set_status(errors.FOUND_DOWNLOADING if online else errors.FOUND_OPENING)
         threading.Thread(target=_open_worker, daemon=True,
                          args=(self.app.queue, path)).start()
+
+    def use_code(self):
+        """Close this list and open the Receive window in its place."""
+        if self.opening or self.closed:
+            return None
+        app, show = self.app, self.shown
+        self.close()
+        return app.open_receive(show=show)
 
     def browse(self):
         if self.opening or self.closed:
@@ -380,7 +443,8 @@ class BackupListDialog(_Dialog):
             app.backup_dialog = RestoreDialog(app, msg[2], show=show)
         elif kind == "restore_open_error" and msg[1] == self.opening:
             self.opening = None
-            for w in (*self.row_buttons, self.browse_button, self.safety_check):
+            for w in (*self.row_buttons, self.browse_button, self.safety_check,
+                  *([self.code_button] if self.code_button else [])):
                 w.state(["!disabled"])
             self.set_status(msg[2])
 
@@ -395,18 +459,23 @@ class RestoreDialog(_Dialog):
         ttk.Label(self.frame, text=errors.backup_from(info), wraplength=WRAP,
                   justify="left").pack(anchor="w", pady=(6, 0))
         self.local = backup.local_accounts(app.addons_dir)
-        self.account_map = backup.default_map(sorted(info.accounts), self.local)
+        # A file from another PC (send code): the player always picks their own account
+        # for each one in the file; nothing is pre-filled, not even the same name.
+        received = getattr(info, "received", False)
+        self.account_map = ({acc: None for acc in info.accounts} if received
+                            else backup.default_map(sorted(info.accounts), self.local))
         self.account_vars = {}
         if info.accounts and self.local:
             for acc in sorted(info.accounts):
-                if acc in self.local:
+                if acc in self.local and not received:
                     continue   # same account here: nothing to ask
                 line = ttk.Frame(self.frame)
                 line.pack(fill="x", pady=(8, 0))
                 ttk.Label(line, text=errors.account_line(acc), wraplength=WRAP - 120,
                           justify="left").pack(side="left", anchor="w")
-                var = tk.StringVar(value=self.account_map[acc] or errors.RESTORE_SKIP)
-                button = ttk.Menubutton(line, textvariable=var)
+                var = tk.StringVar(value=self.account_map[acc] or (
+                    errors.RESTORE_CHOOSE if received else errors.RESTORE_SKIP))
+                button = ttk.Menubutton(line, textvariable=var, width=MENU_CHARS)
                 menu = tk.Menu(button, tearoff=0, background=theme.SURFACE,
                                foreground=theme.TEXT, activebackground=theme.ACCENT,
                                activeforeground=theme.ACCENT_TEXT)
@@ -416,7 +485,7 @@ class RestoreDialog(_Dialog):
                 button.pack(side="right")
                 self.account_vars[acc] = var
         can_settings = bool(self.local)
-        self.addons_var = tk.BooleanVar(value=bool(info.addons))
+        self.addons_var = tk.BooleanVar(value=bool(info.addons) and not received)
         self.settings_var = tk.BooleanVar(value=can_settings and info.settings_files > 0)
         self.bindings_var = tk.BooleanVar(value=can_settings and info.binding_files > 0)
         checks = ttk.Frame(self.frame)
@@ -433,6 +502,13 @@ class RestoreDialog(_Dialog):
             if not on:
                 c.state(["disabled"])
             self.checks[key] = c
+        if received and info.addons:
+            ttk.Label(self.frame, text=errors.RECEIVED_ADDONS_NOTE, wraplength=WRAP,
+                      justify="left").pack(anchor="w", pady=(8, 0))
+            line = errors.received_addons(*not_guild_addons(info, app.rows))
+            if line:
+                ttk.Label(self.frame, text=line, style="Muted.TLabel", wraplength=WRAP,
+                          justify="left").pack(anchor="w", pady=(4, 0))
         if info.accounts and not self.local:
             ttk.Label(self.frame, text=errors.NO_ACCOUNT, wraplength=WRAP,
                       justify="left").pack(anchor="w", pady=(8, 0))
@@ -460,6 +536,10 @@ class RestoreDialog(_Dialog):
         flags = dict(addons=bool(self.addons_var.get()), settings=bool(self.settings_var.get()),
                      bindings=bool(self.bindings_var.get()))
         account_map = self.chosen_map()
+        if ((flags["settings"] or flags["bindings"])
+                and any(v.get() == errors.RESTORE_CHOOSE for v in self.account_vars.values())):
+            self.set_status(errors.RESTORE_CHOOSE_FIRST)
+            return False
         try:
             folders, files = backup.plan(self.info, self.app.addons_dir,
                                          account_map=account_map, **flags)
@@ -508,6 +588,22 @@ class RestoreDialog(_Dialog):
                 elif key != "addons" and self.local and (
                         self.info.settings_files if key == "settings" else self.info.binding_files):
                     c.state(["!disabled"])
+
+
+def not_guild_addons(info, rows):
+    """([not on the guild list], [guild addons whose version differs from the guild's
+    latest, e.g. 'TaxiTime 2.0']) for the addons in a backup. rows: the App's addon rows."""
+    latest = {r.folder: r.latest for r in rows}
+    versions_in = backup.addon_versions(info)
+    not_listed, different = [], []
+    for folder in info.addons:
+        if folder not in latest:
+            not_listed.append(folder)
+            continue
+        have, want = versions_in.get(folder), latest[folder]
+        if want and not (have and versions.same(have, want)):
+            different.append(f"{folder} {have}" if have else folder)
+    return not_listed, different
 
 
 # ---------- threads (plain values only, never Tk objects) ----------
@@ -567,8 +663,14 @@ def _find_worker(q, chosen):
     except Exception as e:
         log.info("Cloud folder check failed (%s)", type(e).__name__)
         clouds = []
+    places = backup_places(chosen, clouds, backup.documents_dir())
     try:
-        found = backup.find_backups(backup_places(chosen, clouds, backup.documents_dir()))
+        from am import share   # leftover unfinished downloads (app closed while receiving)
+        share.clean_partials([folder for _label, folder in places])
+    except Exception as e:
+        log.info("Clean-up of unfinished downloads failed (%s)", type(e).__name__)
+    try:
+        found = backup.find_backups(places)
     except Exception as e:
         log.info("Backup search failed (%s)", type(e).__name__)
         found = []

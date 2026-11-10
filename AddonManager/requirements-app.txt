@@ -1,0 +1,18 @@
+# Packages the app itself uses (send a backup with a code: am\share.py). Everything else is the
+# standard library. Pinned with hashes (Windows win_amd64 + Linux manylinux wheels for Python 3.13):
+#   pip install --require-hashes -r requirements-app.txt
+# Licences: cryptography Apache-2.0 OR BSD-3-Clause, cffi MIT, pycparser BSD-3-Clause, spake2 MIT.
+cryptography==50.0.2 \
+    --hash=sha256:7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c \
+    --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079
+cffi==2.1.1 \
+    --hash=sha256:1aa5645c30469b09530c4ebca77ebf8f17618293c58f8549cb1a543a50236e7d \
+    --hash=sha256:a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2
+pycparser==3.12 \
+    --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e
+spake2==0.9 \
+    --hash=sha256:2d7cbe936519c4172866649ddceefdec08e3d9b3ce4c8a75bbf84d6bdd07a2fb
+# Drag and drop of a file onto the window (Add from file: am\fileinstall_ui.py). One py3 wheel
+# for every system; bundles the tkdnd library. Licences: tkinterdnd2 MIT, tkdnd BSD-style.
+tkinterdnd2==0.7.0 \
+    --hash=sha256:f93d4f5ad439648ba1673f15db3e271cdd08f075c87f43553ffcdde4e634a717

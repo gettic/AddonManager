@@ -1,2 +1,3 @@
-# Only for building the .exe (build.ps1). The app itself uses the standard library only.
+# Only for building the .exe (build.ps1). The app's own packages are in requirements-app.txt
+# (pinned with hashes, installed separately so this file needs no hashes).
 pyinstaller==6.22.3

@@ -25,7 +25,7 @@ import tempfile
 import zipfile
 import zlib
 
-from am import APP_VERSION, installer, selfupdate, wowpath
+from am import APP_VERSION, installer, selfupdate, toc, wowpath
 
 log = logging.getLogger(__name__)
 
@@ -479,6 +479,9 @@ FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
 ONLINE_ONLY = (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN
                | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
 SAFETY_PREFIX = "before restore "
+# Safety copies listed under Backups found: before a restore, and before Add from file
+# replaced an addon that was already there (am\fileinstall.py: "Before install ...zip").
+SAFETY_PREFIXES = (SAFETY_PREFIX, "before install ")
 BACKUP_PREFIX = f"{BACKUP_APP} backup ".lower()
 
 
@@ -527,7 +530,7 @@ def find_backups(places):
                     low = e.name.lower()
                     if not low.endswith(".zip"):
                         continue
-                    safety = low.startswith(SAFETY_PREFIX)
+                    safety = low.startswith(SAFETY_PREFIXES)
                     if not (safety or low.startswith(BACKUP_PREFIX)):
                         continue
                     try:
@@ -561,6 +564,42 @@ def backup_path(folder, now=None):
     """<folder>\\AddonManager backup 2026-11-10.zip (" (2)" etc. if it exists)."""
     now = now or datetime.datetime.now()
     return _unique(folder, f"{BACKUP_APP} backup {now:%Y-%m-%d}")
+
+
+RECEIVED_TAG = " received"   # "AddonManager backup <date> received.zip": came with a code
+RECEIVED_NAME = "received.json"   # the mark inside a received file (kept if it is renamed)
+
+
+def mark_received(zip_path, now=None):
+    """Add the RECEIVED_NAME mark to a received backup (appended; nothing else changes)."""
+    now = now or datetime.datetime.now()
+    with zipfile.ZipFile(zip_path, "a") as zf:
+        if RECEIVED_NAME not in zf.NameToInfo:
+            zf.writestr(RECEIVED_NAME, json.dumps({"received": f"{now:%Y-%m-%d %H:%M}"}))
+
+
+def has_received_mark(zip_path):
+    """True if the file holds the RECEIVED_NAME mark (reads only the zip's file list)."""
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            return RECEIVED_NAME in zf.NameToInfo
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return False
+
+
+def received_path(folder, now=None):
+    """<folder>\\AddonManager backup 2026-11-10 received.zip (a backup that came from
+    another PC with a send code; see is_received)."""
+    now = now or datetime.datetime.now()
+    return _unique(folder, f"{BACKUP_APP} backup {now:%Y-%m-%d}{RECEIVED_TAG}")
+
+
+def is_received(path):
+    """True for a file named by received_path (also with " (2)" etc.)."""
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    if stem.endswith(")") and " (" in stem:
+        stem = stem[:stem.rindex(" (")]
+    return stem.startswith(BACKUP_PREFIX) and stem.endswith(RECEIVED_TAG)
 
 
 def safety_path(folder, now=None):
@@ -609,12 +648,46 @@ def _inside(path, folder):
 
 
 # ---------- what goes into a backup ----------
+# SavedVariables of addons that keep chat history (other players' messages): never backed
+# up or sent. Names without ".lua" (".lua.bak" too), lower case.
+CHAT_HISTORY_ADDONS = {"elephant", "wim", "chatlog", "chathistory", "chatarchive",
+                       "chatlogger", "chatbackup", "whisperlog", "whispers"}
+# Prat keeps its chat scrollback per character; its account-wide file is the real settings.
+CHAT_HISTORY_PER_CHAR = {"prat-3.0", "prat-3.0_history"}
+
+
+def is_chat_log(name):
+    """A chat log, cache or history file (chat-cache.txt, ChatLog.lua, ...)."""
+    n = name.lower()
+    return "chat" in n and any(t in n for t in ("log", "cache", "history"))
+
+
+def is_private(rest):
+    """rest: path parts below WTF/Account/<account>/. True for what is never backed up or
+    sent: Config.wtf at any depth, chat logs/caches, chat-history addons' SavedVariables
+    (Elephant, WIM, ..., Prat's per-character file). A received file holding one is refused;
+    this PC's own older backups just leave it out."""
+    if not rest:
+        return False
+    name = rest[-1].lower()
+    if name == "config.wtf" or is_chat_log(name):
+        return True
+    stem = name.split(".lua")[0] if ".lua" in name else None
+    if stem is None or "SavedVariables" not in rest[:-1]:
+        return False
+    if stem in CHAT_HISTORY_ADDONS:
+        return True
+    per_char = len(rest) >= 4 and rest[2] == "SavedVariables"
+    return per_char and stem in CHAT_HISTORY_PER_CHAR
+
+
 def wtf_kind(rest):
     """rest: path parts below WTF/Account/<account>/. SETTINGS, BINDINGS or None (left out)."""
     if not rest or len(rest) > MAX_WTF_DEPTH or not all(safe_part(p) for p in rest):
         return None
     name = rest[-1].lower()
-    if name in SKIP_FILES or not name.endswith(SETTINGS_EXT) or rest[0].startswith("."):
+    if (name in SKIP_FILES or is_private(rest) or not name.endswith(SETTINGS_EXT)
+            or rest[0].startswith(".")):
         return None
     return BINDINGS if name in BINDING_FILES else SETTINGS
 
@@ -780,6 +853,8 @@ class BackupInfo:
     binding_files: int = 0
     skipped: list = dataclasses.field(default_factory=list)    # addon folders without a .toc
     entries: list = dataclasses.field(default_factory=list)    # (ZipInfo, parts, kind)
+    received: bool = False     # came from another PC with a send code (am\share.py)
+    forever_tocs: dict = dataclasses.field(default_factory=dict)   # folder -> ZipInfo
 
     @property
     def characters(self):
@@ -795,9 +870,12 @@ def _entry_parts(name):
     return parts
 
 
-def read(zip_path):
+def read(zip_path, received=None):
     """Open and check a backup. Every entry must be backup.json, AddOns/<folder>/... or
     WTF/Account/<account>/<settings file>; anything else and the whole file is refused.
+    received (None = from the file name or the RECEIVED_NAME mark inside): a file from
+    another PC; anything is_private in it refuses the whole file (in this PC's own older
+    backups it is skipped).
     Returns BackupInfo. Raises BackupError."""
     try:
         zf = zipfile.ZipFile(zip_path)
@@ -816,7 +894,9 @@ def read(zip_path):
             raise BackupError("not_backup", f"format {fmt!r}")
         if fmt > FORMAT:
             raise BackupError("newer_format", str(fmt))
-        info = BackupInfo(path=zip_path)
+        if received is None:
+            received = is_received(zip_path) or RECEIVED_NAME in zf.NameToInfo
+        info = BackupInfo(path=zip_path, received=bool(received))
         created = meta.get("created")
         if isinstance(created, str) and len(created) <= 20:
             info.created = created
@@ -827,7 +907,7 @@ def read(zip_path):
             raise BackupError("unsafe", "too many files")
         total, seen, tocs, folders = 0, set(), set(), []
         for zi in infos:
-            if zi.filename == INFO_NAME:
+            if zi.filename in (INFO_NAME, RECEIVED_NAME):
                 continue
             parts = _entry_parts(zi.filename)
             if zi.is_dir():
@@ -850,8 +930,13 @@ def read(zip_path):
                     folders.append(parts[1])
                 if len(parts) == 3 and parts[2].lower().endswith(".toc"):
                     tocs.add(parts[1])
+                    if parts[2].lower() == f"{parts[1]}_forever.toc".lower():
+                        info.forever_tocs[parts[1]] = zi
             elif (len(parts) >= 3 and parts[0] == "WTF" and parts[1] == "Account"
                   and not parts[2].startswith(".")):
+                if (is_private(parts[3:]) and not received
+                        and parts[-1].lower() not in SKIP_FILES):
+                    continue   # an older backup of this PC: left out, not restored
                 kind = wtf_kind(parts[3:])
                 if kind is None:
                     raise BackupError("unsafe", f"not a settings file {zi.filename!r}")
@@ -882,6 +967,24 @@ def read(zip_path):
         if not info.addons and not info.accounts:
             raise BackupError("nothing", zip_path)
     return info
+
+
+MAX_TOC_READ = 256 * 1024
+
+
+def addon_versions(info):
+    """{folder: '## Version:' of its <folder>_Forever.toc in the backup, or None}, for every
+    addon in it. Never raises (a file that can't be read gives None versions)."""
+    out = {f: None for f in info.addons}
+    try:
+        with zipfile.ZipFile(info.path) as zf:
+            for folder, zi in info.forever_tocs.items():
+                if folder in out and zi.file_size <= MAX_TOC_READ:
+                    with zf.open(zi) as f:
+                        out[folder] = toc.parse_version(toc.decode(f.read(MAX_TOC_READ)))
+    except Exception as e:
+        log.info("Could not read addon versions (%s)", type(e).__name__)
+    return out
 
 
 # ---------- restoring ----------

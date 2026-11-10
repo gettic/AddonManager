@@ -12,7 +12,7 @@ from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
 from am import (APP_NAME, APP_VERSION, backup, backup_ui, config, errors, gamecheck, github,
-                icon, installer, selfupdate,
+                fileinstall_ui, icon, installer, instance, selfupdate, share_ui,
                 stats, theme, toc, trash, versions, wowpath)
 from am import manifest as manifest_mod
 
@@ -115,7 +115,8 @@ class App:
     def __init__(self, root, manifest_location=None, allow_local=False, wow_override=None,
                  check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None,
                  github_api=None, app_exe=None, updated_from=None, restart=selfupdate.restart,
-                 open_link=None, confirm=None, stats_url=None, trash_api=None):
+                 open_link=None, confirm=None, stats_url=None, trash_api=None,
+                 share_url=None, open_path=None, instance_lock=None):
         """app_exe: the running .exe (self-update on); None = no self-update (from source,
         self-test). updated_from: set when this run was started by an update.
         confirm(title, text, ok_text, cancel_text) -> bool: the yes/no question (tests
@@ -142,6 +143,8 @@ class App:
         if stats_url is None:
             stats_url = config.STATS_URL if (app_exe and not allow_local) else ""
         self.stats_url = stats_url
+        # Send a backup with a code (am\share_ui.py): the relay; "" = buttons hidden.
+        self.share_url = config.SHARE_URL if share_url is None else share_url
         self._stats_started = False   # at most one ping per run
         # The app's own update check must be done first (latest/outdated for the app).
         self._app_checked = not app_exe or bool(updated_from)
@@ -167,6 +170,12 @@ class App:
         self.ask_backup_file = self._ask_backup_file_dialog
         self.ask_backup_folder = self._ask_backup_folder_dialog
         self.open_folder = backup_ui.open_folder
+        # Add from file (am\fileinstall_ui.py): button, drag and drop, "Other addons" rows.
+        self.files = fileinstall_ui.FileAddons(self)
+        # Files handed over by a second start (am\instance.py): only while this run holds
+        # the lock (main takes it); tests pass their own lock or none.
+        self.instance_lock = instance_lock
+        self._polls = 0
 
         root.title(APP_NAME)
         root.geometry("680x420")
@@ -181,6 +190,8 @@ class App:
         root.bind("<Destroy>", self._on_destroy, add="+")
         self._show_known_list()
         self.check_again(force=False)
+        if open_path:   # a file dropped on the program's icon: opened once the list is in
+            self.files.open_later(open_path)
         if updated_from:
             # Started by an update: tell the old exe we're up, and don't offer updates now.
             selfupdate.mark_ok(APP_VERSION)
@@ -255,12 +266,14 @@ class App:
         self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all,
                                      style="Accent.TButton")
         self.all_button.pack(side="left", padx=(8, 0))
+        self.files.build_button(buttons, outer)   # "Add from file..." (+ drag and drop)
         # App settings live in a small Settings window (see open_settings).
         # Show beta versions: off by default. Share anonymous counts: on by default.
         self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
         self.share_var = tk.BooleanVar(value=_share_on(self.settings))
         self.settings_win = self.beta_check = self.share_check = None
         self.backup_button = self.restore_button = None   # in the Settings window
+        self.share_buttons = []                             # Send / Receive (Settings)
         self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON,
                                           command=self.open_settings)
         self.settings_button.pack(side="right")
@@ -336,13 +349,15 @@ class App:
         if not self.rows:
             ttk.Label(f, text=self.manifest_note or "No addons to show.").grid(
                 row=1, column=0, columnspan=5, sticky="w")
+        # Addons installed from a file: their own section under the guild's list.
+        self.files.build_rows(f, max(len(self.rows), 1) + 1, COL_GAP)
         self._rows_key = key
 
     def render(self):
         """Show self.rows and the installed .toc files. The widgets are made again only
         when the addons (or the empty-list note) change; otherwise updated in place."""
         key = (tuple((r.folder, r.name) for r in self.rows),
-               None if self.rows else (self.manifest_note or ""))
+               None if self.rows else (self.manifest_note or ""), self.files.key())
         if getattr(self, "_rows_key", None) != key:
             self._build_rows(key)
         self.row_widgets = {}
@@ -429,8 +444,9 @@ class App:
         self._set_enabled(self.beta_main_check, not self.busy)
         if self.beta_check is not None:   # only while the Settings window is open
             self._set_enabled(self.beta_check, not self.busy)
-            for b in (self.backup_button, self.restore_button):
+            for b in (self.backup_button, self.restore_button, *self.share_buttons):
                 self._set_enabled(b, not self.busy and bool(self.addons_dir))
+        self.files.render()
         self._render_update_bar()
         self._fit_min_width()
 
@@ -438,7 +454,10 @@ class App:
         """Never let the window get narrower than the list's rows (wider Linux fonts), so
         the row buttons can't be cut off. At least MIN_WIDTH."""
         self.list_frame.update_idletasks()
-        need = max(MIN_WIDTH, self.list_frame.winfo_reqwidth() + 20)   # + outer padding
+        # The bottom row's buttons too: at 150 % display scaling and more they need more
+        # than the list (Check again ... Settings would be cut off).
+        need = max(MIN_WIDTH, self.list_frame.winfo_reqwidth() + 20,   # + outer padding
+                   self.settings_button.master.winfo_reqwidth() + 20)
         if need != self._min_width:
             self._min_width = need
             self.root.minsize(need, 320)
@@ -582,6 +601,7 @@ class App:
             self.settings["wow_folder"] = addons_dir
             self.settings["wow_folder_source"] = source
             config.save_settings(self.settings)
+        self.files.refresh()   # the "Other addons" of this folder
 
     def _no_folder(self, message):
         self.addons_dir = None
@@ -918,17 +938,31 @@ class App:
         self.restore_button = ttk.Button(line, text=errors.RESTORE_BUTTON,
                                          command=self.open_restore)
         self.restore_button.pack(side="left", padx=(8, 0))
+        self.share_buttons = []
+        if self.share_url:
+            line = ttk.Frame(frame)
+            line.pack(anchor="w", pady=(6, 0))
+            for text, command in ((errors.SEND_BUTTON, self.open_send),
+                                  (errors.RECEIVE_BUTTON, self.open_receive)):
+                b = ttk.Button(line, text=text, command=command)
+                b.pack(side="left", padx=(8, 0) if self.share_buttons else 0)
+                self.share_buttons.append(b)
         ttk.Label(frame, text=errors.BACKUP_NOTE, style="Muted.TLabel", wraplength=320,
                   justify="left").pack(anchor="w", padx=(0, 0), pady=(2, 0))
         self.backup_status = tk.StringVar()
         ttk.Label(frame, textvariable=self.backup_status, wraplength=320,
                   justify="left").pack(anchor="w")
-        for b in (self.backup_button, self.restore_button):
+        for b in (self.backup_button, self.restore_button, *self.share_buttons):
             self._set_enabled(b, not self.busy and bool(self.addons_dir))
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(14, 0))
         self.settings_close = ttk.Button(buttons, text="Close", command=self.close_settings)
         self.settings_close.pack(side="right")
+        self.licences_link = tk.Label(buttons, text=errors.LICENCES_LINK, cursor="hand2",
+                                      background=theme.BG, foreground=theme.MUTED,
+                                      font=theme.font("underline", bigger=-1))
+        self.licences_link.pack(side="left", anchor="s")
+        self.licences_link.bind("<Button-1>", lambda _e: self.open_licences())
         win.protocol("WM_DELETE_WINDOW", self.close_settings)
         win.bind("<Escape>", lambda _e: self.close_settings())
         self.settings_win = win
@@ -952,6 +986,7 @@ class App:
         win, self.settings_win = self.settings_win, None
         self.beta_check = self.share_check = None
         self.backup_button = self.restore_button = None
+        self.share_buttons = []
         if win is not None:
             try:
                 win.grab_release()
@@ -989,6 +1024,31 @@ class App:
             return self.backup_dialog
         self._backup_note("")
         self.backup_dialog = backup_ui.BackupDialog(self, show=show)
+        return self.backup_dialog
+
+    def open_licences(self, show=True):
+        """The Licences window (THIRD-PARTY-NOTICES.txt, read-only)."""
+        if self.backup_dialog is not None:
+            return None
+        self.backup_dialog = backup_ui.LicenceDialog(self, show=show)
+        return self.backup_dialog
+
+    def open_send(self, show=True):
+        """Send to another PC (am/share_ui.py). Returns the window, or None."""
+        if (self.busy or not self.addons_dir or self.backup_dialog is not None
+                or not self.share_url):
+            return None
+        self._backup_note("")
+        self.backup_dialog = share_ui.SendDialog(self, show=show)
+        return self.backup_dialog
+
+    def open_receive(self, show=True):
+        """Receive from another PC: type the code, then the Restore window."""
+        if (self.busy or not self.addons_dir or self.backup_dialog is not None
+                or not self.share_url):
+            return None
+        self._backup_note("")
+        self.backup_dialog = share_ui.ReceiveDialog(self, show=show)
         return self.backup_dialog
 
     def open_restore(self, show=True, path=None):
@@ -1122,11 +1182,19 @@ class App:
                 self._handle(self.queue.get_nowait())
         except queue.Empty:
             pass
+        self._polls += 1
+        lock = self.instance_lock
+        if lock is not None and self._polls % 5 == 0:
+            # A file handed over by a second start (dropped on the icon while open). Not
+            # holding the lock yet (an old exe was closing after an update): try again.
+            if lock.held or (self._polls % 50 == 0 and lock.acquire()):
+                self.files.poll_requests(lambda: instance.take_requests(config.home_dir()))
         self._after = self.root.after(100, self._poll)
 
     def _on_destroy(self, event):
         if event.widget is self.root:
             self.closed = True
+            self.files.close()   # an open Add from file plan's temp folder
             if self._after:
                 try:
                     self.root.after_cancel(self._after)
@@ -1140,9 +1208,11 @@ class App:
             self.set_banner(errors.GAME_RUNNING if msg[1] else "")
         elif kind == "manifest":
             self._apply_manifest(msg[1], msg[2], msg[3] if len(msg) > 3 else None)
+            self.files.refresh()   # Other addons: a folder deleted by hand drops out
             self.busy = False
             self.render()
             self._maybe_send_stats()
+            self.files.after_load()   # a file dropped/handed over during the check
         elif kind == "start":
             row = self._row(msg[1])
             if row:
@@ -1187,6 +1257,12 @@ class App:
             self.render()
         elif kind.startswith(("backup_", "restore_")):
             self._backup_event(msg)
+        elif kind.startswith("file_"):
+            self.files.handle(msg)   # Add from file (am\fileinstall_ui.py)
+        elif kind.startswith("share_"):
+            dialog = self.backup_dialog
+            if dialog is not None and dialog.alive():
+                dialog.handle(msg)
         elif kind == "stats_sent":
             self.settings = config.load_settings()
             self.settings[stats.DAY_SETTING], self.settings[stats.WEEK_SETTING] = msg[1], msg[2]
@@ -1224,6 +1300,7 @@ class App:
                     self.set_message("Installed: " + ", ".join(msg[1])
                                      + ". Restart WoW or type /reload to use them.")
             self.render()
+            self.files.after_load()
 
     def _maybe_send_stats(self):
         """The daily anonymous count (see am\\stats.py): once a day, after the addon list
@@ -1257,7 +1334,10 @@ class App:
     def close(self):
         if self.backup_dialog is not None and self.backup_dialog.running:
             return   # never stop a backup/restore half-way; it finishes in seconds
+        if self.files.running:
+            return   # an install from a file finishes first (it can't stop half-way safely)
         self.closed = True
+        self.files.close()
         self.root.destroy()
 
 
@@ -1394,13 +1474,14 @@ def _app_wait_worker(q, version, exe, proc):
 
 
 def run(manifest_location=None, allow_local=False, wow_override=None, hidden=False,
-        github_api=None, updated_from=None):
+        github_api=None, updated_from=None, open_path=None, instance_lock=None):
     root = tk.Tk()
     if hidden:
         root.withdraw()
     root.report_callback_exception = _report_callback_exception
     app = App(root, manifest_location, allow_local, wow_override, github_api=github_api,
-              app_exe=selfupdate.exe_path(), updated_from=updated_from)
+              app_exe=selfupdate.exe_path(), updated_from=updated_from, open_path=open_path,
+              instance_lock=instance_lock)
     theme.dark_title_bar(root)
     root.mainloop()
     return app

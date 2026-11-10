@@ -59,6 +59,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends xvfb xauth xfonts-base fonts-dejavu-core
+          # bsdtar: Add from file reads .rar/.7z with the system's tar (tests + self-test).
+          apt-get install -y --no-install-recommends libarchive-tools
           python -c "import tkinter; print('Tk', tkinter.TkVersion)"
           ldd --version | head -n 1
 
@@ -76,6 +78,7 @@ jobs:
             python -m venv /home/builder/venv
             . /home/builder/venv/bin/activate
             pip install --disable-pip-version-check -q -r requirements-build.txt
+            pip install --disable-pip-version-check -q --only-binary=:all: --require-hashes -r requirements-app.txt
             python -m compileall -q main.py am tests
             work=$(mktemp -d)
             ADDONMANAGER_TEST_TMP="$work/tests" xvfb-run -a python -m unittest discover -s tests -t .
@@ -89,6 +92,9 @@ jobs:
                 --github-api "${data[2]}" --home "$work/home" --selftest-out "$work/selftest.json" \
               || { cat "$work/selftest.json" || true; exit 1; }
             cat "$work/selftest.json"
+            # Drag and drop (tkinterdnd2/tkdnd) on Linux: reported, never fails the build;
+            # where tkdnd cannot load, the program simply runs without drag and drop.
+            python -c "import json,sys; r=json.load(open(sys.argv[1])); [print(\"Drag and drop:\", s[\"detail\"]) for s in r[\"steps\"] if s[\"step\"] == \"drag and drop\"]" "$work/selftest.json" || true
 
             # Self-update on a COPY of the program (fake release v99.0.0).
             mapfile -t upd < <(python -m tests.make_selftest_data "$work/selfupdate" --app-update "$exe")
@@ -108,7 +114,9 @@ jobs:
           install -m 755 /home/builder/repo/AddonManager/dist/AddonManager pkg/AddonManager
           # The app's icon, for a desktop shortcut or Steam's "Add a Non-Steam Game".
           install -m 644 AddonManager/am/assets/AddonManager.png pkg/AddonManager.png
-          tar -C pkg --owner=0 --group=0 --numeric-owner -czf out/AddonManager-linux-x86_64.tar.gz AddonManager AddonManager.png
+          # The licences of everything bundled (also inside the program: Settings > Licences).
+          install -m 644 AddonManager/THIRD-PARTY-NOTICES.txt pkg/THIRD-PARTY-NOTICES.txt
+          tar -C pkg --owner=0 --group=0 --numeric-owner -czf out/AddonManager-linux-x86_64.tar.gz AddonManager AddonManager.png THIRD-PARTY-NOTICES.txt
           cd out
           sha256sum AddonManager-linux-x86_64 AddonManager-linux-x86_64.tar.gz | tee SHA256SUMS
           ls -l

@@ -305,6 +305,107 @@ NO_ACCOUNT = ("No account folder on this PC yet: log in to the game once, close 
               "restore to get your settings back.")
 
 
+# Send a backup with a code (am\share.py, am\share_ui.py). Never "sharing your account".
+LICENCES_LINK = "Licences"
+LICENCES_TITLE = "Licences"
+LICENCES_MISSING = "The licence file is missing. It comes with every download of the app."
+SEND_BUTTON = "Send to another PC..."
+RECEIVE_BUTTON = "Receive..."
+SEND_TITLE = "Send to another PC"
+RECEIVE_TITLE = "Receive from another PC"
+SEND_WHAT = "What to send:"
+SEND_NEW = "A new backup now"
+SEND_NEWEST = "Newest backup: "
+SEND_OTHER = "Other file..."
+SEND_CHOSEN = "File: "
+SEND_PRIVATE = ("This file has your account and character names and data your addons saved "
+                "about other players. Only give the code to yourself or someone you trust.")
+SEND_SAFE = "It is sent encrypted. The code works once, for 10 minutes."
+SEND_GET_CODE = "Get code"
+SEND_MAKING = "Making the backup..."
+SEND_CONNECTING = "Getting a code..."
+SEND_CODE_HEAD = "On the other PC: Settings, Receive..., then type:"
+SEND_COPY = "Copy"
+SEND_COPIED = "Copied."
+SEND_WAITING = "Waiting for the other PC..."
+SEND_SENT = "Sent. The other PC can restore it now."
+RECEIVE_TYPE = "Type the code the other PC shows:"
+RECEIVE_EXAMPLE = "Like 37-amber-lamp-river. Spaces work too."
+RECEIVE_NOTE = ("Only use a code from yourself or someone you trust. Nothing changes yet: you'll "
+                "see what's inside and pick what to restore. A safety copy is made first.")
+RECEIVE_OK = "Receive"
+RECEIVE_CONNECTING = "Connecting..."
+RECEIVE_CHECKING = "Checking the file..."
+USE_CODE = "Use a code..."
+RESTORE_CHOOSE = "Choose..."
+RESTORE_CHOOSE_FIRST = "Choose which of your accounts gets these settings (or skip)."
+RECEIVED_ADDONS_NOTE = ("Addons from another PC are off. Get the guild's addons with Install / "
+                        "Update in the main window; tick Addons only if you trust the sender.")
+MAX_NAMES = 6
+
+
+def _names(items):
+    shown = ", ".join(items[:MAX_NAMES])
+    return shown + (f" and {len(items) - MAX_NAMES} more" if len(items) > MAX_NAMES else "")
+
+
+def received_addons(not_listed, different):
+    """The line under RECEIVED_ADDONS_NOTE: which addons aren't the guild's own."""
+    parts = []
+    if different:
+        parts.append("Not the guild's version: " + _names(different) + ".")
+    if not_listed:
+        parts.append("Not on the guild list: " + _names(not_listed) + ".")
+    return " ".join(parts)
+
+
+def sending(done, total):
+    return f"Sending {size_text(done)} of {size_text(total)}..."
+
+
+def receiving(done, total):
+    return f"Receiving {size_text(done)} of {size_text(total)}..."
+
+
+def code_ends(seconds):
+    seconds = max(0, int(seconds))
+    return f"Works once. Ends in {seconds // 60}:{seconds % 60:02d}"
+
+
+def share_message(exc):
+    """Sending or receiving didn't work (nothing on this PC was changed)."""
+    kind = getattr(exc, "kind", "")
+    if kind == "bad_format":
+        return "That code isn't right. It looks like 37-amber-lamp-river."
+    if kind == "wrong_code":
+        return ("The code didn't match, so it can't be used any more. Make a new code on "
+                "the other PC and try again.")
+    if kind in ("not_found", "expired"):
+        return "That code has ended or doesn't exist. Make a new code on the other PC."
+    if kind == "used":
+        return "That code was already used. Make a new code on the other PC."
+    if kind == "ended":
+        return "The other PC stopped. Nothing was changed. Try again with a new code."
+    if kind == "cancelled":
+        return "Stopped. Nothing was changed."
+    if kind in ("offline", "timeout"):
+        return "Can't reach the send service. Check your internet and try again."
+    if kind == "busy":
+        return ("The send service is busy. Try again in a few minutes, or use a cloud "
+                "folder or USB stick.")
+    if kind == "too_big":
+        return "That backup is too big to send (500 MB at most). Use a cloud folder or USB stick."
+    if kind == "broken":
+        return "The file arrived damaged or cut off, so it was thrown away. Try again."
+    if kind == "not_backup":
+        return "That file isn't a backup that can be sent (or it is damaged)."
+    if kind == "disk_full":
+        return "The disk is full. Free some space and try again."
+    if kind in ("game", "inside_game", "permission", "locked", "nothing"):
+        return backup_message(exc)
+    return "That didn't work. Nothing was changed. Try again." + DETAILS
+
+
 def size_text(size):
     """Bytes as a short 'NN MB' text."""
     if size < 1024 * 1024:

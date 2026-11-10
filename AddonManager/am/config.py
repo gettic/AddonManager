@@ -36,6 +36,11 @@ APP_ASSET = WINDOWS_ASSET if os.name == "nt" else LINUX_ASSET
 # Empty = nothing is ever sent. Only the built app (not dev runs or self-tests) uses it.
 STATS_URL = "https://guild-stats.gtd-relay.workers.dev/ping"
 
+# Send a backup with a code (see am\share.py and share_worker\): the relay's address, e.g.
+# "https://guild-share.<subdomain>.workers.dev" (no path). Empty = the Send/Receive buttons
+# are hidden and nothing is ever sent.
+SHARE_URL = "https://guild-share.gtd-relay.workers.dev"
+
 HOME_ENV = "ADDONMANAGER_HOME"
 
 
@@ -72,7 +77,8 @@ SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": st
                  "update_failed": str, "known_addons": list, "show_betas": bool,
                  "stats_sent_day": str, "stats_sent_week": str, "share_stats": bool,
                  "removed_addons": list, "backup_folder": str, "backup_addons": bool,
-                 "backup_settings": bool}
+                 "backup_settings": bool,
+                 "file_addons": dict}   # addons installed from a file (am\fileinstall.py)
 
 
 def load_settings():
