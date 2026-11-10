@@ -838,7 +838,8 @@ class WindowBackupTests(unittest.TestCase):
         self.assertIn(errors.FOUND_MORE, self.texts(dlg.win))
 
     def test_backups_found_odd_dates(self):
-        """A file dated before 1970: '?' as its date, listed last, every row drawn."""
+        """A file dated before 1970: listed last, every row drawn, the status updated. Its
+        date is '?' on Windows (it can't show it); Linux shows the real date."""
         docs = os.path.join(self.work, "olddocs")
         old = os.path.join(docs, backup.FOLDER_NAME, "AddonManager backup 1968-12-01.zip")
         new = os.path.join(docs, backup.FOLDER_NAME, "AddonManager backup 2026-11-10.zip")
@@ -849,10 +850,17 @@ class WindowBackupTests(unittest.TestCase):
         app, dlg = self.found_window(docs)
         texts = [b.cget("text") for b in dlg.row_buttons]
         self.assertEqual(len(texts), 2)
-        self.assertTrue(texts[1].startswith("? · "), texts)
+        self.assertEqual(os.path.basename(dlg.shown_backups()[0][1].path),
+                         os.path.basename(old))   # sorted last
+        if os.name == "nt":
+            self.assertTrue(texts[1].startswith("? · "), texts)
+        else:
+            self.assertRegex(texts[1], r"^(\?|19\d\d-\d\d-\d\d \d\d:\d\d) · ")
         self.assertNotEqual(dlg.status_var.get(), errors.FOUND_LOOKING)
-        for bad in (-34560000, 1e20, float("nan")):
+        for bad in (1e20, float("nan")):
             self.assertEqual(backup_ui.found_date(bad), "?")
+        if os.name == "nt":
+            self.assertEqual(backup_ui.found_date(-34560000), "?")
 
     def test_no_cloud_buttons(self):
         app = self.make_app()

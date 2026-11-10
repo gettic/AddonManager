@@ -7,6 +7,7 @@ import datetime
 import logging
 import os
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -15,12 +16,16 @@ from am import backup, config, errors, theme
 
 log = logging.getLogger(__name__)
 
-WRAP = 330   # text width: keeps the windows narrow
+# Linux fonts are wider (Noto/DejaVu 10 pt vs Segoe UI 9 pt): a bit less text width and
+# tighter list/cloud buttons there, so both windows stay well under 420 px. Windows as before.
+LINUX = sys.platform != "win32"
+WRAP = 310 if LINUX else 330   # text width: keeps the windows narrow
+SLIM_PADDING = (4, 4)          # Linux only: Cloud.TButton / Row.TButton
 CLOUD_COLUMNS = 3
 MAX_CLOUD_BUTTONS = 9   # 3 rows
 MAX_FOUND_ROWS = 8      # Backups found: older ones via Browse...
 MAX_SAFETY_ROWS = 4     # safety copies, when ticked
-PLACE_MAX = 16         # characters of a folder name shown as a place
+PLACE_MAX = 12 if LINUX else 16        # characters of a folder name shown as a place
 
 
 def open_folder(path):
@@ -58,6 +63,12 @@ class _Dialog:
         win.configure(background=theme.BG)
         win.resizable(False, False)
         win.transient(self.parent)
+        style = ttk.Style(win)
+        style.configure("Row.TButton", anchor="w")
+        if LINUX:
+            for name in ("Row.TButton", "Cloud.TButton"):
+                style.configure(name, padding=SLIM_PADDING)
+            style.configure("Row.TButton", font=theme.font(bigger=-1))   # 9 pt like Windows
         self.frame = ttk.Frame(win, padding=14)
         self.frame.pack(fill="both", expand=True)
         ttk.Label(self.frame, text=title, font=theme.font("bold", bigger=1)).pack(anchor="w")
@@ -154,7 +165,7 @@ class BackupDialog(_Dialog):
         where = ttk.Frame(self.frame)
         where.pack(fill="x", pady=(10, 0))
         self.folder_var = tk.StringVar(value=errors.saved_to(self.folder))
-        ttk.Label(where, textvariable=self.folder_var, wraplength=WRAP - 90,
+        ttk.Label(where, textvariable=self.folder_var, wraplength=WRAP - (110 if LINUX else 90),
                   justify="left").pack(side="left", anchor="w")
         self.change_button = ttk.Button(where, text=errors.BACKUP_CHANGE,
                                         command=self.change_folder)
@@ -204,7 +215,8 @@ class BackupDialog(_Dialog):
             grid.columnconfigure(c, weight=1, uniform="cloud")
         for i, (label, path) in enumerate(clouds[:MAX_CLOUD_BUTTONS]):
             row, col = divmod(i, CLOUD_COLUMNS)
-            b = ttk.Button(grid, text=label, command=lambda p=path: self.use_cloud(p))
+            b = ttk.Button(grid, text=label, style="Cloud.TButton",
+                           command=lambda p=path: self.use_cloud(p))
             b.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 3, 0 if
                    col == CLOUD_COLUMNS - 1 else 3), pady=(0 if row == 0 else 6, 0))
             if self.running:
@@ -273,7 +285,6 @@ class BackupListDialog(_Dialog):
 
     def __init__(self, app, show=True):
         super().__init__(app, errors.RESTORE_TITLE, show)
-        ttk.Style(self.win).configure("Row.TButton", anchor="w")
         self.found = None        # [FoundBackup] once the search is done
         self.opening = None      # the path being opened (checked in a thread)
         self.row_buttons = []
