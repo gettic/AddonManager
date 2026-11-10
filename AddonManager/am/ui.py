@@ -34,11 +34,19 @@ BUTTON_TEXT = {
 ALL_STATUSES = (versions.UPDATE, versions.NOT_INSTALLED)
 NOT_CHOSEN = "(not chosen)"
 VERSION_SAMPLE = "v10.10.10-beta.10"   # sets the Installed/Latest column widths
+# Linux fonts (Noto Sans / DejaVu 10) are wider: a slightly shorter sample, less space
+# between columns and next to the X keep every row inside the 680 px window there.
+# Windows (Segoe UI 9) looks exactly as before.
+LINUX_VERSION_SAMPLE = "v1.10.0-beta.10"
+LINUX_COL_GAP = 6
+REMOVE_PAD = 4 if os.name == "nt" else 2   # space left of the X button
+if os.name != "nt":
+    VERSION_SAMPLE = LINUX_VERSION_SAMPLE
 SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
 REMOVED_SETTING = "removed_addons"   # settings.json: guild addons the player removed
 REMOVE_BUTTON = "X"   # plain text: Linux fonts may have no symbol for it
 MIN_WIDTH = 560   # the window's smallest width (more if the rows need it)
-COL_GAP = 10   # space after the list's text columns (keeps rows inside the 560 px window)
+COL_GAP = 10 if os.name == "nt" else LINUX_COL_GAP   # space after the list's text columns
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
 SETTINGS_BUTTON = "⚙ Settings" if os.name == "nt" else "Settings"
 BETA_TEXT = "Show beta versions"
@@ -321,7 +329,7 @@ class App:
             # Remove (X): only for installed guild addons; right-click on the row does the same.
             remove = ttk.Button(f, text=REMOVE_BUTTON, width=2, style="Remove.TButton",
                                 command=lambda n=i - 1: self._remove_index(n))
-            remove.grid(row=i, column=5, sticky="e", padx=(4, 0))
+            remove.grid(row=i, column=5, sticky="e", padx=(REMOVE_PAD, 0))
             remove.grid_remove()
             Tooltip(remove, errors.REMOVE_TIP)
             for widget in (name, installed, latest, status):
