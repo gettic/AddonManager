@@ -365,6 +365,14 @@ class WindowTests(unittest.TestCase):
         self.root.update_idletasks()
         row = app.settings_button.master
         self.assertIs(app.beta_main_check.master, row)   # incl. the Show beta versions box
+        # Add file...: in the bottom row on Windows; on its own line above the list on
+        # Linux (wider fonts), where the bottom row keeps real room (at least 30 px).
+        from am import fileinstall_ui
+        if fileinstall_ui.ADD_ON_TOP:
+            self.assertIsNot(app.files.button.master, row)
+            self.assertLessEqual(row.winfo_reqwidth(), 560 - 20 - 30)
+        else:
+            self.assertIs(app.files.button.master, row)
         self.assertLessEqual(row.winfo_reqwidth(), 560 - 20)
 
     def test_waits_for_app_update_check(self):

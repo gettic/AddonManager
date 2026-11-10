@@ -45,6 +45,10 @@ SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
 REMOVED_SETTING = "removed_addons"   # settings.json: guild addons the player removed
 UNINSTALL_BUTTON = "Uninstall"   # the row's button when the addon is installed and current
 MIN_WIDTH = 560   # the window's smallest width (more if the rows need it)
+# Linux only: the bottom row's buttons with less side padding (its fonts are about 1.2x
+# wider), so the row keeps real room inside the smallest window. Windows unchanged.
+LINUX_SLIM_BUTTONS = os.name != "nt"
+SLIM_PADDING = (6, 4)
 COL_GAP = 10 if os.name == "nt" else LINUX_COL_GAP   # space after the list's text columns
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
 SETTINGS_BUTTON = "⚙ Settings" if os.name == "nt" else "Settings"
@@ -230,6 +234,12 @@ class App:
         self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder)
         self.folder_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
         folder.columnconfigure(0, weight=1)
+        if fileinstall_ui.ADD_ON_TOP:
+            # Linux (wider fonts): "Add file..." gets its own line above the list, so the
+            # bottom row keeps room inside the smallest window. Windows: in the bottom row.
+            add_row = ttk.Frame(outer)
+            add_row.pack(fill="x", pady=(0, 2))
+            self.files.build_button(add_row, outer, top=True)
 
         self.banner_var = tk.StringVar()
         self.banner = tk.Label(outer, textvariable=self.banner_var, background=theme.BANNER_BG,
@@ -261,12 +271,21 @@ class App:
         bottom.pack(fill="x", side="bottom")
         buttons = ttk.Frame(bottom)
         buttons.pack(fill="x")
-        self.check_button = ttk.Button(buttons, text="Check again", command=self.check_again)
+        # Linux: slimmer bottom-row buttons (wider fonts); Windows keeps the normal padding.
+        slim = ""
+        if LINUX_SLIM_BUTTONS:
+            style = ttk.Style(self.root)
+            for name in ("Slim.TButton", "Slim.Accent.TButton"):
+                style.configure(name, padding=SLIM_PADDING)
+            slim = "Slim."
+        self.check_button = ttk.Button(buttons, text="Check again", command=self.check_again,
+                                       style=slim + "TButton")
         self.check_button.pack(side="left")
         self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all,
-                                     style="Accent.TButton")
+                                     style=slim + "Accent.TButton")
         self.all_button.pack(side="left", padx=(8, 0))
-        self.files.build_button(buttons, outer)   # "Add from file..." (+ drag and drop)
+        if not fileinstall_ui.ADD_ON_TOP:
+            self.files.build_button(buttons, outer)   # "Add file..." (+ drag and drop)
         # App settings live in a small Settings window (see open_settings).
         # Show beta versions: off by default. Share anonymous counts: on by default.
         self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
@@ -275,7 +294,7 @@ class App:
         self.backup_button = self.restore_button = None   # in the Settings window
         self.share_buttons = []                             # Send / Receive (Settings)
         self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON,
-                                          command=self.open_settings)
+                                          command=self.open_settings, style=slim + "TButton")
         self.settings_button.pack(side="right")
         # Show beta versions also in the main window (easy to toggle), left of Settings.
         # Same variable and command as the box in Settings, so both always match.

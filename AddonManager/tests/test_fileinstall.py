@@ -867,14 +867,12 @@ class WindowFileTests(unittest.TestCase):
                 app.closed = True
         self.root.tk.call("tk", "scaling", base)
 
-    def test_long_title_cut_with_tooltip(self):
-        """L1: a long ## Title doesn't widen the window; the full title is in the tooltip."""
-        app = self.make_app()
-        self.root.update_idletasks()
-        before = self.root.minsize()[0]
-        long_title = "Very Long Addon Name Number 0 With Extra Words And More"
+    LONG_TITLE = "Very Long Addon Name Number 0 With Extra Words And More"
+
+    def install_long_title(self, app):
         e = af.addon_files("LongOne")
-        e["LongOne/LongOne.toc"] = f"## Interface: 16001\n## Title: {long_title}\n## Version: 1\n"
+        e["LongOne/LongOne.toc"] = (f"## Interface: 16001\n## Title: {self.LONG_TITLE}\n"
+                                    "## Version: 1\n")
         app.files.add_from_path(af.write_zip(os.path.join(self.work, "long.zip"), e))
         self.pump(app, until=lambda: app.files.dialog is not None)
         d = app.files.dialog
@@ -882,13 +880,74 @@ class WindowFileTests(unittest.TestCase):
         self.pump(app, until=lambda: d.finished)
         d.close()
         self.root.update_idletasks()
+
+    def test_long_title_cut_with_tooltip(self):
+        """L1: a long ## Title never sets the window's width (it is cut to the width the
+        guild names already need); the full title is in the tooltip."""
+        app = self.make_app()
+        self.root.update_idletasks()
+        before = self.root.minsize()[0]
+        self.install_long_title(app)
         cells = app.files.cells[0]
         shown = cells["labels"][0].cget("text")
         self.assertTrue(shown.endswith("...") and len(shown) <= fileinstall_ui.MAX_TITLE)
-        self.assertEqual(cells["name_tip"].text, long_title)
-        # at most the cut title's width: still inside the default 680 px window
+        self.assertLessEqual(app._text_width(shown), app.files._title_px())
+        self.assertEqual(cells["name_tip"].text, self.LONG_TITLE)
+        widest = max(app._text_width(r.name) for r in app.rows)
+        self.assertLessEqual(self.root.minsize()[0],
+                             before + max(0, fileinstall_ui.MIN_TITLE_PX - widest))
         self.assertLessEqual(self.root.minsize()[0], 680)
-        self.assertGreaterEqual(self.root.minsize()[0], before)
+
+    def test_linux_layout(self):
+        """The Linux layout (on Linux for real; on Windows simulated: Linux fonts are about
+        1.2x wider): Add file... on its own line above the list, slim bottom-row buttons
+        with real room inside 540 px, and a long Other-addon title keeps the window well
+        under 680 px. The Windows layout is checked by test_stats (unchanged)."""
+        from unittest import mock
+        from am import ui
+        simulate = os.name == "nt"
+        base = float(self.root.tk.call("tk", "scaling"))
+        patches = [mock.patch.object(fileinstall_ui, "ADD_ON_TOP", True),
+                   mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True)] if simulate else []
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        if simulate:
+            # Tk's scaling outlives this window on Windows: always put it back here, before
+            # tearDown destroys the window (a cleanup would run too late).
+            self.root.tk.call("tk", "scaling", base * 1.2)
+        try:
+            self._linux_layout_checks(base)
+        finally:
+            self.root.tk.call("tk", "scaling", base)
+
+    def _linux_layout_checks(self, base):
+        app = self.make_app()
+        self.root.update_idletasks()
+        bottom = app.settings_button.master
+        self.assertIsNot(app.files.button.master, bottom)
+        self.assertNotIn(app.files.button, bottom.winfo_children())
+        self.assertEqual(app.check_button.cget("style"), "Slim.TButton")
+        self.assertLessEqual(bottom.winfo_reqwidth(), 540 - 30)
+        self.assertLessEqual(app.files.button.master.winfo_reqwidth(), 540 - 30)
+        # the button above the list, below the folder line
+        children = app.list_frame.master.pack_slaves()
+        self.assertLess(children.index(app.files.button.master), children.index(app.list_frame))
+        before = self.root.minsize()[0]
+        self.install_long_title(app)
+        # the title adds nothing to what the guild rows already need (and stays in 680 px)
+        widest = max(app._text_width(r.name) for r in app.rows)
+        self.assertLessEqual(self.root.minsize()[0],
+                             before + max(0, fileinstall_ui.MIN_TITLE_PX - widest))
+        self.assertLessEqual(self.root.minsize()[0], 680)
+        # right-click menu still there
+        self.assertEqual(app.files.menu.entrycget(1, "label"), fileinstall_ui.FOLDER_MENU)
+
+    def test_fit_title(self):
+        measure = lambda s: 7 * len(s)  # noqa: E731
+        self.assertEqual(fileinstall_ui.fit_title("Short", 200, measure), "Short")
+        cut = fileinstall_ui.fit_title(self.LONG_TITLE, 100, measure)
+        self.assertTrue(cut.endswith("...") and measure(cut) <= 100, cut)
 
     def test_tracked_guild_addon_shows_once(self):
         """L2: an addon from a file that is on the guild list now: only the guild row."""

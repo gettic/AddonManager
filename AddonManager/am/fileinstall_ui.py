@@ -22,8 +22,12 @@ MAX_VISIBLE_ROWS = 8            # more addons: the list scrolls
 ROW_HEIGHT = 40 if LINUX else 36
 
 # ---------- texts ----------
-# Short, so the bottom row still fits the smallest window (560 px; wider fonts on Linux).
+# Short, so the bottom row still fits the smallest window (560 px).
 ADD_BUTTON = "Add file..."
+# Linux (fonts about 1.2x wider): the button sits on its own line above the list instead
+# of in the bottom row; ADD_HINT is shown next to it there.
+ADD_ON_TOP = LINUX
+ADD_HINT = "Other addons from a .zip, .rar or .7z file:"
 ADD_TIP = "Install an addon from a .zip, .rar or .7z file (from CurseForge, Wago or a friend)."
 FOLDER_TIP = "Right-click: install from an unpacked folder. You can also drop a file on the window."
 FILE_MENU = "Install from file..."
@@ -63,10 +67,24 @@ MAX_TITLE = 24   # Other addons: longer titles are cut (full title in a tooltip)
 #                  window stays inside its default 680 px (Linux fonts are wider)
 
 
+MIN_TITLE_PX = 110   # an Other addon's title may always be this wide (pixels)
+
+
 def short_title(title, limit=MAX_TITLE):
     """A title that can't make the main window wider: cut with '...' after limit characters."""
     title = title or ""
     return title if len(title) <= limit else title[:limit - 3].rstrip() + "..."
+
+
+def fit_title(title, max_px, measure):
+    """short_title, then cut further until measure(text) <= max_px (the column's width the
+    guild rows already need), so a title never sets the window's minimum width."""
+    shown = short_title(title)
+    n = len(shown)
+    while n > 4 and measure(shown) > max_px:
+        n -= 1
+        shown = (title or "")[:n - 3].rstrip() + "..."
+    return shown
 
 
 def note_for(a):
@@ -384,13 +402,19 @@ class FileAddons:
         self._grid_rows = 0
 
     # ----- building -----
-    def build_button(self, parent, drop_widget):
-        """The button in the bottom row (parent); drop_widget: the frame filling the window
-        (tkdnd passes a drop on any widget inside it up to it; the Tk root itself can't be
-        a drop target in tkinterdnd2)."""
+    def build_button(self, parent, drop_widget, top=False):
+        """The button in the bottom row (parent), or with top=True (Linux) on its own line
+        above the list with ADD_HINT; drop_widget: the frame filling the window (tkdnd
+        passes a drop on any widget inside it up to it; the Tk root itself can't be a drop
+        target in tkinterdnd2)."""
         app = self.app
         self.button = ttk.Button(parent, text=ADD_BUTTON, command=self.add_from_file)
-        self.button.pack(side="left", padx=(8, 0))
+        if top:
+            self.button.pack(side="right")
+            self.hint = ttk.Label(parent, text=ADD_HINT, style="Muted.TLabel")
+            self.hint.pack(side="right", padx=(0, 8))
+        else:
+            self.button.pack(side="left", padx=(8, 0))
         self.tip = _tooltip(app, self.button, ADD_TIP + " " + FOLDER_TIP)
         self.menu = tk.Menu(app.root, tearoff=0, background=theme.SURFACE,
                             foreground=theme.TEXT, activebackground=theme.ACCENT,
@@ -468,7 +492,7 @@ class FileAddons:
         app._set_enabled(self.button, free)
         for row, cells in zip(self.rows, self.cells):
             name, installed, latest, status = cells["labels"]
-            shown = short_title(row.title)
+            shown = fit_title(row.title, self._title_px(), app._text_width)
             name.configure(text=shown)
             cells["name_tip"].text = row.title if shown != row.title else ""
             installed.configure(text=versions.display(row.version) if row.version else "?")
@@ -484,6 +508,13 @@ class FileAddons:
             button = cells["button"]
             button.configure(text=UNINSTALL, command=lambda r=row: self.remove(r))
             app._set_enabled(button, not app.busy and bool(app.addons_dir))
+
+    def _title_px(self):
+        """How wide an Other addon's title may be: as wide as the widest guild addon name
+        (so the titles never set the window's width), at least MIN_TITLE_PX."""
+        app = self.app
+        widest = max((app._text_width(r.name) for r in app.rows), default=0)
+        return max(widest, MIN_TITLE_PX)
 
     def _free(self):
         app = self.app

@@ -26,7 +26,8 @@ MAX_CLOUD_BUTTONS = 9   # 3 rows
 MAX_FOUND_ROWS = 8      # Backups found: older ones via Browse...
 MAX_SAFETY_ROWS = 4     # safety copies, when ticked
 PLACE_MAX = 12 if LINUX else 16        # characters of a folder name shown as a place
-MENU_CHARS = 14 if LINUX else 16       # Restore's account pick: fixed width, long names cut
+MENU_CHARS = 12 if LINUX else 16       # Restore's account pick: fixed width, long names cut
+ACCOUNT_WRAP = 160 if LINUX else 210   # the "Settings of account ... go to:" text beside it
 
 
 def open_folder(path):
@@ -147,7 +148,7 @@ class _Dialog:
 
 
 NOTICES_NAME = "THIRD-PARTY-NOTICES.txt"
-NOTICES_CHARS = 46 if LINUX else 52     # text width: the window stays under 420 px
+NOTICES_CHARS = 40 if LINUX else 52     # text width: the window stays under 420 px
 
 
 def notices_path():
@@ -471,7 +472,7 @@ class RestoreDialog(_Dialog):
                     continue   # same account here: nothing to ask
                 line = ttk.Frame(self.frame)
                 line.pack(fill="x", pady=(8, 0))
-                ttk.Label(line, text=errors.account_line(acc), wraplength=WRAP - 120,
+                ttk.Label(line, text=errors.account_line(acc), wraplength=ACCOUNT_WRAP,
                           justify="left").pack(side="left", anchor="w")
                 var = tk.StringVar(value=self.account_map[acc] or (
                     errors.RESTORE_CHOOSE if received else errors.RESTORE_SKIP))
@@ -498,7 +499,10 @@ class RestoreDialog(_Dialog):
                 ("bindings", errors.RESTORE_BINDINGS, self.bindings_var,
                  can_settings and info.binding_files > 0)):
             c = ttk.Checkbutton(checks, text=text, variable=var)
-            c.pack(side="left", padx=(0, 10))
+            if LINUX:   # wider fonts: one tick per line keeps the window narrow
+                c.pack(anchor="w")
+            else:
+                c.pack(side="left", padx=(0, 10))
             if not on:
                 c.state(["disabled"])
             self.checks[key] = c

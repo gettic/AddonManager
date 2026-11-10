@@ -84,10 +84,10 @@ def write_rar5(path, entries):
         if not is_dir:
             fields += struct.pack("<I", zlib.crc32(data) & 0xFFFFFFFF)
         fields += _vint(0) + _vint(0) + _vint(len(name_b)) + name_b   # stored, Windows
-        if data:
-            body = _vint(2) + _vint(0x2) + _vint(len(data)) + fields
-        else:
-            body = _vint(2) + _vint(0) + fields
+        # Like WinRAR: every file header (folders and empty files too) has the data-size
+        # field (flag 0x2). libarchive 3.6 (Debian bookworm's bsdtar) refuses one without it
+        # ("no data found in file/service block"); newer libarchive doesn't mind.
+        body = _vint(2) + _vint(0x2) + _vint(len(data)) + fields
         out += _block(body) + data
     out += _block(_vint(5) + _vint(0) + _vint(0))             # end of archive
     with open(path, "wb") as f:

@@ -182,7 +182,9 @@ class SendDialog(_ShareDialog):
             f = msg[2]
             if f is not None and not self.active:
                 self.newest = f
-                self.newest_radio.configure(text=errors.SEND_NEWEST + errors.found_row(
+                # Wider Linux fonts: the backup goes on its own line.
+                gap = "\n" if backup_ui.LINUX else ""
+                self.newest_radio.configure(text=errors.SEND_NEWEST + gap + errors.found_row(
                     backup_ui.found_date(f.mtime), f.size, f.place, f.online))
                 self.newest_radio.state(["!disabled"])
             return
