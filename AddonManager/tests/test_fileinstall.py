@@ -661,6 +661,34 @@ class InstanceTests(unittest.TestCase):
         self.assertTrue(b.acquire())
         b.release()
 
+    def test_same_instant_requests_keep_order(self):
+        """Requests sent in the same clock tick still come out in the order sent."""
+        from unittest import mock
+        import time as _time
+        frozen = _time.time_ns()
+        names = [f"r{i}.zip" for i in range(8)]
+        with mock.patch.object(instance.time, "time_ns", return_value=frozen):
+            for n in names:
+                self.assertTrue(instance.send_request(self.home, os.path.join(self.home, n)))
+        self.assertEqual([os.path.basename(p) for p in instance.take_requests(self.home)], names)
+
+    def test_old_style_names_sorted_by_time(self):
+        """Old "<seconds.mmm>-<hex>" names sort by their time among new ones."""
+        import time as _time
+        folder = os.path.join(self.home, instance.REQUEST_DIR)
+        os.makedirs(folder)
+        now = _time.time()
+        old_name = f"{now - 5:.3f}-ffff.txt"
+        with open(os.path.join(folder, old_name), "wb") as f:
+            f.write(os.path.join(self.home, "first.zip").encode("utf-8"))
+        self.assertTrue(instance.send_request(self.home, os.path.join(self.home, "second.zip")))
+        for bad in ("nan-a.txt", "inf-b.txt", "zz-c.txt"):
+            with open(os.path.join(folder, bad), "wb") as f:
+                f.write(b"relative.zip")
+        self.assertEqual([os.path.basename(p) for p in instance.take_requests(self.home)],
+                         ["first.zip", "second.zip"])
+        self.assertEqual(os.listdir(folder), [])
+
     def test_old_and_bad_requests_dropped(self):
         instance.send_request(self.home, os.path.join(self.home, "old.zip"))
         folder = os.path.join(self.home, instance.REQUEST_DIR)

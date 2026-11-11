@@ -10,6 +10,7 @@ checks everything and asks before installing."""
 
 import logging
 import os
+import threading
 import time
 import uuid
 
@@ -76,13 +77,43 @@ def _request_dir(home):
     return os.path.join(home, REQUEST_DIR)
 
 
+_stamp_lock = threading.Lock()
+_last_stamp = 0
+
+
+def _next_stamp():
+    """Wall-clock time in ns, strictly rising within this process, so requests sent in
+    the same instant (or with a coarse clock) still sort in the order they were sent."""
+    global _last_stamp
+    with _stamp_lock:
+        _last_stamp = max(time.time_ns(), _last_stamp + 1)
+        return _last_stamp
+
+
+def _sort_key(entry):
+    """Arrival order: the time in the name (new "<20-digit ns>-<hex>" or old
+    "<seconds.mmm>-<hex>"), then the name. Unreadable names fall back to the file time."""
+    head = entry.name.split("-", 1)[0]
+    try:
+        if head.isdigit():
+            stamp = int(head)
+        else:
+            stamp = int(round(float(head) * 1_000_000_000))
+    except (ValueError, OverflowError):
+        try:
+            stamp = entry.stat(follow_symlinks=False).st_mtime_ns
+        except OSError:
+            stamp = 0
+    return (stamp, entry.name)
+
+
 def send_request(home, path):
     """Hand a path to the open window (written atomically). True if written."""
     data = os.path.abspath(path).encode("utf-8")
     if len(data) > MAX_PATH_BYTES:
         return False
     folder = _request_dir(home)
-    name = f"{time.time():.3f}-{uuid.uuid4().hex}"
+    name = f"{_next_stamp():020d}-{uuid.uuid4().hex}"
     try:
         os.makedirs(folder, exist_ok=True)
         tmp = os.path.join(folder, name + ".part")
@@ -102,8 +133,8 @@ def take_requests(home, now=None):
     now = time.time() if now is None else now
     out = []
     try:
-        entries = sorted(os.scandir(folder), key=lambda e: e.name)
-    except OSError:
+        entries = sorted(os.scandir(folder), key=_sort_key)
+    except (OSError, ValueError):
         return out
     for e in entries:
         if not e.name.endswith((".txt", ".part")):
