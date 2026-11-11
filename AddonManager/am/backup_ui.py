@@ -354,14 +354,30 @@ class _Dialog:
         win.protocol("WM_DELETE_WINDOW", self.close)
         win.bind("<Escape>", lambda _e: self.close())
 
-    def _status_area(self):
+    def _status_area(self, collapse=False):
+        """Status line, progress bar (packed when used) and the button row. collapse:
+        the status line takes no room while it is empty (no gap above the buttons)."""
         self.status_var = tk.StringVar()
         self.status = ttk.Label(self.frame, textvariable=self.status_var, wraplength=WRAP,
                                 justify="left")
-        self.status.pack(anchor="w", pady=(10, 0))
+        if not collapse:
+            self.status.pack(anchor="w", pady=(10, 0))
         self.progress = ttk.Progressbar(self.frame, mode="determinate", maximum=100)
         self.buttons = ttk.Frame(self.frame)
         self.buttons.pack(fill="x", pady=(12, 0))
+        if collapse:
+            self.status_var.trace_add("write", lambda *_a: self._place_status())
+
+    def _place_status(self):
+        """Show the status line only while it has text (collapse mode)."""
+        try:
+            if not self.status_var.get():
+                self.status.pack_forget()
+            elif not self.status.winfo_manager():
+                below = self.progress if self.progress.winfo_manager() else self.buttons
+                self.status.pack(anchor="w", pady=(10, 0), before=below)
+        except tk.TclError:
+            pass   # the window is closing
 
     def _show(self, focus):
         if not self.shown:
@@ -447,6 +463,9 @@ def read_notices():
         return errors.LICENCES_MISSING
 
 
+SPOKEN_STYLE = "Wrap.TCheckbutton"   # the Spoken tick: its text wraps (style wraplength)
+
+
 class LicenceDialog(_Dialog):
     """Licences (from Settings): the bundled THIRD-PARTY-NOTICES.txt, read-only."""
 
@@ -454,16 +473,26 @@ class LicenceDialog(_Dialog):
         super().__init__(app, errors.LICENCES_TITLE, show)
         box = ttk.Frame(self.frame)
         box.pack(fill="both", expand=True, pady=(8, 0))
-        self.text = tk.Text(box, width=NOTICES_CHARS, height=24, wrap="word",
+        # wrap none: the notices file has its own line breaks and tables; a sideways
+        # scrollbar shows the rest of a long line.
+        self.text = tk.Text(box, width=NOTICES_CHARS, height=24, wrap="none",
                             background=theme.SURFACE, foreground=theme.TEXT,
                             insertbackground=theme.TEXT, relief="flat", borderwidth=0,
                             highlightthickness=1, highlightbackground=theme.BORDER,
                             font=theme.font(bigger=-1), padx=6, pady=4)
         bar = ttk.Scrollbar(box, orient="vertical", command=self.text.yview)
-        self.text.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
-        self.text.pack(side="left", fill="both", expand=True)
-        self.text.insert("1.0", read_notices())
+        self.hbar = ttk.Scrollbar(box, orient="horizontal", command=self.text.xview)
+        self.text.configure(yscrollcommand=bar.set, xscrollcommand=self.hbar.set)
+        self.text.grid(row=0, column=0, sticky="nsew")
+        bar.grid(row=0, column=1, sticky="ns")
+        self.hbar.grid(row=1, column=0, sticky="ew")
+        box.rowconfigure(0, weight=1)
+        box.columnconfigure(0, weight=1)
+        notices = read_notices()
+        if notices == errors.LICENCES_MISSING:   # one sentence: wrap it
+            self.text.configure(wrap="word")
+            self.hbar.grid_remove()
+        self.text.insert("1.0", notices)
         self.text.configure(state="disabled")   # read-only (selecting and copying work)
         self.buttons = ttk.Frame(self.frame)
         self.buttons.pack(fill="x", pady=(10, 0))
@@ -509,7 +538,7 @@ class BackupDialog(_SpokenCheck, _Dialog):
         threading.Thread(target=_cloud_worker, daemon=True, args=(app.queue,)).start()
         ttk.Label(self.frame, text=errors.BACKUP_PRIVATE, style="Muted.TLabel",
                   wraplength=WRAP, justify="left").pack(anchor="w", pady=(10, 0))
-        self._status_area()
+        self._status_area(collapse=True)
         # The progress bar is there from the start (empty), so the window never changes
         # size when the backup begins.
         self.progress.pack(fill="x", pady=(6, 0), before=self.buttons)
@@ -600,12 +629,6 @@ class BackupDialog(_SpokenCheck, _Dialog):
         self.spoken_var.set(answer == "skip")
         self._addons_label()
 
-    def _toggle_spoken(self):
-        if self.running or self.spoken_check is None:
-            return
-        self.spoken_var.set(not self.spoken_var.get())
-        self.save_spoken()
-
     def save_spoken(self):
         save_spoken_answer("skip" if self.spoken_var.get() else "keep")
         self._addons_label()
@@ -618,17 +641,14 @@ class BackupDialog(_SpokenCheck, _Dialog):
     def spoken_shown(self):
         spoken = self.spoken
         if spoken and self.spoken_check is None and not self.closed:
-            # The tick and a wrapped label (a wide Linux font keeps the window <= 420 px).
-            line = ttk.Frame(self.frame)
-            line.pack(anchor="w", fill="x", after=self.addons_check)
-            self.spoken_check = ttk.Checkbutton(line, variable=self.spoken_var,
-                                                command=self.save_spoken)
-            self.spoken_check.pack(side="left", anchor="n")
-            self.spoken_label = ttk.Label(
-                line, text=errors.spoken_tick(sum(s for _f, s in spoken)),
-                wraplength=WRAP - 30, justify="left")
-            self.spoken_label.pack(side="left", anchor="w")
-            self.spoken_label.bind("<Button-1>", lambda _e: self._toggle_spoken())
+            # One tick whose text wraps (a wide Linux font keeps the window <= 420 px), so
+            # it lines up with the two ticks above. spoken_label: the same widget.
+            ttk.Style(self.win).configure(SPOKEN_STYLE, wraplength=WRAP - 30)
+            self.spoken_check = ttk.Checkbutton(
+                self.frame, variable=self.spoken_var, command=self.save_spoken,
+                text=errors.spoken_tick(sum(s for _f, s in spoken)), style=SPOKEN_STYLE)
+            self.spoken_check.pack(anchor="w", after=self.addons_check)
+            self.spoken_label = self.spoken_check
             if self.running:
                 self.spoken_check.state(["disabled"])
         self._addons_label()
@@ -695,7 +715,7 @@ class BackupListDialog(_Dialog):
         self.safety_check.pack(anchor="w", pady=(8, 0))
         ttk.Label(self.frame, text=errors.FOUND_NOTE, style="Muted.TLabel", wraplength=WRAP,
                   justify="left").pack(anchor="w", pady=(6, 0))
-        self._status_area()
+        self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
         self.browse_button = ttk.Button(self.buttons, text=errors.FOUND_BROWSE,
@@ -826,7 +846,7 @@ class RestoreDialog(_Dialog):
                 button = ttk.Menubutton(line, textvariable=var, width=MENU_CHARS)
                 menu = tk.Menu(button, tearoff=0, background=theme.SURFACE,
                                foreground=theme.TEXT, activebackground=theme.ACCENT,
-                               activeforeground=theme.ACCENT_TEXT)
+                               activeforeground=theme.ACCENT_TEXT, font=theme.font())
                 for name in self.local + [errors.RESTORE_SKIP]:
                     menu.add_radiobutton(label=name, value=name, variable=var)
                 button["menu"] = menu
@@ -870,7 +890,7 @@ class RestoreDialog(_Dialog):
         for text in (errors.RESTORE_MERGE, errors.RESTORE_SAFETY):
             ttk.Label(self.frame, text=text, style="Muted.TLabel", wraplength=WRAP,
                       justify="left").pack(anchor="w", pady=(6, 0))
-        self._status_area()
+        self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
         self.restore_button = ttk.Button(self.buttons, text=errors.RESTORE_OK,

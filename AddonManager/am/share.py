@@ -446,7 +446,8 @@ def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic,
     later = {"hours", "api", "allow_local"} when the player ticked send later: if nobody
     joined after share_later.LATER_AFTER seconds, it goes to file.kiwi instead (a file
     over MAX_SIZE goes there at once, before the code is shown);
-    on_later("uploading", None) / on_later("ready", seconds the code works)."""
+    on_later("uploading", None) / on_later("ready", seconds the code works); while
+    file.kiwi is down on_later("kiwi_down", seconds it keeps trying), then "uploading" again."""
     from spake2 import SPAKE2_A
     try:
         size = os.path.getsize(path)
@@ -544,6 +545,8 @@ def _later_error(e):
         return ShareError("cancelled")
     if kind == "file":
         return ShareError("not_backup", "file changed")
+    if getattr(e, "detail", "") == "down":   # file.kiwi didn't answer for KIWI_DOWN_FOR
+        return ShareError("later_failed", "down")
     return ShareError("later_failed", f"{type(e).__name__} {kind}")
 
 
@@ -564,9 +567,15 @@ def _send_later(path, relay, channel, words, size, sha, later, progress, cancel,
         on_later("uploading", "big" if show_code else None)
     file_key, kiwi_key, name = os.urandom(32), os.urandom(16), share_later.random_name()
     blob = share_later.Blob(path, file_key, size, sha)
-    kiwi = share_later.FileKiwi(later.get("api") or share_later.API_URL,
-                                allow_local=bool(later.get("allow_local")), sleep=relay.sleep)
     stop = threading.Event()
+    # file.kiwi's waits (up to 5 min when it is down) end at once on cancel; tests pass
+    # their own relay sleep.
+    nap = stop.wait if relay.sleep is time.sleep else relay.sleep
+    kiwi = share_later.FileKiwi(
+        later.get("api") or share_later.API_URL, allow_local=bool(later.get("allow_local")),
+        sleep=nap,
+        on_wait=(lambda left: on_later("kiwi_down", int(left))) if on_later else None,
+        on_ok=(lambda: on_later("uploading", None)) if on_later else None)
     result = {}
     seen = [0, blob.total]
 

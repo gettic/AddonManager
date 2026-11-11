@@ -4,8 +4,9 @@ POST /v2/folders -> a folder with presigned-style chunk URLs on this same server
 chunk (signature checked); GET upload-status. `download(link)` does what their download page
 does in the browser: it undoes their RFC 8188 layer with the key after # (the test then
 checks the app's own layer separately). Hooks: `fail_puts` (list of statuses answered to the
-next chunk uploads, e.g. [429, 500]), `fail_create` (status for every folder create),
-`delay` (seconds per chunk upload). It records what the app did: `max_parallel`,
+next chunk uploads, e.g. [429, 500]), `fail_create` (status for every folder create, or a
+function giving the status or None), `fail_put_when` (function(chunk number) giving a status
+or None), `delay` (seconds per chunk upload). It records what the app did: `max_parallel`,
 `agents`, `status_queries` (each with its query string: uploadAuth must never be there)."""
 
 import base64
@@ -31,6 +32,7 @@ class FakeKiwi:
         self.folders = {}            # id -> {"ske", "files": {fid: {...}}}
         self.fail_puts = []
         self.fail_create = None
+        self.fail_put_when = None
         self.delay = 0.0
         self.parallel = 0
         self.max_parallel = 0
@@ -88,8 +90,9 @@ class FakeKiwi:
             self.calls.append(("POST", path))
             if path != "/v2/folders":
                 return 404, {"error": "not_found"}
-            if self.fail_create:
-                return self.fail_create, {"error": "oops"}
+            fail = self.fail_create() if callable(self.fail_create) else self.fail_create
+            if fail:
+                return fail, {"error": "oops"}
             try:
                 req = json.loads(body)
                 ske = base64.b64decode(req["encryption"]["ske"], validate=True)
@@ -126,6 +129,8 @@ class FakeKiwi:
             self.parallel += 1
             self.max_parallel = max(self.max_parallel, self.parallel)
             fail = self.fail_puts.pop(0) if self.fail_puts else None
+            if fail is None and self.fail_put_when and m:
+                fail = self.fail_put_when(int(m.group(3)))
         try:
             if self.delay:
                 time.sleep(self.delay)

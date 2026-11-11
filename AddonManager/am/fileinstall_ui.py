@@ -12,7 +12,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from am import archive, fileinstall, theme, toc, versions
+from am import archive, fileinstall, theme, toc, touch, versions
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ NOTE_OTHER_VERSION = "Made for another WoW version: WoW may call it out of date"
 SKIP_BLIZZARD = "{name}: a game folder, never installed"
 SKIP_BAD_NAME = "{name}: a name WoW can't use, not installed"
 SAFETY_NOTE = ("Addons that are already there are saved first in your backups folder "
-               "(Settings > Restore can put them back).")
+               "(Backup > Restore can put them back).")
 TRUST_NOTE = "Only install addons from people you trust."
 NOTHING_CHOSEN = "Tick at least one addon."
 NOTHING_TO_INSTALL = "There is nothing in this file the Addon Manager may install."
@@ -146,7 +146,7 @@ def message(exc, name=""):
         "in_game": "Pick the folder you unpacked, not the game's own folders.",
         "not_allowed": f"{detail} can't be installed from a file. Nothing was installed.",
         "safety": "The safety copy of the addons already there couldn't be saved, so "
-                  "nothing was installed. Check your backups folder in Settings.",
+                  "nothing was installed. Check your backups folder in the Backup window.",
         "locked": "A file is in use (is WoW open?). Close WoW and try again.",
         "permission": "Windows didn't allow the change. Nothing was changed for that addon."
                       if sys.platform == "win32" else
@@ -206,7 +206,8 @@ class FileInstallDialog:
             from am import errors
             self.game_label = tk.Label(frame, text=errors.GAME_RUNNING,
                                        background=theme.BANNER_BG, foreground=theme.BANNER_TEXT,
-                                       anchor="w", justify="left", wraplength=WRAP, padx=6, pady=4)
+                                       anchor="w", justify="left", wraplength=WRAP, padx=6, pady=4,
+                                       font=theme.font())
             self.game_label.pack(fill="x", pady=(8, 0))
         ttk.Label(frame, text=FOUND if plan.addons else NOTHING_TO_INSTALL,
                   style="Muted.TLabel", wraplength=WRAP).pack(anchor="w", pady=(8, 2))
@@ -257,7 +258,7 @@ class FileInstallDialog:
     def _rows_area(self):
         """One tick + grey note per addon; a scrolled list when there are many."""
         addons = self.plan.addons
-        holder = self.frame
+        holder, canvas = self.frame, None
         if len(addons) > MAX_VISIBLE_ROWS:
             outer = ttk.Frame(self.frame)
             outer.pack(fill="x")
@@ -271,8 +272,6 @@ class FileInstallDialog:
             canvas.create_window((0, 0), window=holder, anchor="nw")
             holder.bind("<Configure>",
                         lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-            canvas.bind("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
             self.canvas = canvas
         for a in addons:
             var = tk.BooleanVar(value=a.tick)
@@ -287,6 +286,8 @@ class FileInstallDialog:
                       justify="left").pack(anchor="w", padx=(24, 0))
             self.vars[a.folder] = var
             self.checks[a.folder] = check
+        if canvas is not None:   # the wheel works over the rows too, not only the gaps
+            _wheel(canvas, canvas)
 
     def chosen(self):
         return [a.folder for a in self.plan.addons
@@ -415,10 +416,13 @@ class FileAddons:
         self.tip = _tooltip(app, self.button, ADD_TIP + " " + FOLDER_TIP)
         self.menu = tk.Menu(app.root, tearoff=0, background=theme.SURFACE,
                             foreground=theme.TEXT, activebackground=theme.ACCENT,
-                            activeforeground=theme.ACCENT_TEXT, borderwidth=1)
+                            activeforeground=theme.ACCENT_TEXT, borderwidth=1,
+                            font=theme.font())
         self.menu.add_command(label=FILE_MENU, command=self.add_from_file)
         self.menu.add_command(label=FOLDER_MENU, command=self.add_from_folder)
         self.button.bind("<Button-3>", self._menu_popup)
+        # The hint label opens the same menu (and with press-and-hold on a touch screen).
+        touch.bind_menu(self.hint, self._menu_popup)
         self.drop_ok = enable_drop(app.root, drop_widget, self.dropped)
 
     def _menu_popup(self, event):
@@ -476,8 +480,9 @@ class FileAddons:
                 labels.append(label)
             button = ttk.Button(frame, width=10, style="Uninstall.TButton")
             button.grid(row=i, column=4, sticky="e")
-            for w in labels + [button]:
-                w.bind("<Button-3>", lambda e, k=n: self._row_menu_popup(e, k))
+            for w in labels:
+                touch.bind_menu(w, lambda e, k=n: self._row_menu_popup(e, k))
+            button.bind("<Button-3>", lambda e, k=n: self._row_menu_popup(e, k))
             frame.rowconfigure(i, minsize=button.winfo_reqheight())
             self.cells.append({"labels": labels, "button": button,
                                "name_tip": _tooltip(self.app, labels[0], "")})
@@ -736,6 +741,17 @@ class FileAddons:
     def close(self):
         if self.dialog is not None:
             self.dialog.plan.close()
+
+
+def _wheel(canvas, widget):
+    """Mouse wheel scrolls canvas over widget and everything inside it (Windows
+    <MouseWheel>, Linux Button-4/5)."""
+    widget.bind("<MouseWheel>",
+                lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
+    widget.bind("<Button-4>", lambda _e: canvas.yview_scroll(-1, "units"), add="+")
+    widget.bind("<Button-5>", lambda _e: canvas.yview_scroll(1, "units"), add="+")
+    for child in widget.winfo_children():
+        _wheel(canvas, child)
 
 
 def _tooltip(app, widget, text):

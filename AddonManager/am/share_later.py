@@ -12,7 +12,8 @@ The link and K go in a small record on our relay, sealed with a key made from th
 
 file.kiwi rules we keep (tos conditions): their documented v2 API only, one chunk at a time,
 back off on 429 and 5xx, never ask for a longer expiry, the app's usual User-Agent, and random
-neutral names. No tkinter here."""
+neutral names. When file.kiwi is down, the upload waits and tries again every 5 minutes for
+up to 2 hours (KIWI_DOWN_*), as long as the app stays open. No tkinter here."""
 
 import base64
 import hashlib
@@ -46,7 +47,9 @@ MAGIC = b"AMSEND1\n"
 TIMEOUT = 60
 UPLOAD_WAIT = 6 * 3600 + 600         # the receiver waits at most this long for an upload
 RETRY_FOR = 600                      # seconds a chunk may keep failing before giving up
-MAX_RETRIES = 30                     # retries per send in all (then it stops with an error)
+MAX_RETRIES = 30                     # quick retries per send in all (then file.kiwi is "down")
+KIWI_DOWN_FOR = 2 * 3600             # file.kiwi down: keep trying this long after it first
+KIWI_DOWN_EVERY = 300                # went down, one try every this many seconds
 MAX_ANSWER = 64 * 1024
 BLOCK = 256 * 1024
 CHUNK_MIN, CHUNK_MAX = 64 * 1024, 64 * 1024 * 1024   # file.kiwi chunk sizes we accept
@@ -293,10 +296,13 @@ def link_ok(link, allow_local=False):
 # ---------- file.kiwi's upload API (v2) ----------
 class FileKiwi:
     """Upload one blob: POST /v2/folders, then each chunk to its presigned URL, one at a time,
-    then upload-status (without uploadAuth: never extends the expiry)."""
+    then upload-status (without uploadAuth: never extends the expiry).
+    sleep(seconds) should wake up early on cancel (share.py passes its stop event's wait);
+    on_wait(seconds left) when file.kiwi starts counting as down, on_ok() when it answers
+    again (both called on the upload's thread)."""
 
     def __init__(self, api_url=API_URL, allow_local=False, sleep=time.sleep,
-                 clock=time.monotonic):
+                 clock=time.monotonic, on_wait=None, on_ok=None):
         p = urllib.parse.urlsplit(api_url)
         local = p.scheme == "http" and p.hostname in ("127.0.0.1", "localhost")
         if not (p.scheme == "https" and p.hostname) and not (allow_local and local):
@@ -304,7 +310,10 @@ class FileKiwi:
         self.api = api_url.rstrip("/")
         self.allow_local = allow_local
         self.sleep, self.clock = sleep, clock
-        self.retries = 0   # all retries of this upload together (MAX_RETRIES)
+        self.on_wait, self.on_ok = on_wait, on_ok
+        self.retries = 0          # quick retries of this upload together (MAX_RETRIES)
+        self.down_until = None    # file.kiwi went down: give up at this clock() time
+        self.waiting = False      # on_wait was called and file.kiwi hasn't answered since
 
     def _url_ok(self, url):
         p = urllib.parse.urlsplit(url)
@@ -351,52 +360,89 @@ class FileKiwi:
         finally:
             conn.close()
 
-    def _retrying(self, call, stop):
-        """call() until it isn't a network blip, 429 or 5xx; backs off 2 s .. 60 s for at
-        most RETRY_FOR seconds, and at most MAX_RETRIES retries per upload in all."""
+    def _retrying(self, call, stop, parse=None):
+        """call() until it isn't a network blip, 429, 5xx or (with parse(status, data)) an
+        answer that isn't JSON (a maintenance page). Returns (status, data), or parse's
+        result. First quick retries: 2 s .. 60 s for RETRY_FOR seconds, at most MAX_RETRIES
+        per upload. Then file.kiwi counts as down: one try every KIWI_DOWN_EVERY seconds
+        until KIWI_DOWN_FOR after it first went down, then LaterError(kind, "down")."""
         deadline = self.clock() + RETRY_FOR
         delay = 2
         while True:
-            if stop is not None and stop():
-                raise LaterError("cancelled")
+            self._check(stop)
+            kind = None
             try:
                 status, data = call()
             except LaterError as e:
-                if e.kind not in ("offline", "timeout") or self.clock() > deadline:
+                if e.kind not in ("offline", "timeout"):
                     raise
-                status = None
+                kind = e.kind
             else:
-                if status != 429 and status < 500:
-                    return status, data
-                if self.clock() > deadline:
-                    raise LaterError("busy" if status == 429 else "server", f"HTTP {status}")
-            self.retries += 1
-            if self.retries > MAX_RETRIES:
-                raise LaterError("busy" if status == 429 else "offline" if status is None
-                                 else "server", "too many retries")
-            self.sleep(delay)
-            delay = min(delay * 2, 60)
+                if status == 429:
+                    kind = "busy"
+                elif status >= 500:
+                    kind = "server"
+                elif parse is not None:
+                    try:
+                        out = parse(status, data)
+                    except LaterError as e:
+                        if e.detail != "not json":
+                            raise
+                        kind = "server"
+                else:
+                    out = status, data
+            if kind is None:
+                if self.waiting:
+                    self.waiting = False
+                    if self.on_ok:
+                        self.on_ok()
+                return out
+            now = self.clock()
+            if now <= deadline and self.retries < MAX_RETRIES:
+                self.retries += 1
+                pause = delay
+                delay = min(delay * 2, 60)
+            else:
+                if self.down_until is None:
+                    self.down_until = now + KIWI_DOWN_FOR
+                left = self.down_until - now
+                if left <= 0:
+                    raise LaterError(kind, "down")
+                if not self.waiting:
+                    self.waiting = True
+                    if self.on_wait:
+                        self.on_wait(left)
+                pause = min(KIWI_DOWN_EVERY, left)
+            self.sleep(pause)
+            self._check(stop)
+
+    @staticmethod
+    def _check(stop):
+        if stop is not None and stop():
+            raise LaterError("cancelled")
 
     @staticmethod
     def _json(data):
         try:
             out = json.loads(data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
-            raise LaterError("server", "bad answer") from e
+            raise LaterError("server", "not json") from e
         if not isinstance(out, dict):
             raise LaterError("server", "bad answer")
         return out
 
-    def create(self, blob_size, name, key):
+    def create(self, blob_size, name, key, stop=None):
         """The folder for one file. Returns (folder dict, file dict)."""
         ske = base64.b64encode(ece_encrypt(key, b64url(key).encode("ascii"))).decode("ascii")
         enc_name = base64.b64encode(ece_encrypt(key, name.encode("utf-8"))).decode("ascii")
         body = json.dumps({"mode": "send", "encryption": {"ske": ske},
                            "files": [{"filename": enc_name, "filesize": blob_size,
                                       "mimetype": "application/octet-stream"}]}).encode("ascii")
-        status, data = self._retrying(lambda: self._request(
+        return self._retrying(lambda: self._request(
             "POST", self.api + "/v2/folders", body, {"Content-Type": "application/json"}),
-            None)
+            stop, lambda status, data: self._folder(status, data, blob_size))
+
+    def _folder(self, status, data, blob_size):
         if status != 200:
             raise LaterError("server", f"HTTP {status}")
         folder = self._json(data)
@@ -446,14 +492,16 @@ class FileKiwi:
         if status not in (200, 201, 204):
             raise LaterError("server", f"chunk HTTP {status}")
 
-    def missing(self, folder, f):
+    def missing(self, folder, f, stop=None):
         """Chunk numbers (1-based) file.kiwi doesn't have yet ([] = complete)."""
         url = (f"{self.api}/v2/folders/{urllib.parse.quote(folder['folderId'], safe='')}"
                f"/files/{urllib.parse.quote(f['fileId'], safe='')}/upload-status")
-        status, data = self._retrying(lambda: self._request("GET", url), None)
-        if status != 200:
-            raise LaterError("server", f"status HTTP {status}")
-        out = self._json(data)
+
+        def parse(status, data):
+            if status != 200:
+                raise LaterError("server", f"status HTTP {status}")
+            return self._json(data)
+        out = self._retrying(lambda: self._request("GET", url), stop, parse)
         if out.get("complete") is True:
             return []
         miss = out.get("missing")
@@ -463,7 +511,7 @@ class FileKiwi:
 
     def upload(self, blob, name, key, stop=None, progress=None):
         """Upload the blob; returns the link (with file.kiwi's key after #)."""
-        folder, f = self.create(blob.total, name, key)
+        folder, f = self.create(blob.total, name, key, stop)
         cs, n = f["chunkSize"], f["chunks"]
         done = [0]
 
@@ -478,7 +526,7 @@ class FileKiwi:
             for c in todo:
                 part = blob.read(c * cs, min((c + 1) * cs, blob.total))
                 self.put_chunk(f, c, ece_encrypt(key, part), stop, on_bytes)
-            todo = [m - 1 for m in self.missing(folder, f) if 1 <= m <= n]
+            todo = [m - 1 for m in self.missing(folder, f, stop) if 1 <= m <= n]
             if not todo:
                 return self.link(folder, key)
         raise LaterError("server", "upload not complete")

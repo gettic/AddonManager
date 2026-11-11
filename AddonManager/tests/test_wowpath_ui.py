@@ -200,6 +200,69 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
         self.assertEqual(toc.installed(self.addons, "GuildHub"), (True, "0.4.1"))
         self.assertIn("disabled", app.all_button.state())
+        # everything installed and current: Install all, greyed out
+        self.assertEqual(app.all_button.cget("text"), "Install all")
+
+    def test_all_button_update_when_any_update(self):
+        """One outdated (Taxi Time) and one missing (Guild Hub): Update all."""
+        app = self.make_app()
+        self.pump(app)
+        self.assertEqual(app.all_button.cget("text"), "Update all")
+        self.assertNotIn("disabled", app.all_button.state())
+
+    def test_all_button_install_when_nothing_installed(self):
+        fixtures.remove(os.path.join(self.addons, "TaxiTime"))
+        app = self.make_app()
+        self.pump(app)
+        self.assertEqual(app.all_button.cget("text"), "Install all")
+        self.assertNotIn("disabled", app.all_button.state())
+
+    def test_all_button_text_kept_while_busy_and_same_width(self):
+        app = self.make_app()
+        self.pump(app)
+        self.root.update_idletasks()
+        width = app.all_button.winfo_reqwidth()
+        self.assertEqual(app.all_button.cget("text"), "Update all")
+        # Taxi Time gets current during a run: the text stays until the run is over.
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.3.0")
+        app.busy = True
+        app.render()
+        self.assertEqual(app.all_button.cget("text"), "Update all")
+        self.assertIn("disabled", app.all_button.state())
+        app.busy = False
+        app.render()
+        self.assertEqual(app.all_button.cget("text"), "Install all")   # Guild Hub still missing
+        self.assertNotIn("disabled", app.all_button.state())
+        self.root.update_idletasks()
+        self.assertEqual(app.all_button.winfo_reqwidth(), width)   # the row doesn't jump
+
+    def test_all_button_follows_betas_switch(self):
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            z = fixtures.make_zip(os.path.join(gh, "dl", "TaxiTime-v1.4.0-beta.1.zip"),
+                                  "TaxiTime", "1.4.0-beta.1")
+            stable_zip = os.path.join(gh, "dl", "TaxiTime-v1.3.0.zip")
+            fixtures.write_releases(os.path.join(gh, "api"), "gettic/TaxiTime", [
+                fixtures.release_json("v1.4.0-beta.1", [fixtures.asset(
+                    "TaxiTime-v1.4.0-beta.1.zip", server.url + "dl/TaxiTime-v1.4.0-beta.1.zip",
+                    z)], prerelease=True),
+                fixtures.release_json("v1.3.0", [fixtures.asset(
+                    "TaxiTime-v1.3.0.zip", server.url + "dl/TaxiTime-v1.3.0.zip", stable_zip)])])
+            fixtures.make_addon_folder(self.addons, "TaxiTime", "1.3.0")
+            fixtures.make_addon_folder(self.addons, "GuildHub", "0.4.1")
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: False, detect=lambda: [],
+                         github_api=server.url + "api")
+            self.pump(app)
+            self.assertEqual(app.all_button.cget("text"), "Install all")
+            self.assertIn("disabled", app.all_button.state())
+            self.beta_box(app).invoke()
+            self.pump(app)
+            self.assertEqual(app.all_button.cget("text"), "Update all")
+            self.assertNotIn("disabled", app.all_button.state())
+            self.beta_box(app).invoke()
+            self.pump(app)
+            self.assertEqual(app.all_button.cget("text"), "Install all")
 
     def test_game_running_banner(self):
         app = self.make_app(game=True)
@@ -264,7 +327,7 @@ class WindowTests(unittest.TestCase):
             os.remove(config.cache_path())
         app = self.make_app()
         self.assertEqual([r.folder for r in app.rows], ["TaxiTime"])
-        self.assertEqual(self.latest_text(app, "TaxiTime"), "?")
+        self.assertEqual(self.latest_text(app, "TaxiTime"), "-")
         # Installed, newest unknown yet: Uninstall, locked until the check is done.
         self.assertEqual(self.status(app, "TaxiTime")[1], "Uninstall")
         self.assertIn("disabled", app.row_widgets["TaxiTime"][1].state())

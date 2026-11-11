@@ -922,15 +922,14 @@ class WindowFileTests(unittest.TestCase):
         long Other-addon title keeps the window well under 680 px. The Windows layout is
         checked by test_stats."""
         from unittest import mock
-        from am import errors, ui
+        from am import ui
         simulate = os.name == "nt"
         base = float(self.root.tk.call("tk", "scaling"))
         patches = [mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True),
                    mock.patch.object(ui, "NARROW_WIDTH", 0),
                    mock.patch.object(ui, "CHECK_WIDTH", 0),
                    mock.patch.object(ui, "SETTINGS_BUTTON", "Settings"),
-                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas"),
-                   mock.patch.object(errors, "ALL_BUTTON", "Update all")] if simulate else []
+                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas")] if simulate else []
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -954,6 +953,15 @@ class WindowFileTests(unittest.TestCase):
         self.assertEqual(app.backup_main_button.cget("style"), "Slim.TButton")
         self.assertEqual(str(app.backup_main_button.cget("width")), "0")   # as narrow as its text
         self.assertLessEqual(bottom.winfo_reqwidth(), 540 - 30)
+        # Install all and Update all: the same width, so the row fits with either text
+        from am import errors
+        sizes = []
+        for text in (errors.ALL_INSTALL, errors.ALL_UPDATE):
+            app.all_button.configure(text=text)
+            self.root.update_idletasks()
+            sizes.append((app.all_button.winfo_reqwidth(), bottom.winfo_reqwidth()))
+            self.assertLessEqual(bottom.winfo_reqwidth(), 540 - 30)
+        self.assertEqual(sizes[0], sizes[1])
         self.assertLessEqual(app.files.button.master.winfo_reqwidth(), 540 - 30)
         for b in [w[1] for w in app.row_widgets.values() if w[1] is not None]:
             self.assertEqual((app.files.button.winfo_reqwidth(), app.files.button.winfo_reqheight()),

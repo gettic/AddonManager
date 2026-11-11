@@ -454,7 +454,8 @@ class WindowRemoveTests(unittest.TestCase):
         self.assertIn("Taxi Time was removed", app.message_var.get())
         self.assertEqual(config.load_settings().get("removed_addons"), ["TaxiTime"])
         self.assertTrue(os.path.isdir(os.path.join(self.addons, "OtherAddon")))
-        # Install/update all: only GuildHub, TaxiTime stays removed.
+        # Install all (a removed addon never counts): only GuildHub, TaxiTime stays removed.
+        self.assertEqual(app.all_button.cget("text"), errors.ALL_INSTALL)
         app.all_button.invoke()
         self.pump(app)
         self.assertEqual(toc.installed(self.addons, "GuildHub"), (True, "0.4.1"))

@@ -308,6 +308,32 @@ def swap(exe, tries=5, delay=0.6):
             log.exception("Could not put the old exe back: %s", old)
         _remove(new)
         raise UpdateError("locked", str(e)) from e
+    refresh_icon(exe)
+
+
+SHCNE_UPDATEITEM = 0x2000
+SHCNF_PATHW = 0x0005
+
+
+def _shell32():
+    import ctypes
+    return ctypes.windll.shell32
+
+
+def refresh_icon(exe, windows=None, shell=None):
+    """Windows: tell Explorer the swapped exe changed, so it reads the file's icon again
+    (otherwise its icon cache keeps showing the old one at the same path). Linux: nothing.
+    Never raises: the update itself is already done. True if the notice was sent."""
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return False
+    try:
+        (shell or _shell32()).SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, exe, None)
+        return True
+    except Exception as e:
+        log.info("Icon refresh not sent: %s", e)
+        return False
 
 
 def rollback(exe, proc=None, tries=10, delay=0.5):

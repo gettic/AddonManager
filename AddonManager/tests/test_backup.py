@@ -9,6 +9,7 @@ import os
 import shutil
 import time
 import tkinter as tk
+from tkinter import ttk
 import unittest
 import zipfile
 from unittest import mock
@@ -854,6 +855,29 @@ class WindowBackupTests(unittest.TestCase):
         self.assertIsNone(app.backup_win)
         self.assertTrue(hub.closed)
 
+    def test_status_line_takes_no_room_while_empty(self):
+        """Make a backup: no empty status line above the buttons; shown once it has text
+        (above the progress bar), gone again when emptied."""
+        app = self.make_app()
+        dlg = app.open_backup(show=False)
+        self.pump(app)
+        self.assertEqual(dlg.status.winfo_manager(), "")
+        dlg.status_var.set("Working...")
+        self.assertEqual(dlg.status.winfo_manager(), "pack")
+        slaves = dlg.frame.pack_slaves()
+        self.assertLess(slaves.index(dlg.status), slaves.index(dlg.progress))
+        dlg.status_var.set("")
+        self.assertEqual(dlg.status.winfo_manager(), "")
+        dlg.close()
+
+    def test_licences_keep_their_own_lines(self):
+        app = self.make_app()
+        app.open_settings(show=False)
+        dlg = app.open_licences(show=False)
+        self.assertEqual(str(dlg.text.cget("wrap")), "none")
+        self.assertEqual(str(dlg.hbar.cget("orient")), "horizontal")
+        dlg.close()
+
     def test_make_backup(self):
         app = self.make_app()
         app.open_backup_window(show=False)
@@ -1106,7 +1130,10 @@ class WindowBackupTests(unittest.TestCase):
         self.assertIsNotNone(again.spoken_check)
         self.assertTrue(again.spoken_var.get())
         self.assertIn("Spoken (AI voice-over addon)", again.spoken_label.cget("text"))
-        self.assertTrue(int(str(again.spoken_label.cget("wraplength"))) > 0)   # wraps
+        # One tick whose text wraps (lines up with the ticks above).
+        self.assertIs(again.spoken_label, again.spoken_check)
+        style = again.spoken_check.cget("style")
+        self.assertTrue(int(str(ttk.Style(again.win).lookup(style, "wraplength"))) > 0)
         again.win.update_idletasks()
         self.assertLessEqual(again.win.winfo_reqwidth(), 420)
         again.spoken_var.set(False)

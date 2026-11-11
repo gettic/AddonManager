@@ -4,7 +4,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.10.0
+Current version: v0.11.0
 
 ## Get it
 
@@ -36,14 +36,14 @@ It finds WoW Forever installed through Battle.net with Proton (as a non-Steam ga
 
 For Game Mode, right-click the AppImage and choose **Add to Steam** (or in Steam: **Add a Non-Steam Game**, then **Browse**). This should work, but it is untested on a Deck. Don't force Proton on it: it is a Linux program.
 
-Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol, and the main-window bottom row has shorter labels: **Update all** (Windows says "Install/update all") and a **Betas** checkbox (the **Settings** window still says **Show beta versions**).
+Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol, and the main-window bottom row has a shorter label: a **Betas** checkbox (the **Settings** window still says **Show beta versions**).
 
 Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Proton/Wine. The Addon Manager only installs addon files. Whether the game runs there is up to Proton/Wine.
 
 ## How to use it
 
 1. Open `AddonManager.exe`. It looks for your WoW Forever folder by itself (for example `World of Warcraft\_forever_`). It only picks a real WoW Forever folder, never Beta, PTR, Classic or Retail. If it can't find it, click **Choose folder** and pick the folder where WoW Forever is installed.
-2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The guild's addons are listed in the guild's order, Guild Hub first. The window is dark (black and grey with red). The app's own version is shown at the bottom right. When the app opens, the list shows at once with the versions it knew last time, while it checks for updates. The buttons stay greyed out until the check is done. The status is colour-coded:
+2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The guild's addons are listed in the guild's order, Guild Hub first. The window is dark (black and grey with red). The app's own version is shown at the bottom right. When the app opens, the list shows at once with the versions it knew last time, while it checks for updates. The buttons stay greyed out until the check is done (point at one to see why). After the check, the bottom line sums up, for example "All addons are up to date." or "1 update available." The window opens where and as big as you left it. The status is colour-coded:
 
    | Status | Colour |
    | --- | --- |
@@ -53,10 +53,12 @@ Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Pro
    | Failed install | red "Failed" block |
 
    The title bar is dark too on Windows 10 (20H1 or newer) and Windows 11. The **Choose folder** window follows your Windows light or dark setting.
-3. Click **Install** or **Update** next to an addon, or **Install/update all** to do every addon that needs it.
+3. Click **Install** or **Update** next to an addon, or the big button at the bottom to do every addon that needs it. It says **Update all** when an installed addon has an update, otherwise **Install all**. It is greyed out when there is nothing to do.
 4. If the status says "Installed (version unknown)", the button says **Reinstall**.
-5. To use a different WoW Forever folder, click **Change...**. The folder path at the top can be selected and copied (Ctrl+C, or right-click and Copy).
-6. Click **Check again** to reload the list, for example after your internet came back.
+5. To use a different WoW Forever folder, click **Change...**. The folder path at the top can be selected and copied (Ctrl+C, or right-click and Copy). Right-click it to also **Open AddOns folder** or **Open log folder** (handy when asking for help). On Steam Deck, press and hold instead of right-click (also on an addon's name).
+6. Click **Check again** (or press **F5** or Ctrl+R) to reload the list, for example after your internet came back.
+
+When the app asks a question, **Enter** means Yes only if nothing is removed, deleted or overwritten. For Remove, Delete and Restore questions you have to click.
 
 If the app had saved the folder of another version (for example Retail), it switches to WoW Forever and tells you. If you pick another version's folder yourself, the app uses it but shows a warning.
 
@@ -68,7 +70,7 @@ If something fails, the app tells you in plain words and nothing is half-install
 
 When a newer version of Addon Manager is out, a bar appears with **Update now**, **Later** and a **What's new** link.
 
-- **Update now** downloads the new `AddonManager.exe` (on Linux, `AddonManager-x86_64.AppImage`) from the AddonManager releases, replaces the old one and restarts the app. If the new version doesn't start, the old one comes back. The leftover `AddonManager.exe.old` is removed automatically (an old one from an earlier update goes away the next time you open the app).
+- **Update now** downloads the new `AddonManager.exe` (on Linux, `AddonManager-x86_64.AppImage`) from the AddonManager releases, replaces the old one and restarts the app. On Windows the new icon shows right away. If the new version doesn't start, the old one comes back. The leftover `AddonManager.exe.old` is removed automatically (an old one from an earlier update goes away the next time you open the app).
 - **Later** hides the bar.
 
 Keep `AddonManager.exe` (or the AppImage) in a normal folder, such as Desktop, Downloads or Documents. If it is inside your WoW folder, or in a folder the app can't write to, it can't replace itself. The bar then shows the download page instead, and you download the new version by hand.
@@ -80,7 +82,7 @@ A beta is a test version of an addon. It may have bugs. The checkbox **Show beta
 - When it is on, an addon's newest beta is offered if it is newer than its normal version. It is shown as "v1.2.0 (beta)".
 - Turning it off does not remove the beta. You keep it until a newer normal version comes out.
 - To go back sooner: with the checkbox off, an addon whose installed beta is newer than its normal version says "Beta installed" and has a **Use vX** button. Click it and confirm "Go back to the normal version?". Your addon settings are kept.
-- **Install/update all** never goes back by itself.
+- **Install all** and **Update all** never go back by itself.
 - If an addon has no normal version yet, the row just says "Beta installed".
 - The Addon Manager's own updates always use normal versions.
 
@@ -91,7 +93,7 @@ Each row has one button. When the addon is installed and up to date, it says **U
 - The addon's folder goes to the Recycle Bin (on Linux: the Trash). You can put it back from there.
 - If the drive has no Recycle Bin or Trash, the question says the folder will be deleted for good.
 - Your settings for it in the game (the `WTF` folder) are kept.
-- The row then says **Removed**. **Install/update all** skips it. Its own **Install** button brings it back.
+- The row then says **Removed**. **Install all** and **Update all** skip it. Its own **Install** button brings it back.
 - If WoW is open and a file is in use, nothing is removed and a message tells you.
 - If a delete for good can only be done partly, the app says so and finishes it the next time it starts. WoW won't load what is left.
 - If another addon needs it, the question tells you.
@@ -150,7 +152,8 @@ This is optional and **off by default**. It uses file.kiwi, a file host run by a
 - **On the other PC:** click **Receive...**, type the code and click **Download**. Your browser gets the file from file.kiwi. The Addon Manager finds it in your Downloads folder by itself (or click **Open the download...**), checks it and opens the usual Restore window.
 - **What file.kiwi sees:** its servers are in the US, and it uses Cloudflare and Google. It sees your IP address, the file's size and when it was sent. The file is encrypted, so they can't open it.
 - **It can't be deleted early.** The file stays on their servers for a few days. Only the code opens it, so keep the code private: anyone who gets it first can open the file.
-- If file.kiwi keeps failing, the app stops after a fixed number of tries and says the upload didn't work.
+- If file.kiwi isn't answering, the app tries again by itself every 5 minutes, for up to 2 hours, as long as the Send window stays open. After that it stops the code and tells you. Closing the window or the app stops it too.
+- If the upload itself keeps failing, the app stops after a fixed number of tries and says the upload didn't work.
 
 A file received this way is handled with extra care:
 

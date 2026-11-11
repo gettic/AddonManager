@@ -243,6 +243,29 @@ class Files(unittest.TestCase):
             self.assertEqual(running.read(), self.old_bytes)   # the old one kept running
         self.assertEqual(sorted(os.listdir(self.app_dir)), ["AddonManager.exe"])
 
+    def test_swap_refreshes_icon(self):
+        """After a swap Explorer is told the exe changed (new icon); a failing notice
+        never fails the update; nothing is sent on Linux or when the swap fails."""
+        selfupdate.fetch(self.update(), self.exe, allow_local=True)
+        with mock.patch.object(selfupdate, "refresh_icon") as refresh:
+            selfupdate.swap(self.exe)
+        refresh.assert_called_once_with(self.exe)
+        self.assertEqual(self.read(self.exe), self.new_bytes)
+        shell = mock.Mock()
+        self.assertTrue(selfupdate.refresh_icon(self.exe, windows=True, shell=shell))
+        shell.SHChangeNotify.assert_called_once_with(0x2000, 0x0005, self.exe, None)
+        shell.SHChangeNotify.side_effect = OSError("boom")
+        self.assertFalse(selfupdate.refresh_icon(self.exe, windows=True, shell=shell))
+        linux_shell = mock.Mock()
+        self.assertFalse(selfupdate.refresh_icon(self.exe, windows=False, shell=linux_shell))
+        linux_shell.SHChangeNotify.assert_not_called()
+        with mock.patch.object(selfupdate, "_shell32", side_effect=AttributeError("no windll")):
+            self.assertFalse(selfupdate.refresh_icon(self.exe, windows=True))
+        with mock.patch.object(selfupdate, "refresh_icon") as refresh, \
+                self.assertRaises(selfupdate.UpdateError):
+            selfupdate.swap(self.exe)   # no .new any more
+        refresh.assert_not_called()
+
     def test_swap_new_gone(self):
         with self.assertRaises(selfupdate.UpdateError) as cm:
             selfupdate.swap(self.exe)

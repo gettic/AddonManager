@@ -26,7 +26,7 @@ ERROR_BG = "#c62828"    # failed: white bold text on a red block
 ERROR_TEXT = "#ffffff"
 STATUS = {"update": "#ff5252",        # bright red: needs action
           "not_installed": "#d0d0d0", # light grey
-          "up_to_date": "#7a7a7a"}    # dim grey: nothing to do
+          "up_to_date": "#808080"}    # dim grey: nothing to do (4.8:1 on BG)
 
 
 # Windows: Segoe UI. Linux (SteamOS's KDE): Noto Sans; Tk falls back to its default

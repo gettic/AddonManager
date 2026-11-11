@@ -424,15 +424,34 @@ class LaterSender(Sender):
 
 class LaterTests(unittest.TestCase):
     """Send later through a fake file.kiwi (tests\\fake_kiwi.py): the code waits
-    LATER_AFTER (1 s here), then the backup is uploaded and the code fetches it once."""
+    LATER_AFTER (1 s here), then the backup is uploaded and the code fetches it once.
+    The file.kiwi client runs on a fake clock (self.clients): each of its waits moves that
+    clock on, so hours of "file.kiwi is down" pass in no time."""
 
     def setUp(self):
         fast(self)
-        for mod, name, value in ((share_later, "LATER_AFTER", 1), (share, "PING_EVERY", 1),
-                                 (share_later, "RETRY_FOR", 5)):
+        for mod, name, value in ((share_later, "LATER_AFTER", 1), (share, "PING_EVERY", 1)):
             p = mock.patch.object(mod, name, value)
             p.start()
             self.addCleanup(p.stop)
+        self.clients = clients = []
+
+        class FakeTimeKiwi(share_later.FileKiwi):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.now, self.naps = 0.0, []
+                self.clock = lambda: self.now
+                inner = self.sleep
+
+                def sleep(s):
+                    self.naps.append(s)
+                    self.now += s
+                    inner(s)
+                self.sleep = sleep
+                clients.append(self)
+        p = mock.patch.object(share_later, "FileKiwi", FakeTimeKiwi)
+        p.start()
+        self.addCleanup(p.stop)
         self.base = fixtures.temp_dir("share_later_")
         self.addCleanup(shutil.rmtree, self.base, True)
         self.path = big_backup(os.path.join(self.base, "backups"), 2 * share.CHUNK + 999)
@@ -641,19 +660,129 @@ class LaterTests(unittest.TestCase):
             s.code()
             s.join()
         self.assertEqual(s.error.kind, "later_failed")
+        # MAX_RETRIES quick ones, then one every 5 minutes for 2 hours (file.kiwi is down).
+        slow = share_later.KIWI_DOWN_FOR // share_later.KIWI_DOWN_EVERY
         self.assertEqual(len([c for c in self.kiwi.calls if c[0] == "PUT"]),
-                         share_later.MAX_RETRIES + 1)
+                         share_later.MAX_RETRIES + 1 + slow)
         self.assertEqual(self.relay.stored(), {})
 
     def test_upload_fails(self):
         self.kiwi.fail_create = 500
         s, code = self.send_later()
         s.join()
-        self.assertEqual(s.error.kind, "later_failed")
+        self.assertEqual((s.error.kind, s.error.detail), ("later_failed", "down"))
         self.assertEqual(self.relay.stored(), {})                 # code closed
         with self.assertRaises(ShareError) as cm:
             share.receive(code, self.receiver(), self.inbox)
         self.assertEqual(cm.exception.kind, "not_found")
+
+    # ---------- file.kiwi is down: try again every 5 minutes for up to 2 hours ----------
+    @staticmethod
+    def all_states(s):
+        out = []
+        while not s.states.empty():
+            out.append(s.states.get())
+        return out
+
+    def kiwi_now(self):
+        return self.clients[-1].now if self.clients else 0
+
+    def test_kiwi_down_then_back(self):
+        self.kiwi.fail_create = lambda: 503 if self.kiwi_now() < 40 * 60 else None
+        s, code = self.send_later()
+        s.join()
+        self.assertIsNone(s.error)
+        states = [st for st, _v in self.all_states(s)]
+        self.assertEqual(states, ["uploading", "kiwi_down", "uploading", "ready"])
+        self.assertIn(share_later.KIWI_DOWN_EVERY, self.clients[-1].naps)
+        ticket = share.receive(code, self.receiver(), self.inbox)    # the code still works
+        path = share.open_later(ticket, self.browser_download(ticket), self.inbox)
+        self.assertTrue(same_entries(path, self.path))
+
+    def test_kiwi_down_gives_up_after_2_hours(self):
+        self.kiwi.fail_create = 503
+        s, code = self.send_later()
+        s.join()
+        self.assertEqual((s.error.kind, s.error.detail), ("later_failed", "down"))
+        naps = self.clients[-1].naps
+        self.assertEqual(naps.count(share_later.KIWI_DOWN_EVERY),
+                         share_later.KIWI_DOWN_FOR // share_later.KIWI_DOWN_EVERY)
+        downs = [v for st, v in self.all_states(s) if st == "kiwi_down"]
+        self.assertEqual(downs, [share_later.KIWI_DOWN_FOR])        # told once, until-time
+        self.assertEqual(self.relay.stored(), {})                   # code closed
+        from am import errors
+        self.assertIn("2 hours", errors.share_message(s.error))
+        self.assertIn("until 21:30", errors.later_kiwi_down("21:30"))
+        self.assertIn("waiting for file.kiwi", errors.later_waiting(0))
+        self.assertNotIn("file.kiwi", errors.later_waiting(500))
+
+    def test_kiwi_refuses_fails_at_once(self):
+        self.kiwi.fail_create = 403
+        s, code = self.send_later()
+        s.join()
+        self.assertEqual(s.error.kind, "later_failed")
+        self.assertNotEqual(s.error.detail, "down")
+        self.assertEqual(len([c for c in self.kiwi.calls if c[0] == "POST"]), 1)
+        self.assertEqual(self.clients[-1].naps, [])
+
+    def test_429_backs_off_to_5_minutes(self):
+        self.kiwi.fail_create = lambda: 429 if self.kiwi_now() < 1500 else None
+        s, code = self.send_later()
+        s.join()
+        self.assertIsNone(s.error)
+        naps = self.clients[-1].naps
+        self.assertEqual(naps[:6], [2, 4, 8, 16, 32, 60])
+        self.assertEqual(max(naps), share_later.KIWI_DOWN_EVERY)
+        self.assertTrue(all(n >= 2 for n in naps))
+
+    def test_chunk_outage_resumes(self):
+        self.kiwi.fail_put_when = lambda n: 503 if n == 2 and self.kiwi_now() < 30 * 60 else None
+        s, code = self.send_later()
+        s.join()
+        self.assertIsNone(s.error)
+        puts = [c[1] for c in self.kiwi.calls if c[0] == "PUT"]
+        self.assertEqual(sum(p.endswith("/00001") for p in puts), 1)   # not sent again
+        self.assertGreater(sum(p.endswith("/00002") for p in puts), 1)
+        self.assertIn("kiwi_down", [st for st, _v in self.all_states(s)])
+        ticket = share.receive(code, self.receiver(), self.inbox)
+        path = share.open_later(ticket, self.browser_download(ticket), self.inbox)
+        self.assertTrue(same_entries(path, self.path))
+
+    def real_wait_sender(self, cancel=None):
+        """file.kiwi always down, and the app's own stop-aware 5-minute wait (not a fake one)."""
+        self.kiwi.fail_create = 503
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url, cancel=cancel)
+        s.relay.sleep = time.sleep          # share.py then waits on its stop event
+        s.code()
+        s.wait_state("kiwi_down")
+        return s
+
+    def test_cancel_while_kiwi_down(self):
+        cancel = threading.Event()
+        with mock.patch.object(share_later, "RETRY_FOR", -1):   # straight to the slow waits
+            s = self.real_wait_sender(cancel)
+            posts = len(self.kiwi.calls)
+            t0 = time.monotonic()
+            cancel.set()
+            s.join()
+        self.assertLess(time.monotonic() - t0, 3)
+        self.assertEqual(s.error.kind, "cancelled")
+        time.sleep(0.3)
+        self.assertEqual(len(self.kiwi.calls), posts)         # nothing more sent to file.kiwi
+        self.assertEqual(self.relay.stored(), {})
+
+    def test_relay_gone_while_kiwi_down(self):
+        """Our relay can't be reached either (the player's internet): the closed mailbox
+        stops the send, not the 2-hour wait."""
+        with mock.patch.object(share_later, "RETRY_FOR", -1):
+            s = self.real_wait_sender()
+            t0 = time.monotonic()
+            self.relay.advance(self.relay.later_idle + 60)
+            s.join()
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertIsNotNone(s.error)
+        self.assertNotEqual(s.error.kind, "later_failed")
+        self.assertEqual(self.relay.stored(), {})
 
     def test_sender_cancel_while_uploading(self):
         self.kiwi.delay = 0.5

@@ -290,7 +290,7 @@ def safety_path(folder, now=None):
 
 def make_safety_copy(addons_dir, folders, dest_folder, now=None):
     """Zip the addon folders about to be replaced into dest_folder as a backup safety copy
-    (Settings > Restore can put them back). Raises InstallError("safety")."""
+    (Backup > Restore can put them back). Raises InstallError("safety")."""
     try:
         p = backup.places(addons_dir)
         dest_folder = os.path.abspath(dest_folder)

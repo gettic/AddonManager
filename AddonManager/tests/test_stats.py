@@ -274,7 +274,9 @@ class WindowTests(unittest.TestCase):
         self.pump(app)
         self.assertEqual(len(self.server.requests), 1)
         self.assertNotIn(stats.DAY_SETTING, config.load_settings())
-        self.assertEqual(app.message_var.get(), "")
+        # Nothing about the failed count: only the normal summary of the list.
+        self.assertEqual(app.message_var.get(),
+                         "1 update available. 1 addon isn't installed yet.")
         self.root.destroy()
         self.root = tk.Tk()
         self.root.withdraw()

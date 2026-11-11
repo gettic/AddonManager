@@ -202,9 +202,26 @@ def remove_title(name):
     return f"Remove {name}?"
 
 
-# The main window's Install/update all button: shorter on Linux, whose wider fonts would
-# push the bottom row (with Backup) past the smallest window. Windows unchanged.
-ALL_BUTTON = "Install/update all" if os.name == "nt" else "Update all"
+# The main window's "all" button: Update all when at least one installed addon has an
+# update, otherwise Install all (also when nothing is left to do: then it is greyed out).
+# Both short, so the bottom row (with Backup) fits the smallest window on Linux too.
+ALL_INSTALL = "Install all"
+ALL_UPDATE = "Update all"
+# Tooltips on the main window's buttons while they are greyed out: why.
+NOTHING_TO_DO_TIP = "Nothing to install or update."
+BUSY_TIP = "Please wait until the check or install is finished."
+NO_FOLDER_TIP = "Choose your WoW Forever folder first (Change...)."
+
+
+def list_summary(updates, missing):
+    """The message line after a check that found nothing else to say."""
+    parts = []
+    if updates:
+        parts.append(f"{updates} update{'s' if updates != 1 else ''} available.")
+    if missing:
+        parts.append("1 addon isn't installed yet." if missing == 1
+                     else f"{missing} addons aren't installed yet.")
+    return " ".join(parts) or "All addons are up to date."
 
 
 def remove_text(name, where, needed_by=()):
@@ -215,7 +232,7 @@ def remove_text(name, where, needed_by=()):
         first = (f"This drive has no {BIN_NAME}, so the {name} folder will be deleted "
                  "for good.")
     text = (f"{first} Your settings for it in the game are kept, so if you install it again "
-            f"later, it is set up like before. {ALL_BUTTON} won't put it back; use its "
+            f"later, it is set up like before. {ALL_INSTALL} and {ALL_UPDATE} won't put it back; use its "
             "Install button if you want it again.")
     if needed_by:
         names = ", ".join(needed_by)
@@ -261,6 +278,11 @@ def remove_message(exc, name):
 
 def success_message(name, version_text):
     return f"{name} {version_text} installed. Restart WoW or type /reload to use it."
+
+
+def installed_list(names):
+    """Start of the message line when some addons installed and others failed."""
+    return "Installed: " + ", ".join(names) + "."
 
 
 # ---------- Backup and restore (the Backup window, from the main window's Backup button) ----------
@@ -429,8 +451,17 @@ def later_ready(until_text, hours):
 
 
 def later_waiting(permille):
-    return (f"The other PC is still uploading it ({max(0, min(100, permille // 10))} %). "
-            "Keep this window open.")
+    percent = max(0, min(100, permille // 10))
+    if percent == 0:
+        return ("The other PC is still uploading it (0 %), or waiting for file.kiwi. Keep "
+                "this window open.")
+    return f"The other PC is still uploading it ({percent} %). Keep this window open."
+
+
+def later_kiwi_down(until_text):
+    return (f"file.kiwi isn't answering right now. The Addon Manager tries again by itself "
+            f"every 5 minutes until {until_text}. Keep this window open; the code stays the "
+            "same.")
 
 
 def time_left(seconds):
@@ -538,6 +569,9 @@ def share_message(exc):
         return (f"That backup is too big to send ({limit_text(limit)} at most). Use a cloud "
                 "folder or USB stick.")
     if kind == "later_failed":
+        if getattr(exc, "detail", "") == "down":
+            return ("file.kiwi didn't answer for 2 hours, so the code was stopped. Try again "
+                    "later with a new code, or use a USB stick or cloud folder.")
         return ("Uploading to file.kiwi didn't work, so the code was stopped. Try again with "
                 "a new code, or use a USB stick or cloud folder.")
     if kind == "later_file":

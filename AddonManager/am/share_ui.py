@@ -343,6 +343,9 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 self.speed = Speed()
                 self.set_status(errors.LATER_UPLOADING_BIG if msg[3] == "big"
                                 else errors.LATER_UPLOADING)
+            elif msg[2] == "kiwi_down":   # file.kiwi isn't answering: it tries again by itself
+                until = time.strftime("%H:%M", time.localtime(time.time() + (msg[3] or 0)))
+                self.set_status(errors.later_kiwi_down(until))
             elif msg[2] == "ready":
                 self.later_done = True
                 until = time.strftime("%H:%M", time.localtime(time.time() + (msg[3] or 0)))
