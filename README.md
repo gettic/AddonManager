@@ -1,10 +1,10 @@
 # Guild Addon Manager
 
-An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. You don't need to install anything else. It opens in about a second. It has its own icon (the guild logo) on the file, in the window, on the taskbar and in Alt+Tab.
+An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. On Linux it is one file too, `AddonManager-x86_64.AppImage`. You don't need to install anything else. It opens in about a second. It has its own icon (the guild logo) on the file, in the window, on the taskbar and in Alt+Tab.
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.8.0
+Current version: v0.10.0
 
 ## Get it
 
@@ -12,9 +12,11 @@ Download the latest version here: https://github.com/gettic/AddonManager/release
 
 This link always gives you the newest `AddonManager.exe`.
 
-**Linux (beta):** https://github.com/gettic/AddonManager/releases/latest/download/AddonManager-linux-x86_64.tar.gz
+**Linux (beta):** https://github.com/gettic/AddonManager/releases/latest/download/AddonManager-x86_64.AppImage
 
 It stays "beta" until it has been tested on a real Steam Deck.
+
+If you have an older Linux version (v0.9.1 or older), it can't update itself to this file. Download the AppImage once by hand. After that it updates itself.
 
 ## First start
 
@@ -24,15 +26,15 @@ Windows may show "Windows protected your PC" the first times, because the app is
 
 Made for Desktop Mode.
 
-1. Switch the Steam Deck to Desktop Mode and download the `.tar.gz`.
-2. Right-click it, choose Extract (here), then double-click `AddonManager`.
-3. Keep it in your home folder (for example Downloads or `~/Applications`), not inside the game folder. It updates itself like the Windows version.
+1. Switch the Steam Deck to Desktop Mode and download `AddonManager-x86_64.AppImage`. Keep it in your home folder (for example `~/Applications`), not inside the game folder.
+2. Right-click it, choose **Properties**, then **Permissions**, and tick **Is executable** (it may say "Allow executing file as program"). You only do this once, because the browser removes this setting.
+3. Double-click it. It updates itself like the Windows version, and the file stays executable after updates.
 
-The `.tar.gz` also holds `AddonManager.png`. Use it as the picture for a desktop shortcut or a Steam "Non-Steam Game".
+The release also has `AddonManager.png` as its own small file. Use it as the picture for a desktop shortcut or a Steam "Non-Steam Game".
 
 It finds WoW Forever installed through Battle.net with Proton (as a non-Steam game), Lutris, Heroic, Bottles or Wine, also on the SD card. If it can't, click **Choose folder** and pick the Battle.net Proton folder (`~/.local/share/Steam/steamapps/compatdata/<number>`; hidden folders are shown) or the `World of Warcraft` folder inside it.
 
-Game Mode may work if you add it as a non-Steam game, but don't force Proton on it: it is a Linux program.
+For Game Mode, right-click the AppImage and choose **Add to Steam** (or in Steam: **Add a Non-Steam Game**, then **Browse**). This should work, but it is untested on a Deck. Don't force Proton on it: it is a Linux program.
 
 Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol, and the main-window bottom row has shorter labels: **Update all** (Windows says "Install/update all") and a **Betas** checkbox (the **Settings** window still says **Show beta versions**).
 
@@ -66,10 +68,10 @@ If something fails, the app tells you in plain words and nothing is half-install
 
 When a newer version of Addon Manager is out, a bar appears with **Update now**, **Later** and a **What's new** link.
 
-- **Update now** downloads the new `AddonManager.exe` from the AddonManager releases, replaces the old one and restarts the app. If the new version doesn't start, the old one comes back. The leftover `AddonManager.exe.old` is removed automatically (an old one from an earlier update goes away the next time you open the app).
+- **Update now** downloads the new `AddonManager.exe` (on Linux, `AddonManager-x86_64.AppImage`) from the AddonManager releases, replaces the old one and restarts the app. If the new version doesn't start, the old one comes back. The leftover `AddonManager.exe.old` is removed automatically (an old one from an earlier update goes away the next time you open the app).
 - **Later** hides the bar.
 
-Keep `AddonManager.exe` in a normal folder, such as Desktop, Downloads or Documents. If it is inside your WoW folder, or in a folder the app can't write to, it can't replace itself. The bar then shows the download page instead, and you download the new version by hand.
+Keep `AddonManager.exe` (or the AppImage) in a normal folder, such as Desktop, Downloads or Documents. If it is inside your WoW folder, or in a folder the app can't write to, it can't replace itself. The bar then shows the download page instead, and you download the new version by hand.
 
 ## Beta versions
 
@@ -269,7 +271,7 @@ The app is built with Python (PSF licence) and packed with PyInstaller (GPL-2.0 
 | spake2 | MIT |
 | tkinterdnd2 (with the tkdnd library) | MIT (tkdnd: BSD-style) |
 
-The full licence texts are in [`AddonManager/THIRD-PARTY-NOTICES.txt`](AddonManager/THIRD-PARTY-NOTICES.txt). In the app, click **Licences** at the bottom of **Settings**. The file is also in the Linux download.
+The full licence texts are in [`AddonManager/THIRD-PARTY-NOTICES.txt`](AddonManager/THIRD-PARTY-NOTICES.txt). In the app, click **Licences** at the bottom of **Settings**. The file is also in the Linux AppImage, which includes the AppImage runtime (MIT, with LGPL-2.1 libfuse). Its licences are in that file too.
 
 ## Not affiliated with Blizzard
 

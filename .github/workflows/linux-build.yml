@@ -5,8 +5,12 @@
 #   Test build (artifact only):   gh workflow run linux-build.yml
 #   Release build:                gh workflow run linux-build.yml -f tag=vX.Y.Z
 #
-# Pinned: actions by full commit SHA, the build image by digest. No secrets: only the
-# built-in GITHUB_TOKEN, and only the attach job may write (contents: write).
+# Release files: AddonManager-x86_64.AppImage (the program; self-update uses it) and
+# AddonManager.png (the icon, for Steam's "Add a Non-Steam Game").
+#
+# Pinned: actions by full commit SHA, the build image by digest, the two AppImage tools
+# (appimagetool + type2 runtime, used only here) by release URL and sha256. No secrets:
+# only the built-in GITHUB_TOKEN, and only the attach job may write (contents: write).
 
 name: Linux build
 
@@ -61,18 +65,41 @@ jobs:
           apt-get install -y --no-install-recommends xvfb xauth xfonts-base fonts-dejavu-core
           # bsdtar: Add from file reads .rar/.7z with the system's tar (tests + self-test).
           apt-get install -y --no-install-recommends libarchive-tools
+          # appimagetool's helpers (file type check, .desktop check).
+          apt-get install -y --no-install-recommends file desktop-file-utils squashfs-tools
           python -c "import tkinter; print('Tk', tkinter.TkVersion)"
           ldd --version | head -n 1
+
+      # appimagetool 1.9.1 and the static type2 AppImage runtime (needs no libfuse2 on the
+      # Deck), both from github.com/AppImage, checked by sha256 before use. appimagetool is
+      # unpacked (--appimage-extract needs no FUSE, which the container doesn't have).
+      - name: AppImage tools (pinned by sha256)
+        env:
+          TOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          TOOL_SHA: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+          RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          RUNTIME_SHA: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+        run: |
+          mkdir -p /opt/appimage
+          cd /opt/appimage
+          curl -fsSL --proto '=https' -o appimagetool-x86_64.AppImage "$TOOL_URL"
+          curl -fsSL --proto '=https' -o runtime-x86_64 "$RUNTIME_URL"
+          printf '%s  %s\n' "$TOOL_SHA" appimagetool-x86_64.AppImage "$RUNTIME_SHA" runtime-x86_64 | sha256sum -c -
+          chmod 755 appimagetool-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage --appimage-extract > /dev/null
+          rm appimagetool-x86_64.AppImage
+          chmod -R a+rX /opt/appimage
+          test -x /opt/appimage/squashfs-root/AppRun
 
       # Everything below runs as a normal user (root would ignore the read-only folder
       # checks the tests make), in a copy of the repo under that user's home (the whole
       # repo: a test compares addons.json at its root with the app's built-in list).
-      - name: Tests, PyInstaller and self-tests (as a normal user)
+      - name: Tests, PyInstaller, AppImage and self-tests (as a normal user)
         run: |
           useradd -m builder
-          mkdir /home/builder/repo
+          mkdir /home/builder/repo /home/builder/out
           cp -r addons.json AddonManager /home/builder/repo/
-          chown -R builder:builder /home/builder/repo
+          chown -R builder:builder /home/builder/repo /home/builder/out
           runuser -u builder -- bash -euo pipefail -c '
             cd /home/builder/repo/AddonManager
             python -m venv /home/builder/venv
@@ -83,8 +110,33 @@ jobs:
             work=$(mktemp -d)
             ADDONMANAGER_TEST_TMP="$work/tests" xvfb-run -a python -m unittest discover -s tests -t .
             pyinstaller --noconfirm --clean --log-level WARN --distpath dist --workpath build AddonManager.spec
-            exe=/home/builder/repo/AddonManager/dist/AddonManager
+            prog=/home/builder/repo/AddonManager/dist/AddonManager
+            test -x "$prog/AddonManager"
+
+            # The AppImage: AppRun + .desktop + icon at the top, the one-folder program in
+            # usr/lib/AddonManager. AppRun must have Unix line ends (a CR breaks #!/bin/sh).
+            if grep -q "$(printf "\r")" linux/AppRun linux/AddonManager.desktop; then
+              echo "linux/AppRun or AddonManager.desktop has Windows line ends"; exit 1
+            fi
+            appdir="$work/AppDir"
+            mkdir -p "$appdir/usr/lib"
+            cp -a "$prog" "$appdir/usr/lib/AddonManager"
+            install -m 755 linux/AppRun "$appdir/AppRun"
+            install -m 644 linux/AddonManager.desktop "$appdir/AddonManager.desktop"
+            install -m 644 am/assets/AddonManager.png "$appdir/AddonManager.png"
+            ln -s AddonManager.png "$appdir/.DirIcon"
+            exe=/home/builder/out/AddonManager-x86_64.AppImage
+            ARCH=x86_64 /opt/appimage/squashfs-root/AppRun --no-appstream \
+                --runtime-file /opt/appimage/runtime-x86_64 "$appdir" "$exe"
+            chmod 755 "$exe"
             test -x "$exe"
+            # A type 2 AppImage: ELF with "AI" 0x02 at byte 8 (what self-update checks).
+            [ "$(od -An -tx1 -j8 -N3 "$exe" | tr -d " \n")" = "414902" ] \
+              || { echo "Not a type 2 AppImage"; exit 1; }
+
+            # The container has no FUSE: the AppImage unpacks itself to /tmp and runs from
+            # there (the Deck mounts it instead). The runtime still sets APPIMAGE/APPDIR.
+            export APPIMAGE_EXTRACT_AND_RUN=1
 
             # Hidden self-test on fake data (never a real game folder).
             mapfile -t data < <(python -m tests.make_selftest_data "$work/selftest")
@@ -102,31 +154,33 @@ jobs:
                 --home "$work/home-update" --selftest-out "$work/selfupdate.json" \
               || { cat "$work/selfupdate.json" || true; exit 1; }
             cat "$work/selfupdate.json"
+            # It must have updated the .AppImage file itself (found through $APPIMAGE), not
+            # the unpacked program inside it.
+            python -c "import json,os,sys; r=json.load(open(sys.argv[1])); d=[s[\"detail\"] for s in r[\"steps\"] if s[\"step\"] == \"folder\"]; ok=d == [os.path.dirname(sys.argv[2])]; print(\"Updated file folder:\", d, \"ok\" if ok else \"WRONG\"); sys.exit(0 if ok else 1)" "$work/selfupdate.json" "${upd[0]}"
 
-            echo "Newest glibc the program needs:"
-            objdump -T "$exe" | grep -o "GLIBC_[0-9.]*" | sort -uV | tail -n 1
+            echo "Newest glibc the program needs (program + bundled libraries):"
+            { find "$prog" -type f \( -name AddonManager -o -name "*.so*" \) \
+                -exec objdump -T {} + 2>/dev/null || true; } \
+              | { grep -o "GLIBC_[0-9.]*" || true; } | sort -uV | tail -n 1
           '
 
       - name: Package and sha256
         run: |
-          mkdir -p out pkg
-          install -m 755 /home/builder/repo/AddonManager/dist/AddonManager out/AddonManager-linux-x86_64
-          install -m 755 /home/builder/repo/AddonManager/dist/AddonManager pkg/AddonManager
-          # The app's icon, for a desktop shortcut or Steam's "Add a Non-Steam Game".
-          install -m 644 AddonManager/am/assets/AddonManager.png pkg/AddonManager.png
-          # The licences of everything bundled (also inside the program: Settings > Licences).
-          install -m 644 AddonManager/THIRD-PARTY-NOTICES.txt pkg/THIRD-PARTY-NOTICES.txt
-          tar -C pkg --owner=0 --group=0 --numeric-owner -czf out/AddonManager-linux-x86_64.tar.gz AddonManager AddonManager.png THIRD-PARTY-NOTICES.txt
+          mkdir -p out
+          install -m 755 /home/builder/out/AddonManager-x86_64.AppImage out/AddonManager-x86_64.AppImage
+          # The app's icon as its own small file, for Steam's "Add a Non-Steam Game"
+          # (Steam doesn't take the icon out of an AppImage).
+          install -m 644 AddonManager/am/assets/AddonManager.png out/AddonManager.png
           cd out
-          sha256sum AddonManager-linux-x86_64 AddonManager-linux-x86_64.tar.gz | tee SHA256SUMS
+          sha256sum AddonManager-x86_64.AppImage AddonManager.png | tee SHA256SUMS
           ls -l
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: AddonManager-linux
           path: |
-            out/AddonManager-linux-x86_64
-            out/AddonManager-linux-x86_64.tar.gz
+            out/AddonManager-x86_64.AppImage
+            out/AddonManager.png
             out/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
@@ -154,5 +208,5 @@ jobs:
           [ "$draft" = "true" ] || { echo "$TAG is not a draft release; nothing uploaded."; exit 1; }
           cd out
           sha256sum -c SHA256SUMS
-          gh release upload "$TAG" AddonManager-linux-x86_64 AddonManager-linux-x86_64.tar.gz --clobber
+          gh release upload "$TAG" AddonManager-x86_64.AppImage AddonManager.png --clobber
           cat SHA256SUMS

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Guild Addon Manager
+Comment=Installs and updates the guild's addons
+Exec=AddonManager %f
+Icon=AddonManager
+Terminal=false
+Categories=Utility;

@@ -424,6 +424,60 @@ class Files(unittest.TestCase):
     def test_not_frozen_means_no_self_update(self):
         self.assertIsNone(selfupdate.exe_path())
 
+    # AppImage (Linux): the .AppImage file is updated, never the read-only mount
+    def test_exe_path_appimage(self):
+        image = fixtures.make_fake_exe(os.path.join(self.work, "AddonManager-x86_64.AppImage"))
+        mount = os.path.join(self.work, ".mount_AddonXY")
+        inside = os.path.join(mount, "usr", "lib", "AddonManager", "AddonManager")
+        env = {"APPIMAGE": image, "APPDIR": mount}
+        path = lambda env, linux=True, exe=inside: selfupdate.exe_path(  # noqa: E731
+            env, exe, frozen=True, linux=linux)
+        self.assertEqual(path(env), os.path.realpath(image))
+        # our AppRun's own marker works when APPDIR is missing
+        self.assertEqual(path({"APPIMAGE": image, "ADDONMANAGER_APPDIR": mount}),
+                         os.path.realpath(image))
+        # inherited from another AppImage (program not inside its folder) -> ignored
+        other = os.path.join(self.work, "elsewhere", "AddonManager")
+        self.assertEqual(path(env, exe=other), os.path.abspath(other))
+        # missing/relative/not-a-file APPIMAGE, no APPDIR, Windows -> the running program
+        self.assertEqual(path({"APPDIR": mount}), os.path.abspath(inside))
+        self.assertEqual(path({"APPIMAGE": "rel.AppImage", "APPDIR": mount}),
+                         os.path.abspath(inside))
+        self.assertEqual(path({"APPIMAGE": os.path.join(self.work, "gone.AppImage"),
+                               "APPDIR": mount}), os.path.abspath(inside))
+        self.assertEqual(path({"APPIMAGE": image}), os.path.abspath(inside))
+        self.assertEqual(path(env, linux=False), os.path.abspath(inside))
+        self.assertIsNone(selfupdate.exe_path(env, inside, frozen=False, linux=True))
+
+    def test_is_program(self):
+        elf = b"\x7fELF\x02\x01\x01\x00"
+        self.assertTrue(selfupdate.is_program(elf + b"AI\x02" + b"\0" * 5, linux=True))
+        self.assertFalse(selfupdate.is_program(elf + b"\0" * 8, linux=True))   # plain ELF
+        self.assertFalse(selfupdate.is_program(b"MZ" + b"\0" * 14, linux=True))
+        self.assertFalse(selfupdate.is_program(b"\x7fELF", linux=True))         # too short
+        self.assertTrue(selfupdate.is_program(b"MZ" + b"\0" * 14, linux=False))
+        self.assertFalse(selfupdate.is_program(elf + b"AI\x02", linux=False))
+        with open(fixtures.make_fake_exe(os.path.join(self.work, "fake_prog")), "rb") as f:
+            self.assertTrue(selfupdate.is_program(f.read(16)))
+
+    def test_restart_env_drops_appimage_and_library_path(self):
+        base = {"APPIMAGE": "/a/x.AppImage", "APPDIR": "/tmp/.mount_x", "ARGV0": "x",
+                "OWD": "/home/u", "ADDONMANAGER_APPDIR": "/tmp/.mount_x", "_MEIPASS2": "m",
+                "LD_LIBRARY_PATH": "/tmp/.mount_x/usr/lib/AddonManager/_internal",
+                "HOME": "/home/u"}
+        env = selfupdate.restart_env(dict(base, LD_LIBRARY_PATH_ORIG="/opt/lib"),
+                                     linux=True, frozen=True)
+        for name in selfupdate.APPIMAGE_ENV + ("_MEIPASS2", "LD_LIBRARY_PATH_ORIG"):
+            self.assertNotIn(name, env)
+        self.assertEqual(env["LD_LIBRARY_PATH"], "/opt/lib")
+        self.assertEqual(env["HOME"], "/home/u")
+        self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+        env = selfupdate.restart_env(base, linux=True, frozen=True)
+        self.assertNotIn("LD_LIBRARY_PATH", env)
+        # from source or on Windows the library path is left alone
+        self.assertIn("LD_LIBRARY_PATH", selfupdate.restart_env(base, linux=True, frozen=False))
+        self.assertIn("LD_LIBRARY_PATH", selfupdate.restart_env(base, linux=False, frozen=True))
+
 
 class Bar(unittest.TestCase):
     """The update bar in the real window, withdrawn before anything is drawn."""

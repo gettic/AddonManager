@@ -159,16 +159,18 @@ def write_release(api_dir, repo, tag, assets, raw=None, latest=None):
 
 
 def make_fake_exe(path, marker=b"new", size=1024 * 1024 + 100, source=None):
-    """A file that passes the update checks ('MZ' on Windows, ELF on Linux, over 1 MB).
-    source: copy that file and append marker (never run). Returns path."""
-    from am.selfupdate import PROGRAM_MAGIC
+    """A file that passes the update checks ('MZ' on Windows, an ELF AppImage on Linux,
+    over 1 MB). source: copy that file and append marker (never run). Returns path."""
+    from am.selfupdate import APPIMAGE_MAGIC, PROGRAM_MAGIC
     with open(path, "wb") as f:
         if source:
             with open(source, "rb") as src:
                 shutil.copyfileobj(src, f)
             f.write(marker)
         else:
-            head = PROGRAM_MAGIC + marker
+            # Linux: ELF64 little-endian header start, then "AI\x02" at byte 8.
+            head = (PROGRAM_MAGIC if os.name == "nt"
+                    else PROGRAM_MAGIC + b"\x02\x01\x01\x00" + APPIMAGE_MAGIC) + marker
             f.write(head + b"\0" * max(0, size - len(head)))
     return path
 

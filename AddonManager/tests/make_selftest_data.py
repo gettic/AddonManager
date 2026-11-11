@@ -10,7 +10,7 @@ url/version/sha256, GuildHub from its (fake) GitHub repo's latest release.
 Self-update test data: copies the .exe to <folder>\\run\\AddonManager.exe (the copy that
 runs and updates itself) and makes a fake gettic/AddonManager release v99.0.0 whose
 AddonManager.exe is another copy with a few bytes added (never run). On Linux the same
-with the AddonManager program and the AddonManager-linux-x86_64 asset.
+with the AddonManager-x86_64.AppImage file and asset (the copy keeps the file's name).
 Prints two lines: the copy to run and the fake GitHub API folder."""
 
 import os

@@ -247,7 +247,9 @@ class HomeDir(unittest.TestCase):
 
     def test_asset_per_system(self):
         self.assertEqual(config.APP_ASSET,
-                         "AddonManager.exe" if os.name == "nt" else "AddonManager-linux-x86_64")
+                         "AddonManager.exe" if os.name == "nt"
+                         else "AddonManager-x86_64.AppImage")
+        self.assertEqual(config.LINUX_ASSET, "AddonManager-x86_64.AppImage")
         self.assertEqual(selfupdate.PROGRAM_MAGIC, b"MZ" if os.name == "nt" else b"\x7fELF")
 
     def test_other_systems_asset_refused(self):

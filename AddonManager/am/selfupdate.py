@@ -7,9 +7,11 @@ exe; put back on failure) -> start the new exe -> it writes update-ok.txt -> the
 exits. If the new one doesn't confirm in time: roll back and never offer that version again.
 Leftover .old/.new files (exactly those two names) are removed at the next start.
 Never writes inside a WoW folder, never uses a token, nothing from any other host.
-Linux (SteamOS) works the same with its own asset (config.APP_ASSET), an ELF check
-instead of 'MZ', and the .new file made executable before the swap (Linux lets a
-running program be renamed, so the swap needs no locks).
+Linux (SteamOS) works the same with its own asset (config.APP_ASSET, an AppImage), an
+ELF + AppImage check instead of 'MZ', and the .new file made executable before the swap
+(Linux lets a running program be renamed, so the swap needs no locks). Inside an AppImage
+the running program sits in a read-only mount, so the file that is updated is the
+.AppImage itself ($APPIMAGE), see exe_path.
 """
 
 import dataclasses
@@ -32,6 +34,22 @@ WAIT_SECONDS = 30
 SETTINGS_FAILED = "update_failed"
 # First bytes of a real program for this system: Windows .exe, Linux ELF.
 PROGRAM_MAGIC = b"MZ" if os.name == "nt" else b"\x7fELF"
+# A Linux update is a type 2 AppImage: an ELF with "AI\x02" at byte 8.
+APPIMAGE_MAGIC = b"AI\x02"
+APPIMAGE_MAGIC_AT = 8
+# Set by the AppImage runtime (APPIMAGE, APPDIR, ARGV0, OWD) and by our AppRun; never
+# passed on to the restarted program (its own runtime sets them again).
+APPIMAGE_ENV = ("APPIMAGE", "APPDIR", "ARGV0", "OWD", "ADDONMANAGER_APPDIR")
+
+
+def is_program(head, linux=None):
+    """True if head (the file's first bytes) is a program for this system: 'MZ' on
+    Windows; an ELF AppImage on Linux."""
+    linux = os.name != "nt" if linux is None else linux
+    if linux:
+        return (head[:4] == b"\x7fELF" and
+                head[APPIMAGE_MAGIC_AT:APPIMAGE_MAGIC_AT + len(APPIMAGE_MAGIC)] == APPIMAGE_MAGIC)
+    return head[:2] == b"MZ"
 
 
 class UpdateError(Exception):
@@ -60,11 +78,24 @@ class Update:
 DOWNLOAD_PAGE = f"https://github.com/{config.APP_REPO}/releases/latest"
 
 
-def exe_path():
-    """The running .exe, or None when not running as the built app (from source)."""
-    if getattr(sys, "frozen", False):
-        return os.path.abspath(sys.executable)
-    return None
+def exe_path(env=None, executable=None, frozen=None, linux=None):
+    """The file to update: the running .exe, or on Linux inside an AppImage the .AppImage
+    file ($APPIMAGE; the program itself is in a read-only mount). None when not running
+    as the built app (from source). $APPIMAGE only counts when the running program lies
+    inside this AppImage's folder ($APPDIR, or ADDONMANAGER_APPDIR from our AppRun), so a
+    value inherited from some other AppImage is ignored."""
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    if not frozen:
+        return None
+    env = os.environ if env is None else env
+    linux = os.name != "nt" if linux is None else linux
+    executable = os.path.abspath(executable or sys.executable)
+    appimage = env.get("APPIMAGE")
+    if linux and appimage and os.path.isabs(appimage) and os.path.isfile(appimage):
+        for appdir in (env.get("APPDIR"), env.get("ADDONMANAGER_APPDIR")):
+            if appdir and os.path.isabs(appdir) and _inside(executable, appdir):
+                return os.path.realpath(appimage)
+    return executable
 
 
 def side_paths(exe):
@@ -227,7 +258,7 @@ def fetch(update, exe, allow_local=False, progress=None, min_bytes=MIN_BYTES):
         if size != update.size or size < min_bytes:
             raise UpdateError("damaged", f"size {size}, expected {update.size}")
         with open(new, "rb") as f:
-            if f.read(len(PROGRAM_MAGIC)) != PROGRAM_MAGIC:
+            if not is_program(f.read(16)):
                 raise UpdateError("damaged", "not a program for this system")
         if os.name != "nt":
             os.chmod(new, 0o755)   # downloads aren't executable on Linux
@@ -337,14 +368,30 @@ def mark_ok(version):
         log.exception("Could not write %s", ok_path())
 
 
-def restart(exe, old_version):
-    """Start the new exe. PYINSTALLER_RESET_ENVIRONMENT makes it a fresh one-file start
-    instead of reusing this process's unpacked files."""
-    env = dict(os.environ)
+def restart_env(environ=None, linux=None, frozen=None):
+    """The environment for the new program: a fresh PyInstaller start
+    (PYINSTALLER_RESET_ENVIRONMENT instead of reusing this process's unpacked files), no
+    AppImage variables of this run, and for the built Linux program the library path from
+    before PyInstaller changed it (LD_LIBRARY_PATH_ORIG; as archive._tar_env)."""
+    env = dict(os.environ if environ is None else environ)
+    linux = os.name != "nt" if linux is None else linux
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     for name in ("_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE",
-                 "_PYI_PARENT_PROCESS_LEVEL"):
+                 "_PYI_PARENT_PROCESS_LEVEL") + APPIMAGE_ENV:
         env.pop(name, None)
+    if linux and frozen:
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if orig:
+            env["LD_LIBRARY_PATH"] = orig
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
+def restart(exe, old_version):
+    """Start the new exe (on Linux the .AppImage file) with restart_env."""
+    env = restart_env()
     return subprocess.Popen([exe, "--updated-from", versions.plain(old_version)], env=env,
                             close_fds=True, cwd=os.path.dirname(exe))
 

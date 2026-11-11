@@ -1,7 +1,8 @@
 # PyInstaller build config: one windowed AddonManager.exe. Run through build.ps1.
-# On Linux (the GitHub Actions workflow linux-build.yml) the same spec makes the one-file
-# program dist/AddonManager (no Windows file properties or file icon there; the window
-# icon comes from the bundled am/assets PNGs on both systems).
+# On Linux (the GitHub Actions workflow linux-build.yml) the same spec makes the one-folder
+# program dist/AddonManager/AddonManager, which the workflow packs into an AppImage (no
+# Windows file properties or file icon there; the window icon comes from the bundled
+# am/assets PNGs on both systems).
 # The version comes from am\__init__.py (APP_VERSION), so it is kept in one place.
 # tos rule: no "World of Warcraft", "WoW", "Warcraft" or "Blizzard" in the names below.
 import os
@@ -63,15 +64,39 @@ a = Analysis(
 _drop = re.compile(r"^(_tcl_data[\\/]tzdata|_tcl_data[\\/]msgs|_tk_data[\\/]msgs)[\\/]")
 a.datas = [d for d in a.datas if not _drop.match(d[0])]
 pyz = PYZ(a.pure)
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    name="AddonManager",
-    console=False,
-    upx=False,
-    strip=False,
-    icon=icon,
-    version=version_info,
-)
+if WINDOWS:
+    # One file: AddonManager.exe.
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        name="AddonManager",
+        console=False,
+        upx=False,
+        strip=False,
+        icon=icon,
+        version=version_info,
+    )
+else:
+    # Linux: one folder, dist/AddonManager/ (program AddonManager + _internal/). The
+    # workflow packs it into AddonManager-x86_64.AppImage, which is already one file, so
+    # nothing is unpacked to /tmp at each start.
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="AddonManager",
+        console=False,
+        upx=False,
+        strip=False,
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        name="AddonManager",
+        upx=False,
+        strip=False,
+    )

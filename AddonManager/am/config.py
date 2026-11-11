@@ -27,9 +27,10 @@ GITHUB_API = "https://api.github.com"
 # The app's own releases (self-update). Fixed here: never taken from addons.json.
 APP_REPO = "gettic/AddonManager"
 # The release file this build updates itself from: the Windows .exe, or the Linux
-# (SteamOS) one-file program. Each build only ever picks its own.
+# (SteamOS) AppImage. Each build only ever picks its own. (Linux copies before the AppImage
+# looked for "AddonManager-linux-x86_64", which is no longer published.)
 WINDOWS_ASSET = "AddonManager.exe"
-LINUX_ASSET = "AddonManager-linux-x86_64"
+LINUX_ASSET = "AddonManager-x86_64.AppImage"
 APP_ASSET = WINDOWS_ASSET if os.name == "nt" else LINUX_ASSET
 
 # Anonymous daily usage count (see am\stats.py and stats_worker\): the address of the

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Starts the Addon Manager inside its AppImage (the PyInstaller one-folder build in
+# usr/lib/AddonManager). ADDONMANAGER_APPDIR tells the app it runs from this AppImage, so
+# self-update replaces the .AppImage file ($APPIMAGE), never the read-only mount.
+HERE="$(dirname "$(readlink -f "$0")")"
+export ADDONMANAGER_APPDIR="$HERE"
+exec "$HERE/usr/lib/AddonManager/AddonManager" "$@"
