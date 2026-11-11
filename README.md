@@ -4,7 +4,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.11.1
+Current version: v0.12.0
 
 ## Get it
 
@@ -43,13 +43,13 @@ Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Pro
 ## How to use it
 
 1. Open `AddonManager.exe`. It looks for your WoW Forever folder by itself (for example `World of Warcraft\_forever_`). It only picks a real WoW Forever folder, never Beta, PTR, Classic or Retail. If it can't find it, click **Choose folder** and pick the folder where WoW Forever is installed.
-2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The guild's addons are listed in the guild's order, Guild Hub first. The window is dark (black and grey with red). The app's own version is shown at the bottom right. When the app opens, the list shows at once with the versions it knew last time, while it checks for updates. The buttons stay greyed out until the check is done (point at one to see why). After the check, the bottom line sums up, for example "All addons are up to date." or "1 update available." The window opens where and as big as you left it. The status is colour-coded:
+2. The list shows each guild addon with the version you have and the latest version (for example v1.2.3). The guild's addons are listed in the guild's order, Guild Hub first. The window is dark with gold lines and knot corners, and the title "Gettic's Addon Manager - A Member of Dane Hird" is at the top. The Install and Update buttons are red, and a row with an update has a light band. With many addons the list scrolls (mouse wheel or the thin gold bar) while the column headers and the buttons at the bottom stay in place. Every other window has the same look. It fits 100 % and 150 % display scaling and works on Linux. The app's own version is shown at the bottom right. When the app opens, the list shows at once with the versions it knew last time, while it checks for updates. The buttons stay greyed out until the check is done (point at one to see why). After the check, the bottom line sums up, for example "All addons are up to date." or "1 update available." The window opens where and as big as you left it. The status is colour-coded:
 
    | Status | Colour |
    | --- | --- |
-   | Update available | red |
+   | Update available | gold |
    | Not installed | light grey |
-   | Up to date | dim grey |
+   | Up to date | green |
    | Failed install | red "Failed" block |
 
    The title bar is dark too on Windows 10 (20H1 or newer) and Windows 11. The **Choose folder** window follows your Windows light or dark setting.
@@ -116,6 +116,7 @@ The **Backup** window has **Make a backup...** and **Restore a backup...** (This
   | Windows | OneDrive, Google Drive (also on its own drive letter), iCloud Drive, Dropbox, MEGA, pCloud, Box, Proton Drive, Nextcloud, Sync.com |
   | Linux | Dropbox, MEGA, pCloud (while it is running), Nextcloud |
 - You can untick the addons or the settings.
+- The backup remembers your **Other addons** (the ones added with **Add file...**). Restore it on another PC, or after a reinstall, and they show under **Other addons** again right away.
 - **Spoken** (the AI voice-over addon, any folder starting with "Spoken") is big and holds almost no settings. The first time a backup would hold it, the app asks once: **Leave them out** or **Keep them**, with the size. Your answer is remembered. To change it, use the tick "Leave out Spoken (AI voice-over addon)" in the Make a backup window (shown only when Spoken is installed). Only the addon folders are left out. Their settings are still saved.
 - The file holds your account and character names. Don't share it.
 - `Config.wtf` and the saved chat history (also of chat addons like Elephant or WIM) are never included.
@@ -125,6 +126,7 @@ The **Backup** window has **Make a backup...** and **Restore a backup...** (This
 
 - If the account name here is different, you pick which account gets the settings. With two accounts in the backup and one here, you choose which one goes there.
 - It merges: addons and settings that aren't in the backup stay. Nothing is removed.
+- If the backup has Other addons, the window lists them first. Older backups still restore fine, but their other addons only show after you add them again with **Add file...**.
 - If the backup left out some addons (like Spoken), the window says "This backup left out: ...". Install them yourself if you want them.
 - The app checks there is enough free space first. A big backup needs roughly 2-3 times its size free.
 - Before it replaces anything it saves a safety copy, `Before restore <date> <time>.zip`, in the same backup folder. It can't be inside the WoW folder either.

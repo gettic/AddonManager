@@ -46,6 +46,10 @@ ASSETS = os.path.join(HERE, "am", "assets")
 assets = [(os.path.join(ASSETS, n), os.path.join("am", "assets"))
           for n in ("AddonManager.ico", "AddonManager.png", "AddonManager_48.png",
                     "AddonManager_32.png", "AddonManager_16.png")]
+# The window's knotwork corners (am/theme.py): 4 corners x 3 sizes, the app's own art.
+assets += [(os.path.join(ASSETS, "frame", f"k6b_tied_{c}_{s}.png"),
+            os.path.join("am", "assets", "frame"))
+           for c in ("tl", "tr", "bl", "br") for s in ("1x", "1_5x", "2x")]
 # The licences of everything bundled (shown by Settings > Licences, am/backup_ui.py).
 assets.append((os.path.join(HERE, "THIRD-PARTY-NOTICES.txt"), "."))
 for src, _dest in assets + ([(icon, "")] if icon else []):

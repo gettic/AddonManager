@@ -238,10 +238,9 @@ class WindowExtrasTests(unittest.TestCase):
     def test_bottom_block_packed_before_the_list(self):
         app = self.make_app()
         self.pump(app)
-        outer = app.list_frame.master
-        slaves = outer.pack_slaves()
+        slaves = app.outer.pack_slaves()
         bottom = app.progress.master
-        self.assertLess(slaves.index(bottom), slaves.index(app.list_frame))
+        self.assertLess(slaves.index(bottom), slaves.index(app.list_box))
         self.assertEqual(str(bottom.pack_info()["side"]), "bottom")
 
     def test_window_grows_once_to_fit(self):

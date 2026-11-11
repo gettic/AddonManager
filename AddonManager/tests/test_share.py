@@ -78,7 +78,8 @@ class ShareTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.base, True)
         self.root, self.addons, self.client = make_pc(os.path.join(self.base, "pc1"))
         self.backups = os.path.join(self.base, "backups")
-        self.path, _size, _c = backup.make(self.addons, self.backups)
+        self.path, _size, _c = backup.make(self.addons, self.backups, others={
+            "OtherAddon": {"name": "Other", "version": "2", "file": "o.zip"}})
         self.inbox = os.path.join(self.base, "inbox")
         self.relay = FakeRelay()
         self.addCleanup(self.relay.stop)
@@ -110,11 +111,17 @@ class ShareTests(unittest.TestCase):
         self.assertEqual(self.relay.stored(), {})                       # relay keeps nothing
         info = backup.read(path)
         self.assertTrue(info.received)
+        # The Other addons record travels in the same file (no file name in it).
+        self.assertEqual(info.others, {"OtherAddon": {"name": "Other", "version": "2"}})
         # The normal restore on another PC, settings onto the player's own account.
         _r2, addons2, client2 = make_pc(os.path.join(self.base, "pc2"), account="MINE",
                                         tag="new")
+        unticked = backup.restore(path, addons2, os.path.join(self.base, "safety"),
+                                  addons=False, account_map={"ACCOUNT1": "MINE"})
+        self.assertEqual(unticked.others, {})   # Addons off (the default here): none added
         result = backup.restore(path, addons2, os.path.join(self.base, "safety"),
                                 account_map={"ACCOUNT1": "MINE"})
+        self.assertEqual(list(result.others), ["OtherAddon"])
         self.assertTrue(result.safety and os.path.exists(result.safety))
         self.assertFalse(os.path.exists(os.path.join(client2, "WTF", "Account", "ACCOUNT1")))
 
@@ -1328,8 +1335,9 @@ class WindowShareTests(unittest.TestCase):
                           (["active"], theme.TEXT), (["disabled"], theme.DISABLED)):
             self.assertEqual(style.lookup("TRadiobutton", "foreground", state), fg, state)
             self.assertEqual(style.lookup("TRadiobutton", "background", state), theme.BG, state)
-        self.assertEqual(style.lookup("TRadiobutton", "indicatorbackground", ["selected"]),
-                         theme.ACCENT)
+        # the chosen one: a gold dot in the dark box
+        self.assertEqual(style.lookup("TRadiobutton", "indicatorforeground", ["selected"]),
+                         theme.LINK)
         self.pump_until(app, lambda: dlg.newest is not None)
         self.assertTrue(dlg.newest_radio.cget("text").startswith(errors.SEND_NEWEST))
         dlg.win.update_idletasks()

@@ -1,0 +1,463 @@
+"""The look (new-look job): the window frame and knot corners, the art per display
+scaling, the heading font, every window's buttons (text never cut, same kind = same
+width, one height per row, the main window's right edges), nothing under a knot, and the
+scrolling list with its fixed headers. Hidden windows, fake data; never shown."""
+import datetime
+import gc
+import os
+import re
+import time
+import tkinter as tk
+import tkinter.font as tkfont
+import unittest
+import zipfile
+from tkinter import ttk
+from unittest import mock
+
+import tests  # noqa: F401  (temp home + documents)
+from am import backup, config, errors, fileinstall, fileinstall_ui, theme, ui
+from tests import fixtures
+
+
+def all_widgets(w):
+    out = [w]
+    for c in w.winfo_children():
+        out += all_widgets(c)
+    return out
+
+
+def x_in(widget, top):
+    """widget's x inside top (works on a withdrawn window: sums the parents' x)."""
+    x = 0
+    while widget is not top and widget is not None:
+        x += widget.winfo_x()
+        widget = widget.master
+    return x
+
+
+def y_in(widget, top):
+    y = 0
+    while widget is not top and widget is not None:
+        y += widget.winfo_y()
+        widget = widget.master
+    return y
+
+
+def shown(widget):
+    """Packed/gridded/placed all the way up (the windows stay withdrawn, so winfo_ismapped
+    is always false)."""
+    w = widget
+    while w is not None and w.winfo_class() not in ("Tk", "Toplevel"):
+        if not w.winfo_manager():
+            return False
+        w = w.master
+    return True
+
+
+def width(widget):
+    """Its real width; a withdrawn dialog is never laid out, so there its requested one
+    (the off-screen renders check the real sizes of every window)."""
+    return widget.winfo_width() if widget.winfo_width() > 1 else widget.winfo_reqwidth()
+
+
+def height(widget):
+    return widget.winfo_height() if widget.winfo_height() > 1 else widget.winfo_reqheight()
+
+
+def visible(widget, top):
+    """widget's rectangle inside top, cut by its parents (the list's clipping frame)."""
+    x, y = x_in(widget, top), y_in(widget, top)
+    x2, y2 = x + widget.winfo_width(), y + widget.winfo_height()
+    p = widget.master
+    while p is not top and p is not None:
+        px_, py_ = x_in(p, top), y_in(p, top)
+        x, y = max(x, px_), max(y, py_)
+        x2, y2 = min(x2, px_ + p.winfo_width()), min(y2, py_ + p.winfo_height())
+        p = p.master
+    return x, y, x2 - x, y2 - y
+
+
+class ThemeTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+
+    def tearDown(self):
+        self.root.destroy()
+        gc.collect()
+
+    def test_art_step(self):
+        self.assertEqual(theme.art_step(1.0), (1, "1x"))
+        self.assertEqual(theme.art_step(1.25), (1.5, "1_5x"))
+        self.assertEqual(theme.art_step(1.5), (1.5, "1_5x"))
+        self.assertEqual(theme.art_step(2.0), (2, "2x"))
+        for step in ("1x", "1_5x", "2x"):
+            for corner in theme.CORNERS:
+                path = os.path.join(theme.FRAME_ART, theme.CORNER_NAME.format(
+                    corner=corner, step=step))
+                self.assertTrue(os.path.isfile(path), path)
+
+    def test_head_font_falls_back(self):
+        with mock.patch.object(theme, "HEAD_CHOICES", ("No Such Font 123",)):
+            theme.apply(self.root)
+            self.assertEqual(theme.head_font()[0], theme.FONT_FAMILY)
+        theme.apply(self.root)
+        if os.name == "nt":
+            self.assertEqual(theme.HEAD_FAMILY, "Georgia")
+
+    def test_frame_and_missing_art(self):
+        theme.apply(self.root)
+        content = ttk.Frame(self.root)
+        content.pack()
+        art = theme.Frame(self.root, content, corners=True)
+        self.assertEqual(sorted(art.labels), sorted(theme.CORNERS))
+        self.assertGreater(art.clear, 0)
+        # the canvas is under everything
+        self.assertEqual(self.root.tk.call("winfo", "children", self.root)[0], str(art.canvas))
+        top = tk.Toplevel(self.root)
+        top.withdraw()
+        other = ttk.Frame(top)
+        other.pack()
+        with mock.patch.object(theme, "FRAME_ART", os.path.join(fixtures.temp_dir("look_"), "x")):
+            art2 = theme.Frame(top, other, corners=True)   # no art: lines only, no crash
+        self.assertEqual(art2.labels, {})
+        self.assertEqual(art2.clear, 0)
+        art2.draw()
+
+    def test_focus_and_disabled_colours(self):
+        theme.apply(self.root)
+        s = ttk.Style(self.root)
+        for style in ("TButton", "Accent.TButton", "Item.TButton", "Accent.Item.TButton"):
+            self.assertEqual(s.lookup(style, "bordercolor", ["focus"]), theme.FOCUS, style)
+        for style in ("TCheckbutton", "TRadiobutton"):
+            self.assertEqual(s.lookup(style, "focuscolor"), theme.FOCUS)
+        self.assertEqual(theme.DISABLED, "#7a705e")
+        # red buttons: a plain gold border at rest, so the bright focus colour stands out
+        for style in ("Accent.TButton", "Accent.Item.TButton"):
+            self.assertEqual(s.lookup(style, "bordercolor"), theme.BORDER)
+
+
+class LookWindowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.base = fixtures.temp_dir("look_ui_")
+        cls.site = fixtures.make_server_files(cls.base)
+        many = os.path.join(cls.base, "many")
+        os.makedirs(many)
+        entries = []
+        for i in range(15):
+            folder = f"Addon{i:02d}"
+            z = fixtures.make_zip(os.path.join(many, f"{folder}-1.0.{i}.zip"), folder, f"1.0.{i}")
+            entries.append({"folder": folder, "name": f"Addon {i:02d}", "description": "x",
+                            "version": f"1.0.{i}", "url": os.path.basename(z),
+                            "sha256": fixtures.sha256(z), "size": os.path.getsize(z)})
+        fixtures.write_manifest(os.path.join(many, "manifest.json"), entries)
+        cls.many = many
+
+    @classmethod
+    def tearDownClass(cls):
+        fixtures.remove(cls.base)
+
+    def setUp(self):
+        self.work = fixtures.temp_dir("look_ui_")
+        self.root_dir, self.addons = fixtures.make_fake_wow(self.work)
+        fixtures.make_addon_folder(self.addons, "TaxiTime", "1.2.0")   # an update
+        fixtures.make_addon_folder(self.addons, "Bagnon", "10.2.7")
+        config.save_settings({"file_addons": {"Bagnon": {
+            "name": "Bagnon", "version": "10.2.7", "file": "Bagnon.zip", "date": "2026-11-01"}}})
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.base_scaling = float(self.root.tk.call("tk", "scaling"))
+
+    def tearDown(self):
+        try:
+            self.root.tk.call("tk", "scaling", self.base_scaling)
+            self.root.destroy()
+        except tk.TclError:
+            pass
+        self.root = None
+        gc.collect()
+        theme.SCALE = 1.0
+        fixtures.remove(self.work)
+
+    def pump(self, app, timeout=15):
+        end = time.time() + timeout
+        self.root.update()
+        while app.busy and time.time() < end:
+            self.root.update()
+            time.sleep(0.02)
+        for _ in range(5):
+            self.root.update()
+            time.sleep(0.02)
+
+    def make_app(self, manifest=None):
+        app = ui.App(self.root, manifest or os.path.join(self.site, "manifest.json"), True,
+                     self.root_dir, check_game=lambda: False, detect=lambda: [],
+                     confirm=lambda *a: False, share_url="https://relay.invalid")
+        self.pump(app)
+        self.root.update_idletasks()
+        return app
+
+    # ---------- buttons ----------
+    def check_buttons(self, win, name):
+        """Every button: its text fits; returns the mapped buttons."""
+        win.update_idletasks()
+        st = ttk.Style(win)
+        out = []
+        for w in all_widgets(win):
+            if w.winfo_class() not in ("TButton", "TMenubutton") or not shown(w):
+                continue
+            style = str(w.cget("style")) or w.winfo_class()
+            f = tkfont.Font(root=win, font=st.lookup(style, "font") or "TkDefaultFont")
+            pad = st.lookup(style, "padding")
+            nums = re.findall(r"\d+", str(pad))
+            padx = int(nums[0]) if nums else 0
+            need = f.measure(str(w.cget("text"))) + 2 * padx
+            self.assertLessEqual(need, width(w), f"{name}: {w.cget('text')!r} is cut")
+            out.append(w)
+        return out
+
+    def check_row(self, buttons, name):
+        """Buttons side by side in one row: one width and one height."""
+        buttons = [b for b in buttons if shown(b)]
+        if len(buttons) < 2:
+            return
+        if all(b.winfo_width() <= 1 and b.winfo_manager() == "grid"
+               and {"e", "w"} <= set(str(b.grid_info()["sticky"])) for b in buttons):
+            return   # not laid out, stretched in equal columns (the renders check these)
+        self.assertEqual(len({width(b) for b in buttons}), 1,
+                         f"{name}: {[(b.cget('text'), width(b)) for b in buttons]}")
+        self.assertEqual(len({height(b) for b in buttons}), 1, name)
+
+    def check_dialog(self, win, name):
+        buttons = self.check_buttons(win, name)
+        self.assertTrue(buttons, name)
+        rows = {}
+        for b in buttons:   # side by side: one grid row, or packed left/right
+            how = b.winfo_manager()
+            if how == "grid":
+                key = (str(b.master), "row", str(b.grid_info()["row"]))
+            elif how == "pack" and str(b.pack_info()["side"]) in ("left", "right"):
+                key = (str(b.master), "side")
+            else:
+                key = (str(b),)
+            rows.setdefault(key, []).append(b)
+        for group in rows.values():
+            if all(isinstance(b, ttk.Button) for b in group):
+                self.check_row(group, name)
+        row_w = theme.button_chars(win)
+        for b in buttons:
+            if isinstance(b, ttk.Button) and str(b.cget("style")) not in ("Row.TButton",
+                                                                          "Cloud.TButton"):
+                probe = ttk.Button(b.master, text="", width=row_w, style=b.cget("style"))
+                least = probe.winfo_reqwidth()
+                probe.destroy()
+                self.assertGreaterEqual(max(width(b), b.winfo_reqwidth()), least,
+                                        f"{name}: {b.cget('text')!r} narrower than a row button")
+
+    def check_knots(self, win, art, name):
+        art.draw()
+        win.update_idletasks()
+        squares = [(x_in(lab, win), y_in(lab, win), lab.winfo_reqwidth(), lab.winfo_reqheight())
+                   for lab in art.labels.values()]
+        for w in all_widgets(win):
+            cls = w.winfo_class()
+            if cls not in ("TLabel", "Label", "TButton", "TEntry", "TProgressbar",
+                           "TCheckbutton", "TRadiobutton", "TMenubutton") or not shown(w):
+                continue
+            if w in art.labels.values():
+                continue
+            if cls in ("TLabel", "Label") and not (str(w.cget("text")) or str(w.cget("image"))
+                                                  or str(w.cget("textvariable"))):
+                continue
+            x, y, ww, hh = visible(w, win)
+            if ww <= 0 or hh <= 0:
+                continue
+            for sx, sy, sw, sh in squares:
+                self.assertFalse(x < sx + sw and sx < x + ww and y < sy + sh and sy < y + hh,
+                                 f"{name}: {w} under a knot"
+                                 )
+
+    def run_checks(self):
+        app = self.make_app()
+        app.update_mode = "offer"
+        from am import selfupdate
+        app.app_update = selfupdate.Update("0.99.0", "v0.99.0", "https://x", "0" * 64, 1)
+        app.render()
+        self.root.geometry(f"{theme.px(680)}x{theme.px(560)}")
+        self.root.update_idletasks()
+        root = self.root
+        buttons = self.check_buttons(root, "main")
+        # bottom row: one width, one height
+        self.check_row([app.check_button, app.all_button, app.backup_main_button,
+                        app.settings_button], "bottom row")
+        # one column: Change..., Add file..., Later and the row buttons, same width and
+        # the same right edge
+        column = [app.folder_button, app.files.button, app.update_later_button]
+        column += [w[1] for w in app.row_widgets.values() if w[1] is not None]
+        column += [c["button"] for c in app.files.cells]
+        rights = {x_in(b, root) + b.winfo_width() for b in column}
+        widths = {b.winfo_width() for b in column}
+        self.assertEqual(len(widths), 1, [(b.cget("text"), b.winfo_width()) for b in column])
+        self.assertEqual(len(rights), 1, [(b.cget("text"), x_in(b, root) + b.winfo_width())
+                                          for b in column])
+        # row buttons one height; Update now as tall as Later
+        rows = [w[1] for w in app.row_widgets.values() if w[1] is not None]
+        self.assertEqual(len({b.winfo_height() for b in rows}), 1)
+        self.assertEqual(app.update_now_button.winfo_height(),
+                         app.update_later_button.winfo_height())
+        self.assertTrue(buttons)
+        self.check_knots(root, app.frame_art, "main")
+        # the banner title fits
+        title = app.title_label
+        self.assertLessEqual(x_in(title, root) + title.winfo_reqwidth(),
+                             root.winfo_width() - app.frame_art.clear)
+        # Settings
+        win = app.open_settings(show=False)
+        self.check_dialog(win, "settings")
+        app.close_settings()
+        # Backup window and its small windows
+        hub = app.open_backup_window(show=False)
+        self.check_dialog(hub.win, "backup window")
+        self.check_knots(hub.win, hub.win._am_frame, "backup window")
+        for opener, name in ((lambda: app.open_backup(show=False), "make backup"),
+                             (lambda: app.open_restore(show=False), "restore list"),
+                             (lambda: app.open_send(show=False), "send"),
+                             (lambda: app.open_receive(show=False), "receive")):
+            d = opener()
+            self.check_dialog(d.win, name)
+            if name == "restore list" and d.code_button is not None:
+                # a clear gap between Use a code... and Cancel; the note wraps to the window
+                pad = re.findall(r"\d+", str(d.cancel_button.pack_info()["padx"]))
+                self.assertGreaterEqual(int(pad[0]), theme.px(12))
+                self.assertEqual(d.code_button.pack_info()["side"], "left")
+                self.assertTrue(d.note.bind("<Configure>"))
+            d.close()
+        lic = app.open_licences(show=False)
+        lic.win.update_idletasks()
+        self.assertEqual(str(lic.vbar.cget("style")), "Gold.Vertical.TScrollbar")
+        self.assertEqual(str(lic.hbar.cget("style")), "Gold.Horizontal.TScrollbar")
+        lic.close()
+        made = backup.make(self.addons, os.path.join(self.work, "made"),
+                           now=datetime.datetime(2026, 11, 9, 21, 14))[0]
+        d = app.open_restore(show=False, path=made)
+        self.check_dialog(d.win, "restore")
+        d.close()
+        app.close_backup_window()
+        # the yes/no question
+        parts = app._confirm_parts("Remove Taxi Time?", "text", errors.REMOVE_OK,
+                                   errors.REMOVE_CANCEL, False, lambda ok: None)
+        self.check_dialog(parts["win"], "confirm")
+        parts["win"].destroy()
+        # Add from file
+        pack = os.path.join(self.work, "pack.zip")
+        with zipfile.ZipFile(pack, "w") as z:
+            for folder, ver in (("WeakAuras", "5.12.0"), ("Bagnon", "10.2.8")):
+                z.writestr(f"{folder}/{folder}.toc", fixtures.toc_text(folder, ver))
+                z.writestr(f"{folder}/{folder}.lua", "-- x")
+        plan = fileinstall.scan(pack, self.addons, sorted(app._guild_folders()),
+                                app.files.tracked(), tmp_root=self.work)
+        fd = fileinstall_ui.FileInstallDialog(root, plan, lambda *a: None, show=False)
+        self.check_dialog(fd.win, "file install")
+        # no empty status line above the buttons; it shows once it has text
+        self.assertFalse(fd.status.winfo_manager())
+        fd.status_var.set("x")
+        self.assertEqual(fd.status.winfo_manager(), "pack")
+        fd.status_var.set("")
+        self.assertFalse(fd.status.winfo_manager())
+        fd.close()
+        app.closed = True
+
+    def test_buttons_100(self):
+        self.run_checks()
+
+    def test_buttons_150(self):
+        self.root.tk.call("tk", "scaling", self.base_scaling * 1.5)
+        self.run_checks()
+
+    def test_buttons_linux_fonts(self):
+        """Linux simulated on Windows (fonts about 1.2x wider, slim bottom row)."""
+        patches = [mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True),
+                   mock.patch.object(ui, "SETTINGS_BUTTON", "Settings"),
+                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas")] if os.name == "nt" else []
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        if os.name == "nt":
+            self.root.tk.call("tk", "scaling", self.base_scaling * 1.2)
+        self.run_checks()
+
+    # ---------- the scrolling list ----------
+    def test_list_scrolls_with_fixed_headers(self):
+        def right_gap(app, button):
+            box = app.list_box
+            return (x_in(box, self.root) + box.winfo_width()
+                    - x_in(button, self.root) - button.winfo_width())
+
+        # Few addons: everything fits, no bar.
+        few = self.make_app()
+        self.assertFalse(few.list_bar.winfo_manager(), "all rows fit: no bar")
+        gap_open = right_gap(few, few.row_widgets["TaxiTime"][1])
+        few.closed = True
+        for child in self.root.winfo_children():
+            child.destroy()
+        # 15 addons in the (withdrawn) start-size window: the bar shows, the buttons
+        # keep their place.
+        app = self.make_app(os.path.join(self.many, "manifest.json"))
+        root = self.root
+        app._list_resized()
+        root.update_idletasks()
+        self.assertEqual(app.list_bar.winfo_manager(), "grid")
+        self.assertEqual(right_gap(app, app.row_widgets["Addon00"][1]), gap_open)
+        # a row at a time: wheel (Windows), Button-5 (Linux), the bar's arrows/moveto
+        step = app._row_h
+        self.assertGreater(step, 0)
+        label = app._cells[3]["name"]
+        label.event_generate("<MouseWheel>", delta=-120)
+        self.assertEqual(app._list_top, step)
+        label.event_generate("<Button-5>")
+        self.assertEqual(app._list_top, 2 * step)
+        label.event_generate("<MouseWheel>", delta=120)
+        self.assertEqual(app._list_top, step)
+        app.list_yview("moveto", 1.0)
+        self.assertEqual(app._list_top % step, 0)
+        h, seen, _step, most = app._list_sizes()
+        self.assertEqual(app._list_top, most)
+        self.assertLess(most - (h - seen), step)   # less than a row of space at the end
+        # whole rows only: header + n rows, the rest an empty strip at the bottom
+        self.assertEqual((seen - app._head_h()) % step, 0)
+        spare = app.list_view.winfo_height() - seen
+        if spare > 0:
+            self.assertEqual(app.list_cover.winfo_manager(), "place")
+            self.assertEqual(app.list_cover.winfo_height() if app.list_cover.winfo_height() > 1
+                             else int(app.list_cover.place_info()["height"]), spare)
+        # the fixed headers stay lined up with the columns
+        root.update_idletasks()
+        for col, copy in enumerate(app._head_labels[:4]):
+            src = app.list_frame.grid_slaves(row=0, column=col)[0]
+            self.assertEqual(x_in(copy, root), x_in(src, root) - 0)
+            self.assertEqual(copy.cget("text"), src.cget("text"))
+        self.assertTrue(app.list_head.winfo_manager())
+        # every row is one height (scrolling stops on a row's edge)
+        heights = {app.list_frame.grid_bbox(0, i, 4, i)[3] for i in range(1, 16)}
+        self.assertEqual(heights, {step})
+        app.closed = True
+
+    def test_update_row_band_and_disabled_all(self):
+        app = self.make_app()
+        i = [r.folder for r in app.rows].index("TaxiTime") + 1
+        self.assertIn(i, app._hl_rows)
+        cells = app._cells[i - 1]
+        for key in ("name", "installed", "latest", "status"):
+            self.assertEqual(str(cells[key].cget("background")), theme.HIGHLIGHT)
+        app.busy = True
+        app.render()
+        self.assertIn("disabled", app.all_button.state())
+        self.assertEqual(ttk.Style(self.root).lookup("Accent.TButton", "foreground",
+                                                     ["disabled"]), theme.DISABLED)
+        app.busy = False
+        app.closed = True
+
+
+if __name__ == "__main__":
+    unittest.main()

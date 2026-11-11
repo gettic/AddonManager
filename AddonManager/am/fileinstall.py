@@ -398,6 +398,24 @@ def track(tracked, result, source_name, today=None):
     return out
 
 
+def merge_restored(tracked, others, guild_folders=()):
+    """A new tracked dict with a restored backup's "Other addons" record added: only
+    folders not tracked here yet (any letter case). A folder still tracked here keeps this
+    PC's entry as it is (incl. its source file name); guild-list folders are skipped;
+    every other entry stays. The source file name isn't in backups: new entries get "".
+    The newly added folders are the keys of the result that weren't in tracked."""
+    out = clean_tracked(tracked)
+    guild = _lower_set(guild_folders)
+    for folder, info in clean_tracked(others).items():
+        if folder.lower() in guild or folder.lower() in _lower_set(out):
+            continue
+        entry = {k: info[k] for k in ("name", "version", "date") if k in info}
+        entry.setdefault("name", folder)
+        entry["file"] = ""
+        out[folder] = entry
+    return out
+
+
 def untrack(tracked, folder):
     return {f: i for f, i in clean_tracked(tracked).items() if f.lower() != folder.lower()}
 

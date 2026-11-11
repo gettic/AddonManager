@@ -158,6 +158,84 @@ class BackupCoreTests(unittest.TestCase):
         self.assertEqual((info.settings_files, info.binding_files), (4, 2))
         self.assertIn("2 addons, settings for 1 account, 1 character", errors.backup_from(info))
 
+    RECORD = {"OtherAddon": {"name": "Other Addon", "version": "9.9", "file": "my stuff.zip",
+                             "date": "2026-11-01"},
+              "Gone": {"name": "Not on disk", "version": "1"}}
+
+    def test_other_addons_record_in_backup(self):
+        """The "Other addons" record goes into backup.json: only folders in the zip, never
+        the source file name; FORMAT stays 1 so older app versions still open it."""
+        path = backup.make(self.addons, self.out, now=NOW, others=self.RECORD)[0]
+        with zipfile.ZipFile(path) as z:
+            meta = json.loads(z.read("backup.json"))
+        self.assertEqual(meta["format"], 1)
+        self.assertEqual(backup.FORMAT, 1)
+        self.assertEqual(meta["other_addons"], {"OtherAddon": {
+            "name": "Other Addon", "version": "9.9", "date": "2026-11-01"}})
+        self.assertNotIn("my stuff", json.dumps(meta))
+        info = backup.read(path)
+        self.assertEqual(info.others, meta["other_addons"])
+        # Addons not saved (settings only) or the folder left out: no record.
+        only_settings = backup.make(self.addons, self.out, addons=False, now=NOW,
+                                    others=self.RECORD)[0]
+        with zipfile.ZipFile(only_settings) as z:
+            self.assertNotIn("other_addons", json.loads(z.read("backup.json")))
+        left = backup.make(self.addons, self.out, now=NOW, others=self.RECORD,
+                           leave_out=["OtherAddon"])[0]
+        self.assertEqual(backup.read(left).others, {})
+        # A backup without a record (older app versions): {} and restores as before.
+        self.assertEqual(backup.read(backup.make(self.addons, self.out, now=NOW)[0]).others, {})
+
+    def test_other_addons_record_read_is_strict(self):
+        """Anything odd in a backup's record is dropped quietly; the backup still opens."""
+        meta = {"app": "AddonManager", "format": 1, "other_addons": {
+            "OtherAddon": {"name": "ok", "version": 5, "file": "x.zip", "evil": "y",
+                           "date": "z" * 300},
+            "NotInZip": {"name": "n"}, "..": {"name": "x"}, "Blizzard_UI": {"name": "x"},
+            "Bad\\Name": {"name": "x"}, "List": ["x"]}}
+        path = raw_backup(os.path.join(self.base, "odd.zip"), [
+            ("AddOns/OtherAddon/OtherAddon.toc", "## Version: 1\n")], meta)
+        self.assertEqual(backup.read(path).others, {"OtherAddon": {"name": "ok"}})
+        for bad in (["x"], "text", 7, None):
+            meta["other_addons"] = bad
+            path = raw_backup(os.path.join(self.base, "odd2.zip"), [
+                ("AddOns/OtherAddon/OtherAddon.toc", "## Version: 1\n")], meta)
+            self.assertEqual(backup.read(path).others, {})
+        meta["other_addons"] = {f"Addon{i}": {"name": "x"} for i in range(500)}
+        entries = [(f"AddOns/Addon{i}/Addon{i}.toc", "## Version: 1\n") for i in range(500)]
+        path = raw_backup(os.path.join(self.base, "many.zip"), entries, meta)
+        self.assertEqual(len(backup.read(path).others), backup.MAX_OTHERS)
+
+    def test_one_names_helper(self):
+        """errors has one _names (MAX_NAMES), used by every list line."""
+        six = ["A", "B", "C", "D", "E", "F"]
+        self.assertEqual(errors.MAX_NAMES, 4)
+        self.assertEqual(errors._names(six), "A, B, C, D and 2 more")
+        self.assertEqual(errors._names(six[:4]), "A, B, C, D")
+        self.assertEqual(errors.received_addons(six, []),
+                         "Not on the guild list: A, B, C, D and 2 more.")
+        self.assertEqual(errors.restore_others(["X"]),
+                         "With Addons ticked, these are listed under Other addons too: X.")
+
+    def test_backup_json_size_cap(self):
+        """A huge backup.json is refused before it is read into memory."""
+        meta = {"app": "AddonManager", "format": 1, "pad": "x" * (backup.MAX_INFO + 10)}
+        path = raw_backup(os.path.join(self.base, "huge.zip"), [
+            ("AddOns/OtherAddon/OtherAddon.toc", "## Version: 1\n")], meta)
+        with self.assertRaises(BackupError) as c:
+            backup.read(path)
+        self.assertEqual(c.exception.kind, "not_backup")
+
+    def test_restore_returns_other_addons_record(self):
+        path = backup.make(self.addons, self.out, now=NOW, others=self.RECORD)[0]
+        safety = os.path.join(self.base, "safety")
+        none = backup.restore(path, self.addons, safety, addons=False,
+                              account_map={"ACCOUNT1": "ACCOUNT1"})
+        self.assertEqual(none.others, {})   # Addons unticked: nothing to list
+        result = backup.restore(path, self.addons, safety)
+        self.assertEqual(list(result.others), ["OtherAddon"])
+        self.assertIn("1 other addon added to Other addons.", errors.restored_message(result))
+
     def test_read_refuses_bad_files(self):
         good = ("AddOns/A/A.toc", "## Version: 1\n")
         cases = {
@@ -928,7 +1006,7 @@ class WindowBackupTests(unittest.TestCase):
         dlg.cloud_buttons[7].invoke()
         self.assertEqual(dlg.folder, os.path.join(self.work, "cloud", "Proton Drive",
                                                   backup.FOLDER_NAME))
-        self.assertEqual(dlg.folder_var.get(), errors.saved_to(dlg.folder))
+        self.assertEqual(dlg.folder_var.get(), dlg.folder)   # own line under "Saved to:"
         dlg.handle(("backup_clouds", self.clouds[:1]))   # a late second message: no change
         self.assertEqual(len(dlg.cloud_buttons), 9)
         dlg.close()
@@ -938,6 +1016,92 @@ class WindowBackupTests(unittest.TestCase):
         rest.handle(("backup_clouds", []))   # a late message: ignored by the Restore window
         self.assertEqual(rest.status_var.get(), before)
         self.assertFalse(rest.running)
+
+    def test_restore_brings_back_other_addons(self):
+        """A backup from another PC (this PC knows nothing about its Other addons): the
+        Restore window names them, and right after the restore they show under Other
+        addons, without Check again."""
+        from am import fileinstall
+        record = {"OtherAddon": {"name": "Other Addon", "version": "9.9", "file": "a.zip",
+                                 "date": "2026-11-01"},
+                  "TaxiTime": {"name": "guild one"}}   # a guild addon: never an Other row
+        path = backup.make(self.addons, os.path.join(self.work, "b"), now=NOW,
+                           others=record)[0]
+        shutil.rmtree(os.path.join(self.addons, "OtherAddon"))
+        settings = config.load_settings()
+        settings[fileinstall.SETTING] = {"Kept": {"name": "Kept", "file": "k.zip"}}
+        config.save_settings(settings)
+        fixtures.make_addon_folder(self.addons, "Kept", "1.0")
+        app = self.make_app()
+        self.assertEqual([r.folder for r in app.files.rows], ["Kept"])
+        rest = app.open_restore(show=False, path=path)
+        self.assertIn(errors.restore_others(["OtherAddon"]), self.texts(rest.win))
+        self.assertTrue(rest.start())
+        self.pump(app)
+        self.assertIsNotNone(rest.result)
+        self.assertEqual([r.folder for r in app.files.rows], ["Kept", "OtherAddon"])
+        saved = config.load_settings()[fileinstall.SETTING]
+        self.assertEqual(saved["OtherAddon"], {"name": "Other Addon", "version": "9.9",
+                                               "date": "2026-11-01", "file": ""})
+        self.assertEqual(saved["Kept"]["file"], "k.zip")   # this PC's entries stay
+        self.assertNotIn("TaxiTime", saved)
+        self.assertIn("1 other addon added to Other addons.", app.message_var.get())
+        rest.close()
+
+    def test_restore_counts_only_new_other_addons(self):
+        """Tester L1: two Other addons, one uninstalled, restore: only that one is added
+        and counted; the one still here keeps its entry (file name too). Restoring again
+        (nothing new): no "added" sentence."""
+        from am import fileinstall
+        fixtures.make_addon_folder(self.addons, "Second", "1.0")
+        tracked = {"OtherAddon": {"name": "Other", "version": "9.9", "file": "a.zip",
+                                  "date": "2026-11-01"},
+                   "Second": {"name": "Second", "version": "1.0", "file": "s.zip",
+                              "date": "2026-11-02"}}
+        settings = config.load_settings()
+        settings[fileinstall.SETTING] = tracked
+        config.save_settings(settings)
+        path = backup.make(self.addons, os.path.join(self.work, "b"), now=NOW,
+                           others=tracked)[0]
+        shutil.rmtree(os.path.join(self.addons, "Second"))   # uninstalled since the backup
+        settings = config.load_settings()
+        settings[fileinstall.SETTING] = fileinstall.untrack(tracked, "Second")
+        config.save_settings(settings)
+        app = self.make_app()
+        self.assertEqual([r.folder for r in app.files.rows], ["OtherAddon"])
+        for again in (False, True):
+            rest = app.open_restore(show=False, path=path)
+            self.assertTrue(rest.start())
+            self.pump(app)
+            self.assertIsNotNone(rest.result)
+            message = app.message_var.get()
+            if again:
+                self.assertEqual(rest.result.others, {})
+                self.assertNotIn("other addon", message)
+            else:
+                self.assertEqual(list(rest.result.others), ["Second"])
+                self.assertIn("Restored. 1 other addon added to Other addons.", message)
+            self.assertEqual([r.folder for r in app.files.rows], ["OtherAddon", "Second"])
+            saved = config.load_settings()[fileinstall.SETTING]
+            self.assertEqual(saved["OtherAddon"], tracked["OtherAddon"])   # file kept
+            self.assertEqual(saved["Second"], {"name": "Second", "version": "1.0",
+                                               "date": "2026-11-02", "file": ""})
+            rest.close()
+            self.pump(app)
+
+    def test_new_backup_carries_the_record(self):
+        """Make a backup in the window: the app's Other addons record goes along."""
+        from am import fileinstall
+        settings = config.load_settings()
+        settings[fileinstall.SETTING] = {"OtherAddon": {"name": "Other", "file": "a.zip"}}
+        config.save_settings(settings)
+        app = self.make_app()
+        dlg = app.open_backup(show=False)
+        self.pump(app)
+        self.assertTrue(dlg.start())
+        self.pump(app)
+        self.assertEqual(backup.read(dlg.path).others, {"OtherAddon": {"name": "Other"}})
+        dlg.close()
 
     def found_window(self, docs):
         """A Backups found window over a per-test Documents (built hidden, never shown)."""

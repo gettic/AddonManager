@@ -386,12 +386,15 @@ RESTORE_CHOOSE = "Choose..."
 RESTORE_CHOOSE_FIRST = "Choose which of your accounts gets these settings (or skip)."
 RECEIVED_ADDONS_NOTE = ("Addons from another PC are off. Get the guild's addons with Install / "
                         "Update in the main window; tick Addons only if you trust the sender.")
-MAX_NAMES = 6
+MAX_NAMES = 4   # names shown in a list line; the rest as "and N more"
 
 
-def _names(items):
-    shown = ", ".join(items[:MAX_NAMES])
-    return shown + (f" and {len(items) - MAX_NAMES} more" if len(items) > MAX_NAMES else "")
+def _names(names, most=MAX_NAMES):
+    """'A, B, C, D and 2 more' (one function for every list line)."""
+    names = list(names)
+    if len(names) <= most:
+        return ", ".join(names)
+    return ", ".join(names[:most]) + f" and {len(names) - most} more"
 
 
 def received_addons(not_listed, different):
@@ -500,13 +503,6 @@ SPOKEN_CHECKING = "Checking the addons..."
 SPOKEN_LEFT_OUT = "Spoken addons left out."
 
 
-def _names(names, most=4):
-    names = list(names)
-    if len(names) <= most:
-        return ", ".join(names)
-    return ", ".join(names[:most]) + f" and {len(names) - most} more"
-
-
 def spoken_found(names, size):
     return f"Found Spoken (AI voice-over addon): {_names(names)} (about {limit_text(size)})."
 
@@ -523,6 +519,11 @@ def spoken_tick(size):
 def restore_left_out(names):
     return (f"This backup left out: {_names(names)} (install them yourself if you want "
             "them).")
+
+
+def restore_others(names):
+    """Restore window: the Other addons (from Add file...) a backup's record brings back."""
+    return f"With Addons ticked, these are listed under Other addons too: {_names(names)}."
 
 
 def limit_text(size):
@@ -603,6 +604,9 @@ def addons_label(size):
     return f"{BACKUP_ADDONS} (about {size_text(size)})" if size else BACKUP_ADDONS
 
 
+SAVED_TO = "Saved to:"   # Make a backup: the folder is on its own line under it
+
+
 def saved_to(folder):
     return f"Saved to: {folder}"
 
@@ -650,6 +654,9 @@ def restore_confirm(addons, files, folder):
 
 def restored_message(result):
     text = "Restored."
+    n = len(getattr(result, "others", None) or ())
+    if n:
+        text += f" {n} other addon{'s' if n != 1 else ''} added to Other addons."
     if result.safety:
         text += f" Safety copy: {result.safety}"
     return text + " Restart WoW to use them."

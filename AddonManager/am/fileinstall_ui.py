@@ -195,10 +195,11 @@ class FileInstallDialog:
         win.configure(background=theme.BG)
         win.resizable(False, False)
         win.transient(parent)
-        frame = self.frame = ttk.Frame(win, padding=14)
+        frame = self.frame = ttk.Frame(win, padding=theme.px(12))   # stays under 420 px
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text=TITLE, font=theme.font("bold", bigger=1)).pack(anchor="w")
-        ttk.Label(frame, text=f"From: {plan.name}", wraplength=WRAP,
+        theme.frame_window(win, frame)
+        theme.heading(frame, TITLE).pack(fill="x")
+        ttk.Label(frame, text=f"From: {plan.name}", wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(6, 0))
         # WoW open: installing still works (like guild installs); say so where it's decided.
         self.game_label = None
@@ -206,29 +207,31 @@ class FileInstallDialog:
             from am import errors
             self.game_label = tk.Label(frame, text=errors.GAME_RUNNING,
                                        background=theme.BANNER_BG, foreground=theme.BANNER_TEXT,
-                                       anchor="w", justify="left", wraplength=WRAP, padx=6, pady=4,
+                                       anchor="w", justify="left", wraplength=theme.px(WRAP),
+                                       padx=theme.px(6), pady=theme.px(4),
                                        font=theme.font())
             self.game_label.pack(fill="x", pady=(8, 0))
         ttk.Label(frame, text=FOUND if plan.addons else NOTHING_TO_INSTALL,
-                  style="Muted.TLabel", wraplength=WRAP).pack(anchor="w", pady=(8, 2))
+                  style="Muted.TLabel", wraplength=theme.px(WRAP)).pack(anchor="w", pady=(8, 2))
         self.vars, self.checks = {}, {}
         self._rows_area()
         for folder, why in plan.skipped:
             text = (SKIP_BLIZZARD if why == fileinstall.BLIZZARD else SKIP_BAD_NAME)
             ttk.Label(frame, text=text.format(name=folder), style="Muted.TLabel",
-                      wraplength=WRAP, justify="left").pack(anchor="w")
+                      wraplength=theme.px(WRAP), justify="left").pack(anchor="w")
         left = left_out_line(plan)
         if left:
-            ttk.Label(frame, text=left, style="Muted.TLabel", wraplength=WRAP,
+            ttk.Label(frame, text=left, style="Muted.TLabel", wraplength=theme.px(WRAP),
                       justify="left").pack(anchor="w", pady=(8, 0))
         self.safety_label = ttk.Label(frame, text=SAFETY_NOTE, style="Muted.TLabel",
-                                      wraplength=WRAP, justify="left")
-        self.trust = ttk.Label(frame, text=TRUST_NOTE, style="Muted.TLabel", wraplength=WRAP)
+                                      wraplength=theme.px(WRAP), justify="left")
+        self.trust = ttk.Label(frame, text=TRUST_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP))
         self.trust.pack(anchor="w", pady=(8, 0))
         self.status_var = tk.StringVar()
-        self.status = ttk.Label(frame, textvariable=self.status_var, wraplength=WRAP,
+        self.status = ttk.Label(frame, textvariable=self.status_var, wraplength=theme.px(WRAP),
                                 justify="left")
-        self.status.pack(anchor="w", pady=(8, 0))
+        # packed only while it has text (no empty gap above the buttons)
+        self.status_var.trace_add("write", lambda *_a: self._place_status())
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.buttons = ttk.Frame(frame)
         self.buttons.pack(fill="x", pady=(12, 0))
@@ -236,7 +239,8 @@ class FileInstallDialog:
         self.cancel_button.pack(side="right")
         self.install_button = ttk.Button(self.buttons, text=INSTALL, style="Accent.TButton",
                                          command=self.start)
-        self.install_button.pack(side="right", padx=(0, 6))
+        self.install_button.pack(side="right", padx=(0, theme.px(6)))
+        theme.even_buttons(self.buttons, (CLOSE,))
         if not any(a.can_install for a in plan.addons):
             self.install_button.state(["disabled"])
         self._update_safety()
@@ -263,7 +267,8 @@ class FileInstallDialog:
             outer = ttk.Frame(self.frame)
             outer.pack(fill="x")
             canvas = tk.Canvas(outer, background=theme.BG, highlightthickness=0,
-                               height=MAX_VISIBLE_ROWS * ROW_HEIGHT, width=WRAP + 20)
+                               height=theme.px(MAX_VISIBLE_ROWS * ROW_HEIGHT),
+                               width=theme.px(WRAP + 16))
             bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
             canvas.configure(yscrollcommand=bar.set)
             canvas.pack(side="left", fill="both", expand=True)
@@ -282,12 +287,23 @@ class FileInstallDialog:
             if not a.can_install:
                 var.set(False)
                 check.state(["disabled"])
-            ttk.Label(holder, text=note_for(a), style="Muted.TLabel", wraplength=WRAP - 24,
-                      justify="left").pack(anchor="w", padx=(24, 0))
+            ttk.Label(holder, text=note_for(a), style="Muted.TLabel",
+                      wraplength=theme.px(WRAP - 24),
+                      justify="left").pack(anchor="w", padx=(theme.px(24), 0))
             self.vars[a.folder] = var
             self.checks[a.folder] = check
         if canvas is not None:   # the wheel works over the rows too, not only the gaps
             _wheel(canvas, canvas)
+
+    def _place_status(self):
+        try:
+            if not self.status_var.get():
+                self.status.pack_forget()
+            elif not self.status.winfo_manager():
+                after = self.progress if self.progress.winfo_manager() else self.buttons
+                self.status.pack(anchor="w", pady=(8, 0), before=after)
+        except tk.TclError:
+            pass
 
     def chosen(self):
         return [a.folder for a in self.plan.addons
@@ -408,16 +424,15 @@ class FileAddons:
         widget inside it up to it; the Tk root itself can't be a drop target in
         tkinterdnd2)."""
         app = self.app
+        # As wide as the list's row buttons and Change..., at the same right edge (the
+        # boxes' inner padding + their border).
         self.button = ttk.Button(parent, text=ADD_BUTTON, command=self.add_from_file,
-                                 width=ADD_WIDTH)
-        self.button.pack(side="right")
+                                 width=theme.button_chars(parent))
+        self.button.pack(side="right", padx=(0, getattr(app, "box_right", -1) + 1))
         self.hint = ttk.Label(parent, text=ADD_HINT, style="Muted.TLabel")
-        self.hint.pack(side="right", padx=(0, 8))
+        self.hint.pack(side="right", padx=(0, theme.px(8)))
         self.tip = _tooltip(app, self.button, ADD_TIP + " " + FOLDER_TIP)
-        self.menu = tk.Menu(app.root, tearoff=0, background=theme.SURFACE,
-                            foreground=theme.TEXT, activebackground=theme.ACCENT,
-                            activeforeground=theme.ACCENT_TEXT, borderwidth=1,
-                            font=theme.font())
+        self.menu = tk.Menu(app.root, tearoff=0, **theme.menu_options())
         self.menu.add_command(label=FILE_MENU, command=self.add_from_file)
         self.menu.add_command(label=FOLDER_MENU, command=self.add_from_folder)
         self.button.bind("<Button-3>", self._menu_popup)
@@ -466,24 +481,31 @@ class FileAddons:
         self.cells, self._grid_rows = [], 0
         if not self.rows:
             return
-        head = ttk.Frame(frame)
-        head.grid(row=start, column=0, columnspan=5, sticky="w", pady=(10, 2))
-        ttk.Label(head, text=OTHER_ADDONS, font=theme.font("bold")).pack(side="left")
-        ttk.Label(head, text=OTHER_NOTE, style="Muted.TLabel").pack(side="left", padx=(8, 0))
+        # One row height with the guild rows (the list scrolls a row at a time).
+        row_h = getattr(self.app, "_row_h", 0)
+        gap = getattr(self.app, "_col_gap", lambda c: col_gap)
+        head = ttk.Frame(frame, style="List.TFrame")
+        head.grid(row=start, column=0, columnspan=5, sticky="sew", pady=(0, theme.px(2)))
+        ttk.Label(head, text=OTHER_ADDONS, style="Head.TLabel",
+                  background=theme.PANEL).pack(side="left", anchor="s")
+        ttk.Label(head, text=OTHER_NOTE, style="Muted.TLabel",
+                  background=theme.PANEL).pack(side="left", anchor="s", padx=(theme.px(8), 0))
+        frame.rowconfigure(start, minsize=row_h)
         for n, _row in enumerate(self.rows):
             i = start + 1 + n
             labels = []
             for col in range(4):
-                label = ttk.Label(frame)
-                label.grid(row=i, column=col, sticky="w", padx=(0, col_gap),
-                           pady=2 if col == 0 else 0)
+                extra = {"foreground": theme.NAME, "font": theme.font("bold")} if col == 0 else {}
+                label = ttk.Label(frame, background=theme.PANEL, **extra)
+                label.grid(row=i, column=col, sticky="nsew", padx=(0, gap(col)))
                 labels.append(label)
-            button = ttk.Button(frame, width=10, style="Uninstall.TButton")
+            button = ttk.Button(frame, width=theme.button_chars(frame),
+                                style="Uninstall.Item.TButton")
             button.grid(row=i, column=4, sticky="e")
             for w in labels:
                 touch.bind_menu(w, lambda e, k=n: self._row_menu_popup(e, k))
             button.bind("<Button-3>", lambda e, k=n: self._row_menu_popup(e, k))
-            frame.rowconfigure(i, minsize=button.winfo_reqheight())
+            frame.rowconfigure(i, minsize=max(row_h, button.winfo_reqheight()))
             self.cells.append({"labels": labels, "button": button,
                                "name_tip": _tooltip(self.app, labels[0], "")})
         self._grid_rows = len(self.rows) + 1
@@ -494,7 +516,7 @@ class FileAddons:
         app._set_enabled(self.button, free)
         for row, cells in zip(self.rows, self.cells):
             name, installed, latest, status = cells["labels"]
-            shown = fit_title(row.title, self._title_px(), app._text_width)
+            shown = fit_title(row.title, self._title_px(), app._name_width)
             name.configure(text=shown)
             cells["name_tip"].text = row.title if shown != row.title else ""
             installed.configure(text=versions.display(row.version) if row.version else "?")
@@ -515,7 +537,7 @@ class FileAddons:
         """How wide an Other addon's title may be: as wide as the widest guild addon name
         (so the titles never set the window's width), at least MIN_TITLE_PX."""
         app = self.app
-        widest = max((app._text_width(r.name) for r in app.rows), default=0)
+        widest = max((app._name_width(r.name) for r in app.rows), default=0)
         return max(widest, MIN_TITLE_PX)
 
     def _free(self):

@@ -510,6 +510,24 @@ class ReplaceTests(Base):
 
 
 class TrackingTests(Base):
+    def test_merge_restored(self):
+        """A restored backup's record: adds only folders not tracked here; a folder still
+        tracked here (any case) keeps this PC's entry incl. its file name; skips guild
+        folders and bad names; new entries never get a source file name."""
+        here = {"details": {"name": "Old", "version": "1", "file": "old.zip", "date": "d"},
+                "Kept": {"name": "Kept", "file": "k.zip"}}
+        restored = {"Details": {"name": "Details!", "version": "2", "file": "x.zip"},
+                    "Kept": {"name": "Other"}, "TaxiTime": {"name": "guild"},
+                    "..": {"name": "bad"}, "Bare": {}, "New": {"name": "New!", "version": "3"}}
+        out = fileinstall.merge_restored(here, restored, ["taxitime"])
+        self.assertEqual(out, {"details": here["details"], "Kept": here["Kept"],
+                               "Bare": {"name": "Bare", "file": ""},
+                               "New": {"name": "New!", "version": "3", "file": ""}})
+        self.assertEqual(fileinstall.merge_restored(here, {"DETAILS": {"name": "x"}}),
+                         fileinstall.clean_tracked(here))   # nothing new: unchanged
+        self.assertEqual(fileinstall.merge_restored(here, None), fileinstall.clean_tracked(here))
+        self.assertEqual(fileinstall.merge_restored(None, "junk"), {})
+
     def test_rows_remove_and_needed_by(self):
         e = dict(af.addon_files("!Lib Core", "1.1"))
         e.update(af.addon_files("UsesLib", "1.0"))
@@ -894,9 +912,11 @@ class WindowFileTests(unittest.TestCase):
                 add = app.files.button
                 row_buttons = [w[1] for w in app.row_widgets.values() if w[1] is not None]
                 self.assertTrue(row_buttons)
-                for b in row_buttons:
-                    self.assertEqual((add.winfo_reqwidth(), add.winfo_reqheight()),
-                                     (b.winfo_reqwidth(), b.winfo_reqheight()))
+                for b in row_buttons:   # same width (row buttons are a bit slimmer: a gap)
+                    self.assertEqual(add.winfo_reqwidth(), b.winfo_reqwidth())
+                self.assertEqual((add.winfo_reqwidth(), add.winfo_reqheight()),
+                                 (app.folder_button.winfo_reqwidth(),
+                                  app.folder_button.winfo_reqheight()))
                 self.assertIn(str(add.cget("style")), ("", "TButton"))   # same look as Install
                 from tkinter import ttk
                 natural = ttk.Button(add.master, text=add.cget("text"), width=0)
@@ -936,9 +956,9 @@ class WindowFileTests(unittest.TestCase):
         cells = app.files.cells[0]
         shown = cells["labels"][0].cget("text")
         self.assertTrue(shown.endswith("...") and len(shown) <= fileinstall_ui.MAX_TITLE)
-        self.assertLessEqual(app._text_width(shown), app.files._title_px())
+        self.assertLessEqual(app._name_width(shown), app.files._title_px())
         self.assertEqual(cells["name_tip"].text, self.LONG_TITLE)
-        widest = max(app._text_width(r.name) for r in app.rows)
+        widest = max(app._name_width(r.name) for r in app.rows)
         self.assertLessEqual(self.root.minsize()[0],
                              before + max(0, fileinstall_ui.MIN_TITLE_PX - widest))
         self.assertLessEqual(self.root.minsize()[0], 680)
@@ -954,8 +974,6 @@ class WindowFileTests(unittest.TestCase):
         simulate = os.name == "nt"
         base = float(self.root.tk.call("tk", "scaling"))
         patches = [mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True),
-                   mock.patch.object(ui, "NARROW_WIDTH", 0),
-                   mock.patch.object(ui, "CHECK_WIDTH", 0),
                    mock.patch.object(ui, "SETTINGS_BUTTON", "Settings"),
                    mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas")] if simulate else []
         for p in patches:
@@ -979,8 +997,12 @@ class WindowFileTests(unittest.TestCase):
         self.assertEqual(app.check_button.cget("style"), "Slim.TButton")
         self.assertIs(app.backup_main_button.master, bottom)   # [Betas] [Backup] [Settings]
         self.assertEqual(app.backup_main_button.cget("style"), "Slim.TButton")
-        self.assertEqual(str(app.backup_main_button.cget("width")), "0")   # as narrow as its text
-        self.assertLessEqual(bottom.winfo_reqwidth(), 540 - 30)
+        # the four bottom buttons share one width (measured), all one height
+        widths = {str(b.cget("width")) for b in (app.check_button, app.all_button,
+                                                 app.backup_main_button, app.settings_button)}
+        self.assertEqual(len(widths), 1)
+        self.assertLessEqual(bottom.winfo_reqwidth(), self.root.minsize()[0] - 2 * app.margin)
+        self.assertLessEqual(bottom.winfo_reqwidth(), 680 - 40)
         # Install all and Update all: the same width, so the row fits with either text
         from am import errors
         sizes = []
@@ -988,19 +1010,18 @@ class WindowFileTests(unittest.TestCase):
             app.all_button.configure(text=text)
             self.root.update_idletasks()
             sizes.append((app.all_button.winfo_reqwidth(), bottom.winfo_reqwidth()))
-            self.assertLessEqual(bottom.winfo_reqwidth(), 540 - 30)
+            self.assertLessEqual(bottom.winfo_reqwidth(), 680 - 40)
         self.assertEqual(sizes[0], sizes[1])
         self.assertLessEqual(app.files.button.master.winfo_reqwidth(), 540 - 30)
         for b in [w[1] for w in app.row_widgets.values() if w[1] is not None]:
-            self.assertEqual((app.files.button.winfo_reqwidth(), app.files.button.winfo_reqheight()),
-                             (b.winfo_reqwidth(), b.winfo_reqheight()))
+            self.assertEqual(app.files.button.winfo_reqwidth(), b.winfo_reqwidth())
         # the button above the list, below the folder line
-        children = app.list_frame.master.pack_slaves()
-        self.assertLess(children.index(app.files.button.master), children.index(app.list_frame))
+        children = app.outer.pack_slaves()
+        self.assertLess(children.index(app.files.button.master), children.index(app.list_box))
         before = self.root.minsize()[0]
         self.install_long_title(app)
         # the title adds nothing to what the guild rows already need (and stays in 680 px)
-        widest = max(app._text_width(r.name) for r in app.rows)
+        widest = max(app._name_width(r.name) for r in app.rows)
         self.assertLessEqual(self.root.minsize()[0],
                              before + max(0, fileinstall_ui.MIN_TITLE_PX - widest))
         self.assertLessEqual(self.root.minsize()[0], 680)

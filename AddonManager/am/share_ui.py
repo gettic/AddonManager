@@ -102,21 +102,23 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.newest_radio.pack(anchor="w", pady=(2, 0))
         self.other_radio = ttk.Radiobutton(self.frame, text=errors.SEND_CHOSEN, value="other",
                                            variable=self.choice)
-        self.other_button = ttk.Button(self.frame, text=errors.SEND_OTHER, command=self.pick)
+        self.other_button = ttk.Button(self.frame, text=errors.SEND_OTHER, command=self.pick,
+                                       width=max(theme.button_chars(self.frame), theme.chars(
+                                           self.frame, (errors.SEND_OTHER,))))
         self.other_button.pack(anchor="w", pady=(4, 0))
-        ttk.Label(self.frame, text=errors.SEND_PRIVATE, wraplength=WRAP,
+        ttk.Label(self.frame, text=errors.SEND_PRIVATE, wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(10, 0))
-        ttk.Label(self.frame, text=errors.SEND_SAFE, style="Muted.TLabel", wraplength=WRAP,
+        ttk.Label(self.frame, text=errors.SEND_SAFE, style="Muted.TLabel", wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(4, 0))
         self._later_area()
         self.code_area = ttk.Frame(self.frame)
         self.code_area.pack(fill="x")
-        self._status_area()
+        self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
         self.go_button = ttk.Button(self.buttons, text=errors.SEND_GET_CODE,
                                     style="Accent.TButton", command=self.start)
-        self.go_button.pack(side="right", padx=(0, 6))
+        self.go_button.pack(side="right", padx=(0, theme.px(6)))
         folder = backup_ui.backup_folder(config.load_settings())
         threading.Thread(target=_newest_worker, daemon=True,
                          args=(app.queue, self.tag, folder)).start()
@@ -144,7 +146,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.later_check = ttk.Checkbutton(area, variable=self.later_var,
                                            command=self.save_later)
         self.later_check.grid(row=0, column=0, sticky="nw")
-        tick_text = ttk.Label(area, text=errors.LATER_TICK, wraplength=WRAP - 30,
+        tick_text = ttk.Label(area, text=errors.LATER_TICK, wraplength=theme.px(WRAP - 30),
                               justify="left")
         tick_text.grid(row=0, column=1, sticky="w")
         tick_text.bind("<Button-1>", lambda _e: self.toggle_later())
@@ -155,9 +157,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         ttk.Label(keep, text=errors.LATER_KEEP).pack(side="left")
         self.hours_text = tk.StringVar(value=errors.later_hours(self.hours_var.get()))
         self.hours_button = ttk.Menubutton(keep, textvariable=self.hours_text, width=9)
-        menu = tk.Menu(self.hours_button, tearoff=0, background=theme.SURFACE,
-                       foreground=theme.TEXT, activebackground=theme.ACCENT,
-                       activeforeground=theme.ACCENT_TEXT)
+        menu = tk.Menu(self.hours_button, tearoff=0, **theme.menu_options())
         for h in share_later.HOURS:
             menu.add_radiobutton(label=errors.later_hours(h), value=h,
                                  variable=self.hours_var, command=self.save_later)
@@ -173,7 +173,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             link.pack(side="left", padx=(0, 10))
             link.bind("<Button-1>", lambda _e, u=url: self.app.open_link(u))
             self.later_links.append(link)
-        ttk.Label(rest, text=errors.LATER_NOTE, style="Muted.TLabel", wraplength=WRAP - 30,
+        ttk.Label(rest, text=errors.LATER_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP - 30),
                   justify="left").pack(anchor="w", pady=(4, 0))
         self._later_state()
 
@@ -237,6 +237,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             if self.ask_spoken():
                 return True
             flags["leave_out"] = self.leave_out()
+            flags["others"] = backup_ui.other_record(self.app)   # Other addons record
             self.spoken_once = None
         for w in (self.new_radio, self.newest_radio, self.other_radio, self.other_button,
                   self.go_button, self.later_check):
@@ -269,14 +270,15 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         if self.later:   # the countdown runs to the switch to "later"
             seconds = min(seconds, share_later.LATER_AFTER)
         self.ends_at = time.monotonic() + seconds
-        ttk.Label(self.code_area, text=errors.SEND_CODE_HEAD, wraplength=WRAP,
+        ttk.Label(self.code_area, text=errors.SEND_CODE_HEAD, wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(10, 0))
         self.code_label = ttk.Label(self.code_area, text=code, font=code_font(),
                                     foreground=theme.TEXT)
         self.code_label.pack(anchor="w", pady=(4, 0))
         line = ttk.Frame(self.code_area)
         line.pack(fill="x", pady=(4, 0))
-        self.copy_button = ttk.Button(line, text=errors.SEND_COPY, command=self.copy)
+        self.copy_button = ttk.Button(line, text=errors.SEND_COPY, command=self.copy,
+                                      width=theme.button_chars(line))
         self.copy_button.pack(side="left")
         self.ends_var = tk.StringVar(value=self._ends_text(seconds))
         ttk.Label(line, textvariable=self.ends_var, style="Muted.TLabel").pack(
@@ -380,14 +382,14 @@ class ReceiveDialog(_ShareDialog):
         self.entry.bind("<Return>", lambda _e: self.start())
         ttk.Label(self.frame, text=errors.RECEIVE_EXAMPLE, style="Muted.TLabel").pack(
             anchor="w", pady=(2, 0))
-        ttk.Label(self.frame, text=errors.RECEIVE_NOTE, style="Muted.TLabel", wraplength=WRAP,
+        ttk.Label(self.frame, text=errors.RECEIVE_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(10, 0))
-        self._status_area()
+        self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
         self.go_button = ttk.Button(self.buttons, text=errors.RECEIVE_OK,
                                     style="Accent.TButton", command=self.start)
-        self.go_button.pack(side="right", padx=(0, 6))
+        self.go_button.pack(side="right", padx=(0, theme.px(6)))
         self._show(self.entry)
 
     def start(self):
@@ -461,10 +463,12 @@ class ReceiveDialog(_ShareDialog):
         self.failed = set()
         self.progress.pack_forget()
         area = ttk.Frame(self.frame)
-        area.pack(fill="x", before=self.status, pady=(10, 0))
-        ttk.Label(area, text=errors.LATER_GOT, wraplength=WRAP, justify="left").pack(
+        below = (self.status if self.status.winfo_manager() else
+                 self.progress if self.progress.winfo_manager() else self.buttons)
+        area.pack(fill="x", before=below, pady=(10, 0))
+        ttk.Label(area, text=errors.LATER_GOT, wraplength=theme.px(WRAP), justify="left").pack(
             anchor="w")
-        ttk.Label(area, text=errors.LATER_KEEP_OPEN, style="Muted.TLabel", wraplength=WRAP,
+        ttk.Label(area, text=errors.LATER_KEEP_OPEN, style="Muted.TLabel", wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(4, 0))
         line = ttk.Frame(area)
         line.pack(anchor="w", pady=(6, 0))
@@ -472,7 +476,8 @@ class ReceiveDialog(_ShareDialog):
                                           style="Accent.TButton", command=self.download)
         self.download_button.pack(side="left")
         self.open_button = ttk.Button(line, text=errors.LATER_OPEN, command=self.pick_download)
-        self.open_button.pack(side="left", padx=(6, 0))
+        self.open_button.pack(side="left", padx=(theme.px(6), 0))
+        theme.even_buttons(line)
         self.go_button.pack_forget()
         self.set_status(errors.LATER_LOOKING)
         self._poll_download()

@@ -369,10 +369,10 @@ class WindowRemoveTests(unittest.TestCase):
         app = self.make_app()
         self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
         self.assertIs(app.remove_widgets["TaxiTime"], app.row_widgets["TaxiTime"][1])
-        self.assertEqual(app.remove_widgets["TaxiTime"].cget("style"), "Uninstall.TButton")
+        self.assertEqual(app.remove_widgets["TaxiTime"].cget("style"), "Uninstall.Item.TButton")
         self.assertEqual(self.status(app, "GuildHub"), ("Not installed", "Install"))
         self.assertIsNone(app.remove_widgets["GuildHub"])
-        self.assertEqual(app.row_widgets["GuildHub"][1].cget("style"), "TButton")
+        self.assertEqual(app.row_widgets["GuildHub"][1].cget("style"), "Accent.Item.TButton")
         cells = app._cells[[r.folder for r in app.rows].index("GuildHub")]
         self.assertEqual(cells["button_tip"].text, "")
         # No X column any more: nothing in grid column 5.
@@ -384,7 +384,7 @@ class WindowRemoveTests(unittest.TestCase):
         self.assertIsNone(app.remove_widgets["TaxiTime"])
         cells = app._cells[[r.folder for r in app.rows].index("TaxiTime")]
         self.assertEqual(cells["button_tip"].text, errors.REMOVE_RIGHT_CLICK)
-        self.assertEqual(app.row_widgets["TaxiTime"][1].cget("style"), "TButton")
+        self.assertEqual(app.row_widgets["TaxiTime"][1].cget("style"), "Accent.Item.TButton")
         # Busy: the Uninstall button is greyed out like the others.
         fixtures.make_addon_folder(self.addons, "TaxiTime", "1.3.0")
         app.busy = True

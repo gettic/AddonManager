@@ -44,6 +44,11 @@ MAX_TOTAL = 8 * 1024 * 1024 * 1024         # unpacked size of a whole backup
 SPARE_DISK = 50 * 1024 * 1024              # kept free on a drive after a restore
 MAX_RATIO = 200                            # compressed -> unpacked, per file over 1 MB
 MAX_WTF_DEPTH = 4                          # realm/character/SavedVariables/file
+MAX_INFO = 256 * 1024                      # backup.json bigger than this: not a backup
+OTHERS_KEY = "other_addons"                # backup.json: the "Other addons" (Add file...) record
+OTHERS_FIELDS = ("name", "version", "date")   # never the source file name (private)
+MAX_OTHERS = 200
+MAX_OTHER_TEXT = 200
 
 ADDONS, SETTINGS, BINDINGS = "addons", "settings", "bindings"
 
@@ -800,9 +805,36 @@ def _os_error(e, what):
                        err.detail)
 
 
-def _write_zip(path, files, kind, parts, progress=None, left_out=()):
+def _clean_others(value, folders=None):
+    """The "Other addons" record as {folder: {name, version, date}}: only plain addon
+    names (in folders, when given), only string fields of at most MAX_OTHER_TEXT, at most
+    MAX_OTHERS entries, never the source file name. Anything else is dropped; never raises.
+    Used both when writing (from the settings) and when reading (from any backup.json)."""
+    out = {}
+    if not isinstance(value, dict):
+        return out
+    allowed = None if folders is None else {f.lower(): f for f in folders}
+    for folder, entry in value.items():
+        if len(out) >= MAX_OTHERS:
+            break
+        if not (isinstance(folder, str) and isinstance(entry, dict)
+                and installer.addon_name_ok(folder) and _addon_name_ok(folder)):
+            continue
+        if allowed is not None:
+            folder = allowed.get(folder.lower())
+            if folder is None:
+                continue
+        if any(f.lower() == folder.lower() for f in out):
+            continue
+        out[folder] = {k: v for k, v in entry.items()
+                       if k in OTHERS_FIELDS and isinstance(v, str) and len(v) <= MAX_OTHER_TEXT}
+    return out
+
+
+def _write_zip(path, files, kind, parts, progress=None, left_out=(), others=None):
     """Write files [(arcname, source)] + backup.json into path (via path.part).
-    left_out: addon folders the player chose to leave out (listed in backup.json)."""
+    left_out: addon folders the player chose to leave out (listed in backup.json).
+    others: the "Other addons" record (already cleaned) for folders in this zip."""
     part = path + ".part"
     total = _size(files) or 1
     done = 0
@@ -811,6 +843,8 @@ def _write_zip(path, files, kind, parts, progress=None, left_out=()):
             "parts": sorted(parts)}
     if left_out:
         info["left_out"] = sorted(left_out, key=str.lower)
+    if others:   # an extra key: older app versions ignore it (FORMAT stays 1)
+        info[OTHERS_KEY] = {f: others[f] for f in sorted(others, key=str.lower)}
     try:
         with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED, compresslevel=6,
                              strict_timestamps=False) as zf:
@@ -884,10 +918,12 @@ def check_space(needs, disk_usage=None):
 
 
 def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress=None,
-         leave_out=()):
+         leave_out=(), others=None):
     """Make a backup in dest_folder. Returns (path, size in bytes, counts dict).
     settings: everything restorable below WTF\\Account (incl. key bindings and macros).
-    leave_out: addon folders not to save (the Spoken ones, when the player said so)."""
+    leave_out: addon folders not to save (the Spoken ones, when the player said so).
+    others: the app's "Other addons" record (settings file_addons); the entries for
+    folders in this backup go into backup.json so a restore can list them again."""
     p = places(addons_dir)
     dest_folder = os.path.abspath(dest_folder)
     if in_game_folder(dest_folder, p.addons):
@@ -907,8 +943,9 @@ def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress
     except OSError as e:
         raise _os_error(e, f"making {dest_folder}") from e
     parts = ([ADDONS] if files else []) + ([SETTINGS] if wtf_files else [])
+    record = _clean_others(others, folders) if files else {}
     path = _write_zip(backup_path(dest_folder, now), files + wtf_files, "backup", parts, progress,
-                      left)
+                      left, record)
     counts = {"addons": len(folders), "settings_files": len(wtf_files)}
     log.info("Backup made: %s (%s)", path, counts)
     return path, os.path.getsize(path), counts
@@ -929,6 +966,7 @@ class BackupInfo:
     received: bool = False     # came from another PC with a send code (am\share.py)
     forever_tocs: dict = dataclasses.field(default_factory=dict)   # folder -> ZipInfo
     left_out: list = dataclasses.field(default_factory=list)   # folders the maker left out
+    others: dict = dataclasses.field(default_factory=dict)     # "Other addons" record
 
     @property
     def characters(self):
@@ -957,7 +995,14 @@ def read(zip_path, received=None):
         raise BackupError("not_backup", str(e)) from e
     with zf:
         try:
-            raw = zf.read(INFO_NAME) if INFO_NAME in zf.NameToInfo else b""
+            raw = b""
+            if INFO_NAME in zf.NameToInfo:
+                if zf.getinfo(INFO_NAME).file_size > MAX_INFO:
+                    raise BackupError("not_backup", "backup.json too big")
+                with zf.open(INFO_NAME) as f:
+                    raw = f.read(MAX_INFO + 1)   # the size in the zip can lie
+                if len(raw) > MAX_INFO:
+                    raise BackupError("not_backup", "backup.json too big")
             meta = json.loads(raw.decode("utf-8")) if raw else None
         except (ValueError, OSError, zipfile.BadZipFile, RuntimeError, EOFError) as e:
             raise BackupError("not_backup", str(e)) from e
@@ -1044,6 +1089,8 @@ def read(zip_path, received=None):
                 raise BackupError("unsafe", f"duplicate folder {f!r}")
         if not info.addons and not info.accounts:
             raise BackupError("nothing", zip_path)
+        if info.kind != "safety":   # only for addon folders really in this backup
+            info.others = _clean_others(meta.get(OTHERS_KEY), info.addons)
     return info
 
 
@@ -1071,6 +1118,7 @@ class RestoreResult:
     addons: list
     files: int
     safety: str = None
+    others: dict = dataclasses.field(default_factory=dict)   # record of restored Other addons
 
 
 def default_map(backup_accounts, local):
@@ -1400,4 +1448,6 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
     _clean_up(p, journal, swapped_ok=True)
     log.info("Restored %d addons and %d settings files from %s", len(addon_targets),
              len(file_targets), zip_path)
-    return RestoreResult([f for f, _t in addon_targets], len(file_targets), safety)
+    restored = [f for f, _t in addon_targets]
+    return RestoreResult(restored, len(file_targets), safety,
+                         _clean_others(info.others, restored))

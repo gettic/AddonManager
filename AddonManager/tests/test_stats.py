@@ -371,7 +371,7 @@ class WindowTests(unittest.TestCase):
         # Add file...: on its own line above the list (every system), so the bottom row
         # keeps real room (at least 20 px) inside the smallest window.
         self.assertIsNot(app.files.button.master, row)
-        self.assertLessEqual(row.winfo_reqwidth(), 560 - 20 - 20)
+        self.assertLessEqual(row.winfo_reqwidth(), ui.MIN_WIDTH - 20 - 20)
 
     def test_waits_for_app_update_check(self):
         exe = os.path.join(self.work, "AddonManager.exe")

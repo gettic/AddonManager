@@ -13,7 +13,7 @@ from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
 from am import (APP_NAME, APP_VERSION, backup, backup_ui, config, errors, gamecheck, github,
-                fileinstall_ui, icon, installer, instance, selfupdate, share_ui,
+                fileinstall, fileinstall_ui, icon, installer, instance, selfupdate, share_ui,
                 stats, theme, toc, touch, trash, versions, wowpath)
 from am import manifest as manifest_mod
 
@@ -45,27 +45,28 @@ if os.name != "nt":
 SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
 REMOVED_SETTING = "removed_addons"   # settings.json: guild addons the player removed
 UNINSTALL_BUTTON = "Uninstall"   # the row's button when the addon is installed and current
-MIN_WIDTH = 560   # the window's smallest width (more if the rows need it)
-MIN_HEIGHT = 320
-START_WIDTH, START_HEIGHT = 680, 420   # first start (taller if the content needs it)
+MIN_WIDTH = 580   # the window's smallest width (more if the rows need it)
+MIN_HEIGHT = 360   # at 100 % (theme.px scales it)
+START_WIDTH, START_HEIGHT = 680, 500   # first start at 100 % (scaled; taller if needed)
+# The banner at the top of the main window (the user's words). If it doesn't fit on one
+# line in the smallest window, BANNER_HEAD is the heading and BANNER_SUB a line under it.
+BANNER_TITLE = "Gettic's Addon Manager - A Member of Dane Hird"
+BANNER_HEAD, BANNER_SUB = "Gettic's Addon Manager", "A Member of Dane Hird"
+ROW_GAP = 3   # px (100 %) above and below each list row's button
 SCREEN_MARGIN = 80   # the window never grows taller than the screen minus this (taskbar)
 WINDOW_SETTING = "window"   # 'WxH+X+Y' where the player left the window
 # Linux only: the bottom row's buttons with less side padding (its fonts are about 1.2x
 # wider), so the row keeps real room inside the smallest window. Windows unchanged.
 LINUX_SLIM_BUTTONS = os.name != "nt"
-SLIM_PADDING = (6, 4)
+SLIM_PADDING = (6, 3)   # px at 100 %: less side padding, same height as every button
 COL_GAP = 10 if os.name == "nt" else LINUX_COL_GAP   # space after the list's text columns
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
 COPY_MENU = "Copy"
 OPEN_ADDONS_MENU = "Open AddOns folder"
 OPEN_LOG_MENU = "Open log folder"
 SETTINGS_BUTTON = "⚙ Settings" if os.name == "nt" else "Settings"
-# Bottom row button widths (ttk: negative = at least that many characters, 0 = as wide as
-# the text), so Check again ... Backup, Settings fit the smallest window: on Windows Backup
-# and Settings at least 8 characters; on Linux (fonts about 1.2x wider) Check again, Backup
-# and Settings as narrow as their text. None = the theme's normal width.
-NARROW_WIDTH = -8 if os.name == "nt" else 0
-CHECK_WIDTH = None if os.name == "nt" else 0
+# The bottom row's four buttons share one width: the widest of their texts measured in
+# the button font (theme.chars), so they never cut a text and line up.
 BETA_TEXT = "Show beta versions"
 # The main window's box: shorter on Linux, whose fonts are wider (keeps the bottom row
 # inside the smallest window). The Settings window always says BETA_TEXT.
@@ -95,8 +96,9 @@ class Tooltip:
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
         tk.Label(self.tip, text=self.text, background=theme.SURFACE, foreground=theme.TEXT,
-                 relief="solid", borderwidth=1, wraplength=320, justify="left",
-                 font=theme.font()).pack(ipadx=4, ipady=2)
+                 relief="flat", borderwidth=0, highlightthickness=1,
+                 highlightbackground=theme.BORDER, wraplength=theme.px(320), justify="left",
+                 font=theme.font()).pack(ipadx=theme.px(4), ipady=theme.px(2))
 
     def hide(self, _event=None):
         if self.tip:
@@ -200,14 +202,15 @@ class App:
         self._polls = 0
 
         root.title(APP_NAME)
-        root.geometry(f"{START_WIDTH}x{START_HEIGHT}")
-        root.minsize(MIN_WIDTH, MIN_HEIGHT)
+        theme.apply(root)   # first: sizes below follow the display scaling
+        start = [theme.px(START_WIDTH), theme.px(START_HEIGHT)]
+        root.geometry(f"{start[0]}x{start[1]}")
+        root.minsize(MIN_WIDTH, theme.px(MIN_HEIGHT))
         self._min_width = MIN_WIDTH   # grows if the list's rows need more (see _fit_min_width)
         self._need_h = 0              # the height the content asked for last (see _fit_height)
-        self._size = [START_WIDTH, START_HEIGHT]   # used until the window is on screen
+        self._size = start            # used until the window is on screen
         self.remember_window = False  # run() turns it on (never in hidden/test runs)
         root.protocol("WM_DELETE_WINDOW", self.close)
-        theme.apply(root)
         icon.apply(root)
         self._build()
         # F5 / Ctrl+R: Check again (ignored while busy).
@@ -233,68 +236,82 @@ class App:
 
     # ---------- layout ----------
     def _build(self):
-        outer = ttk.Frame(self.root, padding=10)
+        # Every box (folder, update bar, list) has the same inner padding, so Change...,
+        # Add file..., Later and the row buttons end at one right edge.
+        P = self.box_pad = theme.px(8)
+        # Right inside every box: room for the list's thin scroll bar (px(4) + bar + px(4)),
+        # so Change..., Add file..., Later and the row buttons share one right edge with or
+        # without the bar.
+        Q = self.box_right = 2 * theme.px(4) + theme.px(6)
+        self.margin = theme.px(14)
+        outer = self.outer = ttk.Frame(self.root)
         outer.pack(fill="both", expand=True)
+        # The gold double line + knot corners (theme.Frame); `clear` keeps text and
+        # buttons out of the knots' squares.
+        self.frame_art = theme.Frame(self.root, outer, self.margin, corners=True)
+        clear = self.corner_clear = max(0, self.frame_art.clear - self.margin)
+        self._build_banner(outer, clear)
 
-        folder = ttk.LabelFrame(outer, text="WoW Forever folder", padding=8)
-        folder.pack(fill="x", pady=(0, 6))
+        folder = ttk.LabelFrame(outer, text="WoW Forever folder",
+                                padding=(P, P, Q - 1, P))   # its border is 2 px
+        folder.pack(fill="x", pady=(0, theme.px(6)))
         self.folder_var = tk.StringVar(value=NOT_CHOSEN)
         # Read-only but selectable: Ctrl+C and right-click Copy (copy only, no typing).
         self.folder_entry = ttk.Entry(folder, textvariable=self.folder_var, state="readonly",
                                       style="Muted.Path.TEntry", takefocus=0)
         self.folder_entry.grid(row=0, column=0, sticky="ew")
-        self.folder_menu = tk.Menu(self.root, tearoff=0, background=theme.SURFACE,
-                                   foreground=theme.TEXT, activebackground=theme.ACCENT,
-                                   activeforeground=theme.ACCENT_TEXT, borderwidth=1,
-                                   font=theme.font())
+        self.folder_menu = tk.Menu(self.root, tearoff=0, **theme.menu_options())
         self.folder_menu.add_command(label=COPY_MENU, command=self.copy_folder)
         self.folder_menu.add_command(label=OPEN_ADDONS_MENU, command=self.open_addons_folder)
         self.folder_menu.add_command(label=OPEN_LOG_MENU, command=self.open_log_folder)
         touch.bind_menu(self.folder_entry, self._folder_menu_popup)
         # Right-click on an addon row: Remove <name>... (see _row_menu_popup).
-        self.row_menu = tk.Menu(self.root, tearoff=0, background=theme.SURFACE,
-                                foreground=theme.TEXT, activebackground=theme.ACCENT,
-                                activeforeground=theme.ACCENT_TEXT, borderwidth=1,
-                                font=theme.font())
+        self.row_menu = tk.Menu(self.root, tearoff=0, **theme.menu_options())
         self.row_menu.add_command(label="Remove...")
         self.folder_entry.bind("<Control-c>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_entry.bind("<Control-C>", lambda _e: (self.copy_folder(), "break")[1])
-        self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder)
-        self.folder_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder,
+                                        width=self._row_chars())
+        self.folder_button.grid(row=0, column=1, sticky="e", padx=(P, 0))
         folder.columnconfigure(0, weight=1)
         # "Add file..." gets its own line above the list, so the bottom row keeps room
         # (Backup and Settings) inside the smallest window.
         add_row = ttk.Frame(outer)
-        add_row.pack(fill="x", pady=(0, 2))
+        add_row.pack(fill="x", pady=(0, theme.px(4)))
         self.files.build_button(add_row, outer)
 
         self.banner_var = tk.StringVar()
         self.banner = tk.Label(outer, textvariable=self.banner_var, background=theme.BANNER_BG,
-                               foreground=theme.BANNER_TEXT,
-                               anchor="w", justify="left", wraplength=640, padx=6, pady=4,
+                               foreground=theme.BANNER_TEXT, highlightthickness=1,
+                               highlightbackground=theme.ACCENT, anchor="w", justify="left",
+                               wraplength=theme.px(620), padx=P, pady=theme.px(4),
                                font=theme.font())
 
         # The app's own update: one line, shown only when there is something to say.
-        self.update_bar = tk.Frame(outer, background=theme.SURFACE, highlightthickness=1,
-                                   highlightbackground=theme.ACCENT, padx=6, pady=4)
-        self.update_text = tk.Label(self.update_bar, background=theme.SURFACE,
+        self.update_bar = tk.Frame(outer, background=theme.UPDATE_BG, highlightthickness=1,
+                                   highlightbackground=theme.ACCENT_BORDER, padx=P,
+                                   pady=theme.px(4))
+        self.update_text = tk.Label(self.update_bar, background=theme.UPDATE_BG,
                                     foreground=theme.TEXT, anchor="w", font=theme.font())
         self.update_text.pack(side="left")
         self.update_link = tk.Label(self.update_bar, text="What's new", cursor="hand2",
-                                    background=theme.SURFACE, foreground=theme.BANNER_TEXT,
+                                    background=theme.UPDATE_BG, foreground=theme.LINK,
                                     font=theme.font("underline"))
-        self.update_link.pack(side="left", padx=(8, 0))
+        self.update_link.pack(side="left", padx=(theme.px(8), 0))
         self.update_link.bind("<Button-1>", lambda _e: self.whats_new())
+        # Later: as wide as Add file... above it; Update now: its own measured width.
         self.update_later_button = ttk.Button(self.update_bar, text="Later",
-                                              command=self.update_later)
-        self.update_later_button.pack(side="right")
-        self.update_now_button = ttk.Button(self.update_bar, text="Update now",
-                                            command=self.update_now, style="Accent.TButton")
-        self.update_now_button.pack(side="right", padx=(0, 6))
+                                              command=self.update_later,
+                                              width=self._row_chars())
+        self.update_later_button.pack(side="right", padx=(0, Q - P))
+        self.update_now_button = ttk.Button(
+            self.update_bar, text="Update now", command=self.update_now, style="Accent.TButton",
+            width=self._row_chars())
+        self.update_now_button.pack(side="right", padx=(0, theme.px(6)))
 
-        # The list is packed after the bottom block (below), so a short window cuts the
-        # list's last rows, never the buttons or the message line.
-        self.list_frame = ttk.Frame(outer)
+        # The list is packed after the bottom block (below), so a short window scrolls the
+        # list, never cuts the buttons or the message line.
+        self._build_list_box(outer)
 
         bottom = ttk.Frame(outer)
         bottom.pack(fill="x", side="bottom")
@@ -305,19 +322,19 @@ class App:
         if LINUX_SLIM_BUTTONS:
             style = ttk.Style(self.root)
             for name in ("Slim.TButton", "Slim.Accent.TButton"):
-                style.configure(name, padding=SLIM_PADDING)
+                style.configure(name, padding=tuple(theme.px(n) for n in SLIM_PADDING))
             slim = "Slim."
+        width = theme.chars(self.root, ("Check again", errors.ALL_INSTALL, errors.ALL_UPDATE,
+                                        errors.BACKUP_HEADING, SETTINGS_BUTTON), slim + "TButton")
         self.check_button = ttk.Button(buttons, text="Check again", command=self.check_again,
-                                       style=slim + "TButton")
-        if CHECK_WIDTH is not None:
-            self.check_button.configure(width=CHECK_WIDTH)
+                                       style=slim + "TButton", width=width)
         self.check_button.pack(side="left")
         # Install all / Update all (see render): one fixed width for both texts, so the
         # row doesn't move when the text changes.
         self.all_button = ttk.Button(buttons, text=errors.ALL_INSTALL, command=self.update_all,
                                      style=slim + "Accent.TButton")
-        self.all_button.configure(width=self._all_width(slim + "Accent.TButton"))
-        self.all_button.pack(side="left", padx=(8, 0))
+        self.all_button.configure(width=width)
+        self.all_button.pack(side="left", padx=(theme.px(8), 0))
         self.all_tip = Tooltip(self.all_button, "")
         # App settings live in a small Settings window (see open_settings).
         # Show beta versions: off by default. Share anonymous counts: on by default.
@@ -325,33 +342,250 @@ class App:
         self.share_var = tk.BooleanVar(value=_share_on(self.settings))
         self.settings_win = self.beta_check = self.share_check = None
         self.backup_win = None   # the Backup window (am\backup_ui.BackupWindow) while open
-        self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON, width=NARROW_WIDTH,
+        self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON, width=width,
                                           command=self.open_settings, style=slim + "TButton")
         self.settings_button.pack(side="right")
         # Backup: its own window (Make / Restore / Send / Receive), left of Settings.
         self.backup_main_button = ttk.Button(buttons, text=errors.BACKUP_HEADING,
-                                             width=NARROW_WIDTH, style=slim + "TButton",
+                                             width=width, style=slim + "TButton",
                                              command=self.open_backup_window)
-        self.backup_main_button.pack(side="right", padx=(0, 8))
+        self.backup_main_button.pack(side="right", padx=(0, theme.px(8)))
         self.backup_tip = Tooltip(self.backup_main_button, "")
         # Show beta versions also in the main window (easy to toggle), left of Backup.
         # Same variable and command as the box in Settings, so both always match.
         self.beta_main_check = ttk.Checkbutton(buttons, text=BETA_MAIN_TEXT, variable=self.beta_var,
                                                command=self.toggle_betas)
-        self.beta_main_check.pack(side="right", padx=(0, 10))
+        self.beta_main_check.pack(side="right", padx=theme.px(8))
         Tooltip(self.beta_main_check, BETA_NOTE)
         self.progress = ttk.Progressbar(bottom, mode="determinate", maximum=100)
-        self.progress.pack(fill="x", pady=(8, 2))
+        self.progress.pack(fill="x", pady=(theme.px(8), theme.px(2)))
         self.message_var = tk.StringVar()
         status_line = ttk.Frame(bottom)
         status_line.pack(fill="x")
         # The app version, dimmed, at the right end of the message line.
         self.version_label = ttk.Label(status_line, text=versions.display(APP_VERSION),
                                        style="Muted.TLabel")
-        self.version_label.pack(side="right", anchor="se", padx=(8, 0))
-        ttk.Label(status_line, textvariable=self.message_var, wraplength=580,
-                  justify="left").pack(side="left", fill="x", expand=True)
-        self.list_frame.pack(fill="both", expand=True, pady=(4, 6))
+        # Both ends indented by `clear`: the bottom knots never cover the text.
+        self.version_label.pack(side="right", anchor="se", padx=(theme.px(8), clear))
+        self.message_label = ttk.Label(status_line, textvariable=self.message_var,
+                                       wraplength=theme.px(540), justify="left")
+        self.message_label.pack(side="left", fill="x", expand=True, padx=(clear, 0))
+        self.list_box.pack(fill="both", expand=True, pady=(theme.px(4), theme.px(8)))
+
+    def _build_banner(self, outer, clear):
+        """The slim banner: the guild's crest + the title (one line, or a heading and a
+        smaller line under it when one line doesn't fit the smallest window)."""
+        head = self.head = ttk.Frame(outer)
+        head.pack(fill="x", pady=(0, theme.px(6)))
+        size = 48 if theme.SCALE >= 1.4 else 32
+        self._logo = None
+        logo_w = 0
+        try:
+            self._logo = tk.PhotoImage(master=self.root, file=os.path.join(
+                icon.ASSETS, f"AddonManager_{size}.png"))
+            self.logo_label = ttk.Label(head, image=self._logo)
+            self.logo_label.pack(side="left", padx=(clear + theme.px(4), 0))
+            logo_w = size + clear + theme.px(4)
+        except tk.TclError:
+            log.info("Banner logo missing")
+        text_box = ttk.Frame(head)
+        text_box.pack(side="left", padx=(theme.px(10), 0))
+        room = (theme.px(MIN_WIDTH) - 2 * self.margin - logo_w - theme.px(10)
+                - self.frame_art.clear)   # the top-right knot too
+        title_font = ttk.Style(self.root).lookup("Title.TLabel", "font")
+        try:
+            wide = tkfont.Font(root=self.root, font=title_font).measure(BANNER_TITLE)
+        except tk.TclError:
+            wide = 0
+        self.title_label = ttk.Label(text_box, style="Title.TLabel",
+                                     text=BANNER_TITLE if wide <= room else BANNER_HEAD)
+        self.title_label.pack(anchor="w")
+        self.subtitle_label = None
+        if wide > room:
+            self.subtitle_label = ttk.Label(text_box, text=BANNER_SUB, style="Subtitle.TLabel")
+            self.subtitle_label.pack(anchor="w")
+        tk.Frame(outer, height=1, background=theme.LINE).pack(fill="x", pady=(0, theme.px(8)))
+
+    def _row_chars(self):
+        """One width for Change..., Add file..., Later and the rows' Install/Update/Uninstall."""
+        return theme.button_chars(self.root)
+
+    # ---------- the list box: scrolls, fixed column headers ----------
+    def _build_list_box(self, outer):
+        """The list in a gold box that scrolls when its rows don't fit. The rows sit in a
+        clipping frame (`list_view`) and move by whole rows (place y = -top), so they always
+        stop on a row's edge under the fixed column headers (a copy over the list, lined up
+        with the real header row). The thin scroll bar's column is always kept, so the row
+        buttons never move."""
+        P = self.box_pad
+        box = self.list_box = tk.Frame(outer, background=theme.PANEL, highlightthickness=1,
+                                       highlightbackground=theme.BORDER, borderwidth=0)
+        view = self.list_view = tk.Frame(box, background=theme.PANEL, width=1, height=1)
+        view.grid(row=0, column=0, sticky="nsew")
+        bar = self.list_bar = ttk.Scrollbar(box, orient="vertical", command=self.list_yview,
+                                            style="Gold.Vertical.TScrollbar")
+        # The bar's column: px(4) + bar + px(4), always reserved (self.box_right).
+        bar.grid(row=0, column=1, sticky="ns", padx=theme.px(4), pady=P)
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(0, weight=1)
+        box.columnconfigure(1, minsize=max(self.box_right,
+                                           bar.winfo_reqwidth() + 2 * theme.px(4)))
+        bar.grid_remove()
+        self.list_frame = ttk.Frame(view, style="List.TFrame", padding=(P, 0, 0, P - 2))
+        self.list_frame.place(x=0, y=0, relwidth=1, height=1)
+        self._list_top = 0     # pixels scrolled (a whole number of rows)
+        self.list_frame.bind("<Configure>", self._list_resized, add="+")
+        view.bind("<Configure>", self._list_resized, add="+")
+        self.list_head = tk.Frame(box, background=theme.PANEL)
+        self.list_head.place(in_=view, x=0, y=0, relwidth=1, height=1)
+        self.list_cover = tk.Frame(view, background=theme.PANEL)   # see _list_sizes
+        self._head_labels = []
+        self._row_lines, self._row_marks = [], []
+        self._hl_rows, self._head_rows = [], []
+        self._row_h = 0
+        for w in (view, self.list_frame, self.list_head, self.list_cover, box):
+            self._wheel(w)
+
+    def _wheel(self, widget):
+        """Mouse wheel over this widget scrolls the list a row at a time (Windows
+        <MouseWheel>, Linux Button-4/5)."""
+        if getattr(widget, "_am_wheel", False):
+            return
+        widget._am_wheel = True
+        widget.bind("<MouseWheel>", self._wheel_scroll, add="+")
+        widget.bind("<Button-4>", lambda _e: self.list_yview("scroll", -1, "units"), add="+")
+        widget.bind("<Button-5>", lambda _e: self.list_yview("scroll", 1, "units"), add="+")
+
+    def _wheel_scroll(self, event):
+        self.list_yview("scroll", -1 if event.delta > 0 else 1, "units")
+
+    def _wheel_all(self, widget):
+        self._wheel(widget)
+        for child in widget.winfo_children():
+            self._wheel_all(child)
+
+    def _list_sizes(self):
+        """(list height, used height, row step, biggest top). When the list doesn't fit,
+        the used height is the header plus a whole number of rows (the rest of the box is
+        an empty strip at the bottom, `list_cover`), so no part of a row ever shows."""
+        h = self.list_frame.winfo_reqheight()
+        seen = self.list_view.winfo_height()
+        step = max(1, self._row_h)
+        if seen <= 1 or h <= seen:
+            return h, seen, step, 0
+        head = self._head_h()
+        if seen - head >= step:
+            seen = head + (seen - head) // step * step
+        # Scrolled to the end, the last row sits at the bottom with less than a row of
+        # space under it.
+        return h, seen, step, -(-(h - (self.box_pad - 2) - seen) // step) * step
+
+    def _head_h(self):
+        try:
+            return self.list_frame.grid_bbox(0, 0, 4, 0)[3]
+        except (tk.TclError, IndexError, TypeError):
+            return 0
+
+    def list_yview(self, *args):
+        """Scroll bar / wheel: ("moveto", fraction) or ("scroll", n, "units"|"pages")."""
+        h, seen, step, most = self._list_sizes()
+        top = self._list_top
+        try:
+            if args and args[0] == "moveto":
+                top = float(args[1]) * max(h, most + seen)
+            elif args and args[0] == "scroll":
+                n = int(args[1])
+                rows = max(1, seen // step) if len(args) > 2 and args[2] == "pages" else 1
+                top += n * rows * step
+        except (ValueError, IndexError):
+            return
+        self._set_top(top)
+
+    def _set_top(self, top):
+        h, seen, step, most = self._list_sizes()
+        top = min(max(0, int(round(top / step)) * step), most)
+        self._list_top = top
+        try:
+            self.list_frame.place_configure(y=-top, height=h)
+            spare = self.list_view.winfo_height() - seen
+            if most > 0 and spare > 0:
+                self.list_cover.place(x=0, y=seen, relwidth=1, height=spare)
+                self.list_cover.lift()
+            else:
+                self.list_cover.place_forget()
+            total = max(h, top + seen, 1)
+            first, last = top / total, min(1.0, (top + seen) / total) if seen > 1 else 1.0
+            self.list_bar.set(first, last)
+            if most <= 0:
+                self.list_bar.grid_remove()
+            else:
+                self.list_bar.grid()
+        except tk.TclError:
+            pass
+
+    def _list_resized(self, _event=None):
+        """The list box asks for the whole list's size (so the window grows to fit before
+        it scrolls); the rows are as wide as the box (Status stretches)."""
+        f, view = self.list_frame, self.list_view
+        try:
+            w, h = f.winfo_reqwidth(), f.winfo_reqheight()
+            if int(view.cget("width")) != w or int(view.cget("height")) != h:
+                view.configure(width=w, height=h)
+        except tk.TclError:
+            return
+        self._set_top(self._list_top)
+        self._draw_rows()
+
+    def _draw_rows(self):
+        """Lines between rows (gold under headers), the band behind rows with an update and
+        the fixed header copy, all from the grid's real row/column places. Placed frames:
+        the grid's rows stay the addon rows the code and tests read."""
+        f = self.list_frame
+        try:
+            if not f.winfo_exists():
+                return
+            cols, rows = f.grid_size()
+        except tk.TclError:
+            return
+        self._row_lines = [w for w in self._row_lines if w.winfo_exists()]
+        self._row_marks = [w for w in self._row_marks if w.winfo_exists()]
+        full = max(f.winfo_width(), f.winfo_reqwidth())
+        last = rows - 1
+        while len(self._row_lines) < rows:
+            line = tk.Frame(f, height=1, background=theme.ROW_LINE)
+            self._wheel(line)
+            self._row_lines.append(line)
+        for i, line in enumerate(self._row_lines):
+            x, y, w, h = f.grid_bbox(0, i, 4, i) if i < rows else (0, 0, 0, 0)
+            if i == 0 or i >= last or h <= 0:
+                line.place_forget()
+                continue
+            line.configure(background=theme.LINE if i in self._head_rows else theme.ROW_LINE)
+            line.place(x=x, y=y + h - 1, width=w, height=1)
+            line.lift()
+        for mark in self._row_marks:
+            mark.place_forget()
+        for n, i in enumerate(self._hl_rows):
+            if n >= len(self._row_marks):
+                mark = tk.Frame(f, background=theme.HIGHLIGHT)
+                self._wheel(mark)
+                self._row_marks.append(mark)
+            x, y, w, h = f.grid_bbox(0, i, 4, i)
+            mark = self._row_marks[n]
+            mark.place(x=0, y=y, width=full, height=h - 1)
+            tk.Misc.lower(mark)
+        # The fixed header: each copy at its column's x; as tall as the header row.
+        try:
+            _x, _y, _w, head_h = f.grid_bbox(0, 0, 4, 0)
+            self.list_head.place_configure(height=max(1, head_h))
+            self.list_head.lift()
+            for col, label in enumerate(self._head_labels):
+                src = f.grid_slaves(row=0, column=col)
+                if src:
+                    label.place(x=src[0].winfo_x(), y=src[0].winfo_y(),
+                                height=src[0].winfo_height() or src[0].winfo_reqheight())
+        except tk.TclError:
+            pass
 
     def _text_width(self, text):
         """Pixel width of text in the labels' font (measured once per text)."""
@@ -364,16 +598,16 @@ class App:
                 cache[text] = tkfont.nametofont("TkDefaultFont").measure(text)
         return cache[text]
 
-    def _all_width(self, style):
-        """ttk width (characters) of the Install all / Update all button: the wider of the
-        two texts in the button's font, so both fit and the row never jumps."""
-        name = ttk.Style(self.root).lookup(style, "font") or "TkDefaultFont"
-        try:
-            font = tkfont.Font(root=self.root, font=name)
-        except tk.TclError:
-            font = tkfont.nametofont("TkDefaultFont")
-        widest = max(font.measure(t) for t in (errors.ALL_INSTALL, errors.ALL_UPDATE))
-        return -(-widest // max(1, font.measure("0")))
+    def _name_width(self, text):
+        """Pixel width of an addon name in the list's bold name font (cached)."""
+        cache = self._widths
+        key = ("name", text)
+        if key not in cache:
+            try:
+                cache[key] = tkfont.Font(root=self.root, font=theme.font("bold")).measure(text)
+            except tk.TclError:
+                cache[key] = self._text_width(text)
+        return cache[key]
 
     def _build_rows(self, key):
         """Create the list's widgets for self.rows (only when the addons change; render
@@ -383,10 +617,23 @@ class App:
         f = self.list_frame
         for i in range(1, len(self._cells) + 1):   # the old rows' fixed heights
             f.rowconfigure(i, minsize=0)
+        for label in self._head_labels:
+            label.destroy()
+        # Every row (and the "Other addons" heading) is one height, so scrolling a row at a
+        # time always stops on a row's edge under the fixed header.
+        probe = ttk.Button(f, text="X", style="Item.TButton")
+        self._row_h = probe.winfo_reqheight() + 2 * theme.px(ROW_GAP)
+        probe.destroy()
         headers = ("Addon", "Installed", "Latest", "Status", "")
+        self._head_labels = []
         for col, text in enumerate(headers):
-            ttk.Label(f, text=text, font=theme.font("bold"), style="Muted.TLabel").grid(
-                row=0, column=col, sticky="w", padx=(0, COL_GAP if col < 4 else 0), pady=(0, 4))
+            ttk.Label(f, text=text, style="Head.TLabel", background=theme.PANEL).grid(
+                row=0, column=col, sticky="nsw", padx=(0, self._col_gap(col)))
+            copy = ttk.Label(self.list_head, text=text, style="Head.TLabel",
+                             background=theme.PANEL)
+            self._head_labels.append(copy)
+        f.rowconfigure(0, minsize=self._row_h)
+        self._head_rows = [0]
         f.columnconfigure(3, weight=1)
         # Fixed widths for Installed and Latest, so Status and the buttons don't jump
         # sideways when a version text gets longer (e.g. "v1.4.0-beta.1 (beta)").
@@ -394,16 +641,18 @@ class App:
             f.columnconfigure(col, minsize=self._text_width(sample) + COL_GAP)
         self._cells = []
         for i, _row in enumerate(self.rows, start=1):
-            name = ttk.Label(f)
-            name.grid(row=i, column=0, sticky="w", padx=(0, COL_GAP), pady=2)
-            installed = ttk.Label(f)
-            installed.grid(row=i, column=1, sticky="w", padx=(0, COL_GAP))
-            latest = ttk.Label(f)
-            latest.grid(row=i, column=2, sticky="w", padx=(0, COL_GAP))
-            status = ttk.Label(f)
-            status.grid(row=i, column=3, sticky="w", padx=(0, COL_GAP))
+            # Labels fill their cell (sticky nsew): the row's background reaches the edges.
+            name = ttk.Label(f, foreground=theme.NAME, font=theme.font("bold"),
+                             background=theme.PANEL)
+            name.grid(row=i, column=0, sticky="nsew", padx=(0, self._col_gap(0)))
+            installed = ttk.Label(f, background=theme.PANEL)
+            installed.grid(row=i, column=1, sticky="nsew", padx=(0, self._col_gap(1)))
+            latest = ttk.Label(f, background=theme.PANEL)
+            latest.grid(row=i, column=2, sticky="nsew", padx=(0, self._col_gap(2)))
+            status = ttk.Label(f, background=theme.PANEL)
+            status.grid(row=i, column=3, sticky="nsew", padx=(0, self._col_gap(3)))
             # One button per row: Install / Update / Reinstall / Use vX / Uninstall (render).
-            button = ttk.Button(f, width=10)
+            button = ttk.Button(f, width=self._row_chars(), style="Item.TButton")
             button.grid(row=i, column=4, sticky="e")
             button.grid_remove()
             # Right-click on the row (or its button): Remove <name>...
@@ -411,18 +660,30 @@ class App:
                 touch.bind_menu(widget, lambda e, n=i - 1: self._row_menu_popup(e, n))
             # Buttons: right-click only (a press-and-hold would also click them).
             button.bind("<Button-3>", lambda e, n=i - 1: self._row_menu_popup(e, n))
-            # Every row as tall as a button, so texts don't jump when a button shows or hides.
-            f.rowconfigure(i, minsize=button.winfo_reqheight())
+            # Every row one height (a button + a gap), so texts don't jump when a button
+            # shows or hides and scrolling snaps to rows.
+            f.rowconfigure(i, minsize=self._row_h)
             self._cells.append({"name": name, "name_tip": Tooltip(name, ""),
                                 "installed": installed, "latest": latest, "status": status,
                                 "status_tip": Tooltip(status, ""), "button": button,
                                 "button_tip": Tooltip(button, "")})
         if not self.rows:
-            ttk.Label(f, text=self.manifest_note or "No addons to show.").grid(
-                row=1, column=0, columnspan=5, sticky="w")
+            ttk.Label(f, text=self.manifest_note or "No addons to show.",
+                      background=theme.PANEL).grid(row=1, column=0, columnspan=5, sticky="w")
+            f.rowconfigure(1, minsize=self._row_h)
         # Addons installed from a file: their own section under the guild's list.
-        self.files.build_rows(f, max(len(self.rows), 1) + 1, COL_GAP)
+        start = max(len(self.rows), 1) + 1
+        self.files.build_rows(f, start, COL_GAP)
+        if self.files.rows:
+            self._head_rows.append(start)
+        self._wheel_all(f)
         self._rows_key = key
+
+    def _col_gap(self, col):
+        """Space after a list column: at least px(12) between Status and the buttons."""
+        if col >= 4:
+            return 0
+        return max(COL_GAP, theme.px(12)) if col == 3 else COL_GAP
 
     def render(self):
         """Show self.rows and the installed .toc files. The widgets are made again only
@@ -436,6 +697,7 @@ class App:
         removed = self._removed()
         any_action = any_update = False
         updates = missing = 0   # counted rows, for the summary after a check
+        highlighted = []        # list rows with an update: a soft gold band
         for i, row in enumerate(self.rows, start=1):
             cells = self._cells[i - 1]
             exists, installed_v = self._installed(row.folder)
@@ -473,13 +735,23 @@ class App:
             elif row.problem and not row.addon and not no_normal:
                 status_text = row.problem
             status_label = cells["status"]
+            band = (status == versions.UPDATE and not row.state and not was_removed
+                    and bool(self.addons_dir))
+            back = theme.HIGHLIGHT if band else theme.PANEL
+            if band:
+                highlighted.append(i)
+            for key in ("name", "installed", "latest"):
+                cells[key].configure(background=back)
             if row.state == "error":
-                status_label.configure(text=status_text, style="Failed.TLabel", foreground="")
+                status_label.configure(text=status_text, style="Failed.TLabel", foreground="",
+                                       background=theme.ERROR_BG)
             elif was_removed and not row.state:
-                status_label.configure(text=status_text, style="Muted.TLabel", foreground="")
+                status_label.configure(text=status_text, style="Muted.TLabel", foreground="",
+                                       background=back)
             else:
-                status_label.configure(text=status_text, style="TLabel", foreground=(
-                    "" if row.state else theme.STATUS.get(status, "")))
+                status_label.configure(text=status_text, style="TLabel", background=back,
+                                       foreground=("" if row.state else
+                                                   theme.STATUS.get(status, "")))
             if no_normal and not row.state:
                 cells["status_tip"].text = errors.NO_NORMAL_YET
             elif row.problem and not row.addon and not row.state:
@@ -492,10 +764,13 @@ class App:
             uninstall = None
             if go_back and self.addons_dir:
                 text = errors.go_back_button(versions.display(row.latest))
-                button.configure(text=text, width=max(10, len(text)), style="TButton",
+                button.configure(text=text, style="Item.TButton", width=max(
+                    self._row_chars(), theme.chars(self.root, (text,), "Item.TButton")),
                                  command=lambda r=row: self.go_back(r))
             elif row.addon and status in BUTTON_TEXT and self.addons_dir:
-                button.configure(text=BUTTON_TEXT[status], width=10, style="TButton",
+                button.configure(text=BUTTON_TEXT[status], width=self._row_chars(),
+                                 style=("Accent.Item.TButton" if status in ALL_STATUSES
+                                        else "Item.TButton"),
                                  command=lambda r=row: self.install_rows([r]))
                 if status in ALL_STATUSES and not was_removed:
                     any_action = True
@@ -503,7 +778,8 @@ class App:
                     updates += status == versions.UPDATE
                     missing += status == versions.NOT_INSTALLED
             elif exists and self.addons_dir:
-                button.configure(text=UNINSTALL_BUTTON, width=10, style="Uninstall.TButton",
+                button.configure(text=UNINSTALL_BUTTON, width=self._row_chars(),
+                                 style="Uninstall.Item.TButton",
                                  command=lambda r=row: self.remove_row(r))
                 uninstall = button
             else:
@@ -523,6 +799,7 @@ class App:
         if not self.busy:
             self.all_button.configure(text=errors.ALL_UPDATE if any_update else errors.ALL_INSTALL)
         self._counts = (updates, missing)
+        self._hl_rows = highlighted
         self._set_enabled(self.all_button, any_action and not self.busy)
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
@@ -542,6 +819,15 @@ class App:
         self.files.render()
         self._render_update_bar()
         self._fit_min_width()
+        self._list_resized()
+        # Once more when Tk is idle: a longer text (e.g. "(beta)") changes the list's
+        # requested width without any event the canvas would see.
+        if not getattr(self, "_resize_due", False):
+            self._resize_due = self.root.after_idle(self._list_resized_idle)
+
+    def _list_resized_idle(self):
+        self._resize_due = False
+        self._list_resized()
 
     def _fit_min_width(self):
         """Never let the window get narrower than the list's rows (wider Linux fonts), so
@@ -550,12 +836,13 @@ class App:
         # The bottom row's buttons too: at 150 % display scaling and more they need more
         # than the list (Check again ... Backup, Settings would be cut off); and the
         # Add file... line above the list.
-        need = max(MIN_WIDTH, self.list_frame.winfo_reqwidth() + 20,   # + outer padding
-                   self.settings_button.master.winfo_reqwidth() + 20,
-                   self.files.button.master.winfo_reqwidth() + 20)
+        m = 2 * self.margin
+        need = max(MIN_WIDTH, self.list_box.winfo_reqwidth() + m,
+                   self.settings_button.master.winfo_reqwidth() + m,
+                   self.files.button.master.winfo_reqwidth() + m)
         if need != self._min_width:
             self._min_width = need
-            self.root.minsize(need, MIN_HEIGHT)
+            self.root.minsize(need, theme.px(MIN_HEIGHT))
         self._fit_height()
 
     def _fit_height(self):
@@ -588,11 +875,11 @@ class App:
         if size is None:
             return
         w, h, x, y = size
-        if w < self._min_width or h < MIN_HEIGHT:
+        if w < self._min_width or h < theme.px(MIN_HEIGHT):
             return
         # Never bigger than the screen (a smaller screen than last time).
         w = max(self._min_width, min(w, self.root.winfo_screenwidth()))
-        h = max(MIN_HEIGHT, min(h, self.root.winfo_screenheight() - SCREEN_MARGIN))
+        h = max(theme.px(MIN_HEIGHT), min(h, self.root.winfo_screenheight() - SCREEN_MARGIN))
         if not _on_screen(self.root, x, y, w):
             log.info("Saved window place is off-screen; using the default")
             return
@@ -629,20 +916,22 @@ class App:
         else:
             if mode == "cant":
                 self.update_text.configure(text=errors.APP_CANT_HERE_BAR)
-                self.update_now_button.configure(text=errors.APP_DOWNLOAD_BUTTON)
+                self.update_now_button.configure(text=errors.APP_DOWNLOAD_BUTTON, width=max(
+                    self._row_chars(), theme.chars(self.root, (errors.APP_DOWNLOAD_BUTTON,))))
                 self._set_enabled(self.update_now_button, True)
             else:
                 self.update_text.configure(text=errors.app_update_bar(
                     versions.display(self.app_update.version)))
-                self.update_now_button.configure(text="Update now")
+                self.update_now_button.configure(text="Update now", width=max(
+                    self._row_chars(), theme.chars(self.root, ("Update now",))))
                 self._set_enabled(self.update_now_button, not self.busy)
             if not self.update_now_button.winfo_manager():
-                self.update_now_button.pack(side="right", padx=(0, 6),
+                self.update_now_button.pack(side="right", padx=(0, theme.px(6)),
                                             before=self.update_later_button)
             self.update_later_button.configure(text="Later")
         self._set_enabled(self.update_later_button, not self.updating)
         if not self.update_bar.winfo_manager():
-            self.update_bar.pack(fill="x", before=self.list_frame, pady=(0, 4))
+            self.update_bar.pack(fill="x", before=self.list_box, pady=(0, theme.px(4)))
 
     def whats_new(self):
         if self.update_mode == "done":
@@ -729,7 +1018,7 @@ class App:
     def set_banner(self, text):
         self.banner_var.set(text)
         if text:
-            self.banner.pack(fill="x", before=self.list_frame, pady=(0, 4))
+            self.banner.pack(fill="x", before=self.list_box, pady=(0, theme.px(4)))
         else:
             self.banner.pack_forget()
 
@@ -888,18 +1177,20 @@ class App:
         win.configure(background=theme.BG)
         win.resizable(False, False)
         win.transient(self.root)
-        frame = ttk.Frame(win, padding=14)
+        frame = ttk.Frame(win, padding=theme.px(14))
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text=title, font=theme.font("bold", bigger=1)).pack(anchor="w")
-        ttk.Label(frame, text=text, wraplength=360, justify="left").pack(anchor="w",
-                                                                         pady=(6, 12))
+        theme.frame_window(win, frame)
+        theme.heading(frame, title, bigger=2).pack(fill="x")
+        ttk.Label(frame, text=text, wraplength=theme.px(360), justify="left").pack(
+            anchor="w", pady=(theme.px(8), theme.px(12)))
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x")
         cancel_button = ttk.Button(buttons, text=cancel_text, command=lambda: answer(False))
         cancel_button.pack(side="right")
         ok_button = ttk.Button(buttons, text=ok_text, style="Accent.TButton",
                                command=lambda: answer(True))
-        ok_button.pack(side="right", padx=(0, 6))
+        ok_button.pack(side="right", padx=(0, theme.px(6)))
+        theme.even_buttons(buttons)   # OK and Cancel one width, >= a row button
         win.protocol("WM_DELETE_WINDOW", lambda: answer(False))
         _confirm_keys(win, answer, enter)
         return {"win": win, "ok": ok_button, "cancel": cancel_button,
@@ -1098,9 +1389,10 @@ class App:
         win.configure(background=theme.BG)
         win.resizable(False, False)
         win.transient(self.root)
-        frame = ttk.Frame(win, padding=14)
+        frame = ttk.Frame(win, padding=theme.px(14))
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Settings", font=theme.font("bold", bigger=1)).pack(anchor="w")
+        theme.frame_window(win, frame)
+        theme.heading(frame, "Settings").pack(fill="x")
         self.beta_var.set(self.settings.get("show_betas") is True)
         self.share_var.set(_share_on(config.load_settings()))
         checks = []
@@ -1108,15 +1400,16 @@ class App:
                 (BETA_TEXT, self.beta_var, self.toggle_betas, BETA_NOTE),
                 (SHARE_TEXT, self.share_var, self.toggle_share, SHARE_NOTE)):
             check = ttk.Checkbutton(frame, text=text, variable=var, command=command)
-            check.pack(anchor="w", pady=(10, 0))
-            ttk.Label(frame, text=note, style="Muted.TLabel", wraplength=320,
-                      justify="left").pack(anchor="w", padx=(22, 0))
+            check.pack(anchor="w", pady=(theme.px(10), 0))
+            ttk.Label(frame, text=note, style="Muted.TLabel", wraplength=theme.px(320),
+                      justify="left").pack(anchor="w", padx=(theme.px(24), 0))
             checks.append(check)
         self.beta_check, self.share_check = checks
         buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(14, 0))
+        buttons.pack(fill="x", pady=(theme.px(14), 0))
         self.settings_close = ttk.Button(buttons, text="Close", command=self.close_settings)
         self.settings_close.pack(side="right")
+        theme.even_buttons(buttons)
         self.licences_link = tk.Label(buttons, text=errors.LICENCES_LINK, cursor="hand2",
                                       background=theme.BG, foreground=theme.MUTED,
                                       font=theme.font("underline", bigger=-1))
@@ -1269,8 +1562,29 @@ class App:
         if not final:
             return
         if kind == "restore_done":
+            self._restored_others(msg[1])
             self.set_message(errors.restored_message(msg[1]))
         self.render()   # the rows read the installed versions from disk again
+
+    def _restored_others(self, result):
+        """After a restore: the backup's "Other addons" record joins this PC's, and the
+        Other addons rows are read again (restored folders show without Check again)."""
+        others = getattr(result, "others", None)
+        try:
+            if others:
+                # Only the newly added ones count ("N other addons added"): guild folders
+                # show as guild rows, and folders still tracked here keep their entry.
+                before = self.files.tracked()
+                merged = fileinstall.merge_restored(before, others, self._guild_folders())
+                known = {f.lower() for f in before}
+                result.others = {f: i for f, i in merged.items() if f.lower() not in known}
+                if result.others:
+                    self.files._save_tracked(merged)
+            self.files.refresh()
+        except Exception:
+            log.exception("Could not add the restored Other addons")
+            if others:
+                result.others = {}   # nothing was added: the message says nothing about it
 
     def _apply_manifest(self, m, error, problems=None):
         self.manifest = m
@@ -1374,6 +1688,14 @@ class App:
     def _on_destroy(self, event):
         if event.widget is self.root:
             self.closed = True
+            if getattr(self, "_resize_due", False):
+                try:
+                    self.root.after_cancel(self._resize_due)
+                except tk.TclError:
+                    pass
+                self._resize_due = False
+            theme.release_images([getattr(self, "_logo", None)]
+                                 + list(getattr(self.root, "_am_icons", None) or []))
             self.files.close()   # an open Add from file plan's temp folder
             if self._after:
                 try:

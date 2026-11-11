@@ -121,10 +121,15 @@ def _selftest_backup(addons_dir, step):
     in a temp folder that is removed afterwards)."""
     import shutil
     import tempfile
-    from am import backup
+    from am import backup, fileinstall
     tmp = tempfile.mkdtemp(prefix="backup_restore_selftest_")
     try:
-        path, size, counts = backup.make(addons_dir, os.path.join(tmp, "backups"))
+        found = backup.addon_folders(addons_dir)
+        # A pretend "Other addons" record for the first addon: it must survive the round trip.
+        record = ({found[0]: {"name": "Selftest", "version": "1.0", "file": "x.zip",
+                              "date": "2026-01-01"}} if found else {})
+        path, size, counts = backup.make(addons_dir, os.path.join(tmp, "backups"),
+                                         others=record)
         info = backup.read(path)
         made = step("backup", info.addons and size > 0, f"{counts}, {size} bytes")
         amap = backup.default_map(info.accounts, backup.local_accounts(addons_dir))
@@ -132,7 +137,12 @@ def _selftest_backup(addons_dir, step):
         restored = step("restore", sorted(result.addons) == sorted(info.addons)
                         and result.safety and os.path.isfile(result.safety),
                         f"{len(result.addons)} addons, {result.files} settings files")
-        return bool(made and restored)
+        merged = fileinstall.merge_restored({}, result.others)
+        others_ok = step("backup_others",
+                         set(merged) == set(record) and all(
+                             "file" not in info.others.get(f, {}) for f in record),
+                         f"{len(merged)} other addons kept")
+        return bool(made and restored and others_ok)
     except Exception as e:
         return step("backup", False, repr(e))
     finally:
