@@ -61,7 +61,7 @@ CHECK_WIDTH = None if os.name == "nt" else 0
 BETA_TEXT = "Show beta versions"
 # The main window's box: shorter on Linux, whose fonts are wider (keeps the bottom row
 # inside the smallest window). The Settings window always says BETA_TEXT.
-BETA_MAIN_TEXT = BETA_TEXT if os.name == "nt" else "Show betas"
+BETA_MAIN_TEXT = BETA_TEXT if os.name == "nt" else "Betas"
 BETA_NOTE = "Also offer test (beta) versions of addons when they are newer than the normal version."
 SHARE_TEXT = "Share anonymous counts"
 SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and whether "
@@ -288,7 +288,7 @@ class App:
         if CHECK_WIDTH is not None:
             self.check_button.configure(width=CHECK_WIDTH)
         self.check_button.pack(side="left")
-        self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all,
+        self.all_button = ttk.Button(buttons, text=errors.ALL_BUTTON, command=self.update_all,
                                      style=slim + "Accent.TButton")
         self.all_button.pack(side="left", padx=(8, 0))
         # App settings live in a small Settings window (see open_settings).

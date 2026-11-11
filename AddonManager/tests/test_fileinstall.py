@@ -922,14 +922,15 @@ class WindowFileTests(unittest.TestCase):
         long Other-addon title keeps the window well under 680 px. The Windows layout is
         checked by test_stats."""
         from unittest import mock
-        from am import ui
+        from am import errors, ui
         simulate = os.name == "nt"
         base = float(self.root.tk.call("tk", "scaling"))
         patches = [mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True),
                    mock.patch.object(ui, "NARROW_WIDTH", 0),
                    mock.patch.object(ui, "CHECK_WIDTH", 0),
                    mock.patch.object(ui, "SETTINGS_BUTTON", "Settings"),
-                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Show betas")] if simulate else []
+                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas"),
+                   mock.patch.object(errors, "ALL_BUTTON", "Update all")] if simulate else []
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -949,7 +950,7 @@ class WindowFileTests(unittest.TestCase):
         self.assertIsNot(app.files.button.master, bottom)
         self.assertNotIn(app.files.button, bottom.winfo_children())
         self.assertEqual(app.check_button.cget("style"), "Slim.TButton")
-        self.assertIs(app.backup_main_button.master, bottom)   # [Show betas] [Backup] [Settings]
+        self.assertIs(app.backup_main_button.master, bottom)   # [Betas] [Backup] [Settings]
         self.assertEqual(app.backup_main_button.cget("style"), "Slim.TButton")
         self.assertEqual(str(app.backup_main_button.cget("width")), "0")   # as narrow as its text
         self.assertLessEqual(bottom.winfo_reqwidth(), 540 - 30)

@@ -202,6 +202,11 @@ def remove_title(name):
     return f"Remove {name}?"
 
 
+# The main window's Install/update all button: shorter on Linux, whose wider fonts would
+# push the bottom row (with Backup) past the smallest window. Windows unchanged.
+ALL_BUTTON = "Install/update all" if os.name == "nt" else "Update all"
+
+
 def remove_text(name, where, needed_by=()):
     """The question before removing. where: "bin"/"trash" or None (deleted for good)."""
     if where:
@@ -210,7 +215,7 @@ def remove_text(name, where, needed_by=()):
         first = (f"This drive has no {BIN_NAME}, so the {name} folder will be deleted "
                  "for good.")
     text = (f"{first} Your settings for it in the game are kept, so if you install it again "
-            "later, it is set up like before. Install/update all won't put it back; use its "
+            f"later, it is set up like before. {ALL_BUTTON} won't put it back; use its "
             "Install button if you want it again.")
     if needed_by:
         names = ", ".join(needed_by)

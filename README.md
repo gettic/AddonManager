@@ -34,7 +34,7 @@ It finds WoW Forever installed through Battle.net with Proton (as a non-Steam ga
 
 Game Mode may work if you add it as a non-Steam game, but don't force Proton on it: it is a Linux program.
 
-Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol, and the main-window checkbox reads **Show betas** (the **Settings** window still says **Show beta versions**).
+Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol, and the main-window bottom row has shorter labels: **Update all** (Windows says "Install/update all") and a **Betas** checkbox (the **Settings** window still says **Show beta versions**).
 
 Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Proton/Wine. The Addon Manager only installs addon files. Whether the game runs there is up to Proton/Wine.
 

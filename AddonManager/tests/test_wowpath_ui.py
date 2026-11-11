@@ -493,9 +493,9 @@ class WindowTests(unittest.TestCase):
         self.pump(app)
         row = app.settings_button.master
         self.assertIs(app.beta_main_check.master, row)
-        # "Show beta versions" on Windows, the shorter "Show betas" on Linux (wider fonts)
+        # "Show beta versions" on Windows, the shorter "Betas" on Linux (wider fonts)
         self.assertEqual(app.beta_main_check.cget("text"),
-                         "Show beta versions" if os.name == "nt" else "Show betas")
+                         "Show beta versions" if os.name == "nt" else "Betas")
         # [box] [Backup] [Settings], checked by packing order (works for the withdrawn
         # window on X too, where a never-mapped window has no positions): all packed on the
         # right, Settings first, so each later one sits to the left of the one before.
