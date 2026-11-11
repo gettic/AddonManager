@@ -79,7 +79,11 @@ SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": st
                  "stats_sent_day": str, "stats_sent_week": str, "share_stats": bool,
                  "removed_addons": list, "backup_folder": str, "backup_addons": bool,
                  "backup_settings": bool,
-                 "file_addons": dict}   # addons installed from a file (am\fileinstall.py)
+                 "file_addons": dict,   # addons installed from a file (am\fileinstall.py)
+                 "send_later": bool,    # send later via file.kiwi (opt-in, off by default)
+                 "send_later_hours": int,
+                 "send_later_v": int,   # the tick's wording it was given under
+                 "backup_spoken": str}  # "skip" / "keep" the Spoken addons in backups
 
 
 def load_settings():
@@ -95,7 +99,8 @@ def load_settings():
     clean = {}
     for key, value in data.items():
         want = SETTING_TYPES.get(key)
-        if want is None or (isinstance(value, want) and (want is not str or value.strip())):
+        if want is None or (isinstance(value, want) and (want is not str or value.strip())
+                            and not (want is int and isinstance(value, bool))):
             clean[key] = value
         else:
             logging.getLogger(__name__).warning("Ignoring bad setting %s=%r", key,

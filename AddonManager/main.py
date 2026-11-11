@@ -90,6 +90,7 @@ def selftest(args):
                 all_ok = step(f"install {addon.folder}", False, repr(e))
         all_ok &= _selftest_backup(addons_dir, step)
         all_ok &= _selftest_share(step)
+        all_ok &= _selftest_later(step)
         all_ok &= _selftest_file_install(addons_dir, step)
         # The window toolkit must be bundled: build the window hidden, load, close.
         import tkinter as tk
@@ -160,6 +161,33 @@ def _selftest_share(step):
         return step("share", ok, "SPAKE2 + ChaCha20-Poly1305")
     except Exception as e:
         return step("share", False, repr(e))
+
+
+def _selftest_later(step):
+    """Send later's crypto must work in the bundle: scrypt record keys, a sealed record
+    opened (and a changed one refused), file.kiwi's RFC 8188 encryption both ways. No
+    network."""
+    try:
+        import os
+        from am import share, share_later
+        key, verifier = share_later.record_keys(share._password(37, ["amber", "lamp", "river"]),
+                                                b"s" * 16)
+        rec = {"v": 1, "link": share_later.LINK_PREFIX + "abcd1234#" + "A" * 22,
+               "key": "0" * 64, "size": 1, "sha256": "0" * 64, "blob": 1,
+               "name": share_later.random_name()}
+        sealed = share_later.seal_record(key, 37, rec)
+        ok = share_later.open_record(key, 37, sealed) == rec and len(verifier) == 64
+        try:
+            share_later.open_record(key, 38, sealed)   # another code's channel: refused
+            ok = False
+        except ValueError:
+            pass
+        k = os.urandom(16)
+        data = os.urandom(70000)                       # two RFC 8188 records
+        ok = ok and share_later.ece_decrypt(k, share_later.ece_encrypt(k, data)) == data
+        return step("send later", ok, "scrypt + ChaCha20-Poly1305 record + aes128gcm")
+    except Exception as e:
+        return step("send later", False, repr(e))
 
 
 def _selftest_file_install(addons_dir, step):

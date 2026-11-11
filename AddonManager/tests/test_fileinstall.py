@@ -846,7 +846,7 @@ class WindowFileTests(unittest.TestCase):
 
     def test_bottom_row_fits_at_150_and_175_percent(self):
         """M1: at 150 % / 175 % display scaling the window can't get narrower than the
-        bottom row (Check again ... Settings), so no button is cut off. 100 % unchanged."""
+        bottom row (Check again ... Backup, Settings), so no button is cut off. 100 % unchanged."""
         from am import ui
         base = float(self.root.tk.call("tk", "scaling"))
         for factor in (1.0, 1.5, 1.75):
@@ -860,6 +860,23 @@ class WindowFileTests(unittest.TestCase):
                 need = sum(w.winfo_reqwidth() for w in row.winfo_children()) + 20
                 self.assertGreaterEqual(self.root.minsize()[0], row.winfo_reqwidth() + 20)
                 self.assertGreaterEqual(self.root.minsize()[0], need - 40)
+                self.assertIn(app.backup_main_button, row.winfo_children())
+                # Add file... is as big as the list's Install/Update/Uninstall button, and
+                # its text isn't cut (its own text needs no more than that width)
+                add = app.files.button
+                row_buttons = [w[1] for w in app.row_widgets.values() if w[1] is not None]
+                self.assertTrue(row_buttons)
+                for b in row_buttons:
+                    self.assertEqual((add.winfo_reqwidth(), add.winfo_reqheight()),
+                                     (b.winfo_reqwidth(), b.winfo_reqheight()))
+                self.assertIn(str(add.cget("style")), ("", "TButton"))   # same look as Install
+                from tkinter import ttk
+                natural = ttk.Button(add.master, text=add.cget("text"), width=0)
+                self.assertLessEqual(natural.winfo_reqwidth(), add.winfo_reqwidth())
+                natural.destroy()
+                # the Add file... line above the list fits too
+                self.assertGreaterEqual(self.root.minsize()[0],
+                                        app.files.button.master.winfo_reqwidth() + 20)
                 if factor == 1.0:
                     self.assertEqual(self.root.minsize()[0],
                                      max(ui.MIN_WIDTH, app._min_width))
@@ -901,14 +918,18 @@ class WindowFileTests(unittest.TestCase):
     def test_linux_layout(self):
         """The Linux layout (on Linux for real; on Windows simulated: Linux fonts are about
         1.2x wider): Add file... on its own line above the list, slim bottom-row buttons
-        with real room inside 540 px, and a long Other-addon title keeps the window well
-        under 680 px. The Windows layout is checked by test_stats (unchanged)."""
+        (Backup and Settings as narrow as their text) with real room inside 540 px, and a
+        long Other-addon title keeps the window well under 680 px. The Windows layout is
+        checked by test_stats."""
         from unittest import mock
         from am import ui
         simulate = os.name == "nt"
         base = float(self.root.tk.call("tk", "scaling"))
-        patches = [mock.patch.object(fileinstall_ui, "ADD_ON_TOP", True),
-                   mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True)] if simulate else []
+        patches = [mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True),
+                   mock.patch.object(ui, "NARROW_WIDTH", 0),
+                   mock.patch.object(ui, "CHECK_WIDTH", 0),
+                   mock.patch.object(ui, "SETTINGS_BUTTON", "Settings"),
+                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Show betas")] if simulate else []
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -928,8 +949,14 @@ class WindowFileTests(unittest.TestCase):
         self.assertIsNot(app.files.button.master, bottom)
         self.assertNotIn(app.files.button, bottom.winfo_children())
         self.assertEqual(app.check_button.cget("style"), "Slim.TButton")
+        self.assertIs(app.backup_main_button.master, bottom)   # [Show betas] [Backup] [Settings]
+        self.assertEqual(app.backup_main_button.cget("style"), "Slim.TButton")
+        self.assertEqual(str(app.backup_main_button.cget("width")), "0")   # as narrow as its text
         self.assertLessEqual(bottom.winfo_reqwidth(), 540 - 30)
         self.assertLessEqual(app.files.button.master.winfo_reqwidth(), 540 - 30)
+        for b in [w[1] for w in app.row_widgets.values() if w[1] is not None]:
+            self.assertEqual((app.files.button.winfo_reqwidth(), app.files.button.winfo_reqheight()),
+                             (b.winfo_reqwidth(), b.winfo_reqheight()))
         # the button above the list, below the folder line
         children = app.list_frame.master.pack_slaves()
         self.assertLess(children.index(app.files.button.master), children.index(app.list_frame))

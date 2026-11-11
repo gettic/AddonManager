@@ -43,6 +43,17 @@ Object class is ever renamed, add a new `[[migrations]]` entry (never edit the o
 Duration is the tight one: about 150+ transfers a day even when everyone waits the full 10
 minutes. Over a limit, sends fail until 00:00 UTC (the app says "busy, try later"); no bill.
 
+## Send later (file.kiwi)
+
+Optional for players and off by default. If the other PC hasn't joined after 5 minutes (or right away for a backup over 500 MB, which the relay can't carry), the app uploads the backup to file.kiwi, a third-party file host. It is sealed with its own random key, with file.kiwi's encryption on top. The app then stores a small sealed record (the file.kiwi link plus that key) in this Worker's mailbox for the same code.
+
+- **What the Worker keeps:** the record (at most 4 KB, unreadable without the code), a random salt and a hash used to check the code. It never holds the file.
+- **Fetching the record:** `take` gives it out once and counts as a code try (the same per-IP limits as join). A wrong code deletes it.
+- **Limits** (`[vars]`): `LATER_IDLE` 300 s without the sender while uploading, `LATER_UPLOAD_SECONDS` 6 h of uploading at most, `LATER_MAX_HOURS` 24 (the player picks 1-24 h).
+- **Nothing to set up** in Cloudflare or at file.kiwi: no account and no key. The PCs talk to file.kiwi directly. This Worker never contacts file.kiwi.
+- **Can't be deleted early:** file.kiwi deletes files on its own schedule (a few days). Once the code ends, the stored file can't be opened.
+- **Switch it off:** remove `"later"` from `BOX_ROUTES` in `worker.js` and deploy. Setting `LATER_MAX_HOURS` to `"0"` doesn't work, because `num()` falls back to 24. Once it is off, the app's tick box fails cleanly with "Uploading to file.kiwi didn't work".
+
 ## Switch it off
 
 Set `SHARE_URL = ""` in the app (next release hides the buttons), or delete the Worker in the

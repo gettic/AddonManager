@@ -52,6 +52,12 @@ SLIM_PADDING = (6, 4)
 COL_GAP = 10 if os.name == "nt" else LINUX_COL_GAP   # space after the list's text columns
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
 SETTINGS_BUTTON = "⚙ Settings" if os.name == "nt" else "Settings"
+# Bottom row button widths (ttk: negative = at least that many characters, 0 = as wide as
+# the text), so Check again ... Backup, Settings fit the smallest window: on Windows Backup
+# and Settings at least 8 characters; on Linux (fonts about 1.2x wider) Check again, Backup
+# and Settings as narrow as their text. None = the theme's normal width.
+NARROW_WIDTH = -8 if os.name == "nt" else 0
+CHECK_WIDTH = None if os.name == "nt" else 0
 BETA_TEXT = "Show beta versions"
 # The main window's box: shorter on Linux, whose fonts are wider (keeps the bottom row
 # inside the smallest window). The Settings window always says BETA_TEXT.
@@ -234,12 +240,11 @@ class App:
         self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder)
         self.folder_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
         folder.columnconfigure(0, weight=1)
-        if fileinstall_ui.ADD_ON_TOP:
-            # Linux (wider fonts): "Add file..." gets its own line above the list, so the
-            # bottom row keeps room inside the smallest window. Windows: in the bottom row.
-            add_row = ttk.Frame(outer)
-            add_row.pack(fill="x", pady=(0, 2))
-            self.files.build_button(add_row, outer, top=True)
+        # "Add file..." gets its own line above the list, so the bottom row keeps room
+        # (Backup and Settings) inside the smallest window.
+        add_row = ttk.Frame(outer)
+        add_row.pack(fill="x", pady=(0, 2))
+        self.files.build_button(add_row, outer)
 
         self.banner_var = tk.StringVar()
         self.banner = tk.Label(outer, textvariable=self.banner_var, background=theme.BANNER_BG,
@@ -280,23 +285,27 @@ class App:
             slim = "Slim."
         self.check_button = ttk.Button(buttons, text="Check again", command=self.check_again,
                                        style=slim + "TButton")
+        if CHECK_WIDTH is not None:
+            self.check_button.configure(width=CHECK_WIDTH)
         self.check_button.pack(side="left")
         self.all_button = ttk.Button(buttons, text="Install/update all", command=self.update_all,
                                      style=slim + "Accent.TButton")
         self.all_button.pack(side="left", padx=(8, 0))
-        if not fileinstall_ui.ADD_ON_TOP:
-            self.files.build_button(buttons, outer)   # "Add file..." (+ drag and drop)
         # App settings live in a small Settings window (see open_settings).
         # Show beta versions: off by default. Share anonymous counts: on by default.
         self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
         self.share_var = tk.BooleanVar(value=_share_on(self.settings))
         self.settings_win = self.beta_check = self.share_check = None
-        self.backup_button = self.restore_button = None   # in the Settings window
-        self.share_buttons = []                             # Send / Receive (Settings)
-        self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON,
+        self.backup_win = None   # the Backup window (am\backup_ui.BackupWindow) while open
+        self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON, width=NARROW_WIDTH,
                                           command=self.open_settings, style=slim + "TButton")
         self.settings_button.pack(side="right")
-        # Show beta versions also in the main window (easy to toggle), left of Settings.
+        # Backup: its own window (Make / Restore / Send / Receive), left of Settings.
+        self.backup_main_button = ttk.Button(buttons, text=errors.BACKUP_HEADING,
+                                             width=NARROW_WIDTH, style=slim + "TButton",
+                                             command=self.open_backup_window)
+        self.backup_main_button.pack(side="right", padx=(0, 8))
+        # Show beta versions also in the main window (easy to toggle), left of Backup.
         # Same variable and command as the box in Settings, so both always match.
         self.beta_main_check = ttk.Checkbutton(buttons, text=BETA_MAIN_TEXT, variable=self.beta_var,
                                                command=self.toggle_betas)
@@ -461,10 +470,11 @@ class App:
         self._set_enabled(self.check_button, not self.busy)
         self._set_enabled(self.folder_button, not self.busy)
         self._set_enabled(self.beta_main_check, not self.busy)
+        self._set_enabled(self.backup_main_button, not self.busy and bool(self.addons_dir))
         if self.beta_check is not None:   # only while the Settings window is open
             self._set_enabled(self.beta_check, not self.busy)
-            for b in (self.backup_button, self.restore_button, *self.share_buttons):
-                self._set_enabled(b, not self.busy and bool(self.addons_dir))
+        if self.backup_win is not None:
+            self.backup_win.render()
         self.files.render()
         self._render_update_bar()
         self._fit_min_width()
@@ -474,9 +484,11 @@ class App:
         the row buttons can't be cut off. At least MIN_WIDTH."""
         self.list_frame.update_idletasks()
         # The bottom row's buttons too: at 150 % display scaling and more they need more
-        # than the list (Check again ... Settings would be cut off).
+        # than the list (Check again ... Backup, Settings would be cut off); and the
+        # Add file... line above the list.
         need = max(MIN_WIDTH, self.list_frame.winfo_reqwidth() + 20,   # + outer padding
-                   self.settings_button.master.winfo_reqwidth() + 20)
+                   self.settings_button.master.winfo_reqwidth() + 20,
+                   self.files.button.master.winfo_reqwidth() + 20)
         if need != self._min_width:
             self._min_width = need
             self.root.minsize(need, 320)
@@ -946,33 +958,6 @@ class App:
                       justify="left").pack(anchor="w", padx=(22, 0))
             checks.append(check)
         self.beta_check, self.share_check = checks
-        # Backup: both buttons side by side, one short note and a line for problems.
-        ttk.Label(frame, text=errors.BACKUP_HEADING, font=theme.font("bold")).pack(
-            anchor="w", pady=(14, 0))
-        line = ttk.Frame(frame)
-        line.pack(anchor="w", pady=(4, 0))
-        self.backup_button = ttk.Button(line, text=errors.BACKUP_BUTTON,
-                                        command=self.open_backup)
-        self.backup_button.pack(side="left")
-        self.restore_button = ttk.Button(line, text=errors.RESTORE_BUTTON,
-                                         command=self.open_restore)
-        self.restore_button.pack(side="left", padx=(8, 0))
-        self.share_buttons = []
-        if self.share_url:
-            line = ttk.Frame(frame)
-            line.pack(anchor="w", pady=(6, 0))
-            for text, command in ((errors.SEND_BUTTON, self.open_send),
-                                  (errors.RECEIVE_BUTTON, self.open_receive)):
-                b = ttk.Button(line, text=text, command=command)
-                b.pack(side="left", padx=(8, 0) if self.share_buttons else 0)
-                self.share_buttons.append(b)
-        ttk.Label(frame, text=errors.BACKUP_NOTE, style="Muted.TLabel", wraplength=320,
-                  justify="left").pack(anchor="w", padx=(0, 0), pady=(2, 0))
-        self.backup_status = tk.StringVar()
-        ttk.Label(frame, textvariable=self.backup_status, wraplength=320,
-                  justify="left").pack(anchor="w")
-        for b in (self.backup_button, self.restore_button, *self.share_buttons):
-            self._set_enabled(b, not self.busy and bool(self.addons_dir))
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(14, 0))
         self.settings_close = ttk.Button(buttons, text="Close", command=self.close_settings)
@@ -1001,11 +986,9 @@ class App:
         if self.backup_dialog is not None:
             if self.backup_dialog.running:
                 return   # a backup/restore is running: its window stays until it's done
-            self.backup_dialog.close()
+            self.backup_dialog.close()   # the Licences window
         win, self.settings_win = self.settings_win, None
         self.beta_check = self.share_check = None
-        self.backup_button = self.restore_button = None
-        self.share_buttons = []
         if win is not None:
             try:
                 win.grab_release()
@@ -1013,15 +996,35 @@ class App:
             except tk.TclError:
                 pass
 
-    # ---------- backup and restore (from the Settings window; see am\backup_ui.py) ----------
+    # ---------- the Backup window (main window's Backup button; see am\backup_ui.py) ----------
+    def open_backup_window(self, show=True):
+        """The Backup window: Make / Restore / Send / Receive and the last backup.
+        show=False (tests): built but never shown."""
+        if self.backup_win is not None:
+            if show:
+                self.backup_win.win.deiconify()
+                self.backup_win.win.lift()
+            return self.backup_win
+        self.backup_win = backup_ui.BackupWindow(self, show=show)
+        return self.backup_win
+
+    def close_backup_window(self):
+        if self.backup_dialog is not None:
+            if self.backup_dialog.running:
+                return   # a backup/restore is running: its window stays until it's done
+            self.backup_dialog.close()
+        hub, self.backup_win = self.backup_win, None
+        if hub is not None:
+            hub.destroy()
+
     def _backup_note(self, text):
-        if self.settings_win is not None and self.backup_button is not None:
-            self.backup_status.set(text)
+        if self.backup_win is not None:
+            self.backup_win.set_status(text)
         else:
             self.set_message(text)
 
     def _ask_backup_file_dialog(self):
-        parent = self.settings_win or self.root
+        parent = backup_ui.owner_window(self)
         start = backup_ui.backup_folder(config.load_settings())
         return filedialog.askopenfilename(
             parent=parent, title=errors.RESTORE_PICK_FILE,
@@ -1030,7 +1033,7 @@ class App:
 
     def _ask_backup_folder_dialog(self, start):
         parent = (self.backup_dialog.win if self.backup_dialog is not None
-                  else self.settings_win or self.root)
+                  else backup_ui.owner_window(self))
         if os.name != "nt":
             _show_hidden_folders(self.root)
         return filedialog.askdirectory(parent=parent, mustexist=False,
@@ -1080,13 +1083,11 @@ class App:
         if not path:
             self.backup_dialog = backup_ui.BackupListDialog(self, show=show)
             return self.backup_dialog
-        if self.settings_win is not None and show:
+        if self.backup_win is not None and show:
             try:
-                self.settings_win.grab_set()
+                self.backup_win.win.grab_set()
             except tk.TclError:
                 pass
-        if not path:
-            return None
         try:
             info = backup.read(path)
         except Exception as e:
@@ -1098,6 +1099,10 @@ class App:
 
     def _backup_event(self, msg):
         kind = msg[0]
+        if kind == "backup_last":   # the Backup window's "Last backup" line
+            if self.backup_win is not None:
+                self.backup_win.handle(msg)
+            return
         final = kind in ("backup_done", "backup_error", "restore_done", "restore_error")
         if final:
             self.busy = False

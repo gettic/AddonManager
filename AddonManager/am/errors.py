@@ -258,11 +258,23 @@ def success_message(name, version_text):
     return f"{name} {version_text} installed. Restart WoW or type /reload to use it."
 
 
-# ---------- Backup and restore (Settings window) ----------
-BACKUP_HEADING = "Backup"
+# ---------- Backup and restore (the Backup window, from the main window's Backup button) ----------
+BACKUP_HEADING = "Backup"          # the main window's button and the Backup window's title
 BACKUP_BUTTON = "Make a backup..."
 RESTORE_BUTTON = "Restore a backup..."
-BACKUP_NOTE = "Your addons and their settings in one file, to use on another PC."
+BACKUP_NOTE = ("Your addons and their settings in one file, to use on another PC. "
+               "Close WoW first.")
+BACKUP_THIS_PC = "This PC"
+BACKUP_OTHER_PC = "Another PC"
+BACKUP_LAST_LOOKING = "Last backup: looking..."
+BACKUP_LAST_NONE = "Last backup: none yet"
+
+
+def backup_last(when, place):
+    return f"Last backup: {when} ({place})"
+
+
+
 BACKUP_TITLE = "Make a backup"
 BACKUP_SETTINGS = "Addon settings (key bindings and macros too)"
 BACKUP_ADDONS = "Addons themselves"
@@ -272,6 +284,12 @@ BACKUP_CLOUD = "To keep a copy online, save it in a folder your cloud app syncs:
 BACKUP_PICK_ONE = "Tick at least one of the two."
 BACKUP_MAKE = "Make backup"
 BACKUP_MAKING = "Making the backup..."
+
+
+def backup_making(percent):
+    return f"Making the backup... {percent} %"
+
+
 BACKUP_OPEN_FOLDER = "Open folder"
 BACKUP_CHANGE = "Change..."
 CLOSE = "Close"
@@ -359,12 +377,124 @@ def received_addons(not_listed, different):
     return " ".join(parts)
 
 
-def sending(done, total):
-    return f"Sending {size_text(done)} of {size_text(total)}..."
+# Send later (am\share_later.py): file.kiwi, only when the player ticks it. Plain, honest
+# texts (tos conditions): another company's service, what it sees, can't be deleted early.
+LATER_TICK = ("Upload to file.kiwi (a third-party host) when the other PC isn't ready in "
+              "5 min, or right away if the backup is over 500 MB, so it can get it later")
+LATER_NOTE = ("file.kiwi (servers in the US, with Cloudflare and Google) sees your IP "
+              "address, the file's size and when it's sent. The file is encrypted, so they "
+              "can't open it. It can't be deleted early: it stays on their servers a few days, "
+              "but only this code opens it.")
+LATER_TERMS = "file.kiwi terms"
+LATER_PRIVACY = "Privacy"
+LATER_KEEP = "The code works for:"
+LATER_UPLOADING = ("The other PC isn't here, so it's being uploaded to file.kiwi for later. "
+                   "Keep this window open until it's done.")
+LATER_UPLOADING_BIG = ("This backup is over 500 MB, so it's being uploaded to file.kiwi. The "
+                       "other PC can type the code any time. Keep this window open until "
+                       "it's done.")
+LATER_GOT = ("The other PC uploaded it to file.kiwi for later. Click Download: your browser "
+             "gets it from there. Then it's found in your Downloads folder by itself, or "
+             "click Open the download...")
+LATER_KEEP_OPEN = "Keep this window open until it's restored: the code works only once."
+LATER_DOWNLOAD = "Download"
+LATER_OPEN = "Open the download..."
+LATER_LOOKING = "Waiting for the download..."
+LATER_CHECKING = "Checking the file..."
 
 
-def receiving(done, total):
-    return f"Receiving {size_text(done)} of {size_text(total)}..."
+def later_hours(hours):
+    return f"{hours} hour" if hours == 1 else f"{hours} hours"
+
+
+def later_in(seconds):
+    seconds = max(0, int(seconds))
+    return (f"Works once. Not here in {seconds // 60}:{seconds % 60:02d}? Then it's "
+            "uploaded for later.")
+
+
+def later_uploading(done, total, left=None):
+    return _with_left(f"Uploading for later: {size_text(done)} of {size_text(total)}...", left)
+
+
+def later_ready(until_text, hours):
+    return (f"Uploaded. On the other PC, type the code in Receive... any time until "
+            f"{until_text} ({later_hours(hours)}). It works once. You can close the Addon "
+            "Manager now.")
+
+
+def later_waiting(permille):
+    return (f"The other PC is still uploading it ({max(0, min(100, permille // 10))} %). "
+            "Keep this window open.")
+
+
+def time_left(seconds):
+    """'about 12 min left' (None = not known yet)."""
+    if seconds is None:
+        return ""
+    minutes = round(seconds / 60)
+    if minutes < 1:
+        return "less than a minute left"
+    if minutes < 90:
+        return f"about {minutes} min left"
+    return f"about {minutes // 60} h {minutes % 60} min left"
+
+
+def _with_left(text, left):
+    return f"{text} {time_left(left)}" if left is not None else text
+
+
+def sending(done, total, left=None):
+    return _with_left(f"Sending {size_text(done)} of {size_text(total)}...", left)
+
+
+def receiving(done, total, left=None):
+    return _with_left(f"Receiving {size_text(done)} of {size_text(total)}...", left)
+
+
+# Spoken (AI voice-over addons): asked once when a backup would hold them (am\backup_ui.py).
+SPOKEN_TITLE = "Leave out the Spoken addons?"
+SPOKEN_WHY = ("They are big and hold almost no settings, so the backup is much smaller and "
+              "faster without them.")
+SPOKEN_KEPT = ("Their settings are still saved. On the other PC, install them from where you "
+               "got them.")
+SPOKEN_SKIP = "Leave them out"
+SPOKEN_KEEP = "Keep them"
+SPOKEN_CHECKING = "Checking the addons..."
+SPOKEN_LEFT_OUT = "Spoken addons left out."
+
+
+def _names(names, most=4):
+    names = list(names)
+    if len(names) <= most:
+        return ", ".join(names)
+    return ", ".join(names[:most]) + f" and {len(names) - most} more"
+
+
+def spoken_found(names, size):
+    return f"Found Spoken (AI voice-over addon): {_names(names)} (about {limit_text(size)})."
+
+
+def spoken_sizes(without, with_them):
+    return (f"Backup without them: about {limit_text(without)} "
+            f"(with: about {limit_text(with_them)})")
+
+
+def spoken_tick(size):
+    return f"Leave out Spoken (AI voice-over addon) (about {limit_text(size)})"
+
+
+def restore_left_out(names):
+    return (f"This backup left out: {_names(names)} (install them yourself if you want "
+            "them).")
+
+
+def limit_text(size):
+    """A size limit as '500 MB' or '5 GB'."""
+    gib = 1024 * 1024 * 1024
+    if size >= gib:
+        return f"{size / gib:.0f} GB" if size % gib == 0 else f"{size / gib:.1f} GB"
+    return size_text(size)
 
 
 def code_ends(seconds):
@@ -394,12 +524,29 @@ def share_message(exc):
         return ("The send service is busy. Try again in a few minutes, or use a cloud "
                 "folder or USB stick.")
     if kind == "too_big":
-        return "That backup is too big to send (500 MB at most). Use a cloud folder or USB stick."
+        limit = getattr(exc, "limit", None) or 500 * 1024 * 1024
+        if getattr(exc, "detail", "") == "later_off":
+            return (f"That backup is over {limit_text(limit)}, too big to send through the "
+                    "Addon Manager's own service. The file.kiwi tick (a third-party host) "
+                    "can carry it, or make a backup and copy it yourself with a USB stick or "
+                    "cloud folder.")
+        return (f"That backup is too big to send ({limit_text(limit)} at most). Use a cloud "
+                "folder or USB stick.")
+    if kind == "later_failed":
+        return ("Uploading to file.kiwi didn't work, so the code was stopped. Try again with "
+                "a new code, or use a USB stick or cloud folder.")
+    if kind == "later_file":
+        return ("That isn't the finished download for this code (or it is damaged). Download "
+                "it again, then pick it.")
     if kind == "broken":
         return "The file arrived damaged or cut off, so it was thrown away. Try again."
     if kind == "not_backup":
         return "That file isn't a backup that can be sent (or it is damaged)."
     if kind == "disk_full":
+        need = getattr(exc, "limit", None)
+        if need:
+            return (f"Not enough free disk space: about {limit_text(need)} is needed. Free "
+                    "some space and try again.")
         return "The disk is full. Free some space and try again."
     if kind in ("game", "inside_game", "permission", "locked", "nothing"):
         return backup_message(exc)
@@ -499,5 +646,9 @@ def backup_message(exc):
         return (f"{SYSTEM} won't let me write there, so nothing was changed. Pick another "
                 "folder or close WoW and try again.")
     if kind == "disk_full":
+        need = getattr(exc, "need", None)
+        if need:
+            return (f"Not enough free disk space, so nothing was changed: about "
+                    f"{limit_text(need)} is needed. Free some space and try again.")
         return "The disk is full, so nothing was changed. Free some space and try again."
     return "That didn't work, so nothing was changed. Try again." + DETAILS

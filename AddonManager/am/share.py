@@ -8,9 +8,14 @@ Cloudflare Worker + Durable Object). The relay never sees the file or the code's
   hold the chunk number and a "last chunk" flag), then size + sha256 are checked.
 - The receiver checks the result with backup.read(received=True) before keeping it; the
   normal Restore window (account pick, safety copy) does the rest.
+- Send later (only when the player ticked it): if nobody joined after 5 minutes, or at once
+  for a backup over MAX_SIZE (up to LATER_MAX_SIZE; the relay can't carry it), the backup is
+  uploaded to file.kiwi (am\\share_later.py) and the same code fetches it later, once.
 No tkinter here: the windows are in am\\share_ui.py. The two packages are imported only
 when a transfer starts (app start stays fast)."""
 
+import base64
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -20,12 +25,13 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from am import backup, download
+from am import backup, download, share_later
 from am.share_words import WORDS
 
 log = logging.getLogger(__name__)
@@ -33,7 +39,11 @@ log = logging.getLogger(__name__)
 PROTOCOL = "v1"
 CHUNK = 1024 * 1024                  # plaintext bytes per chunk
 TAG = 16                             # Poly1305 tag
-MAX_SIZE = 500 * 1024 * 1024         # biggest file that can be sent
+MAX_SIZE = 500 * 1024 * 1024         # biggest file sent through the relay itself
+LATER_MAX_SIZE = 5 * 1024 * 1024 * 1024   # biggest file sent later (file.kiwi; under its
+                                          # 10 GB for a free 24 h download)
+PING_EVERY = 15                      # seconds between "still here" calls while uploading
+ZIP_GUESS_LOW, ZIP_GUESS_HIGH = 0.45, 0.9   # zip size / addon folder size (before zipping)
 MAX_CHANNEL = 499
 CODE_WORDS = 3
 CODE_TTL = 600                       # seconds a code waits for the other PC
@@ -53,12 +63,16 @@ _PREFIX = {w[:3]: w for w in WORDS}
 class ShareError(Exception):
     """kind: bad_format, offline, timeout, busy, not_found, used, wrong_code, expired,
     ended (the other PC stopped), cancelled, too_big, broken, not_backup, disk_full,
-    file (couldn't read/write the file), server (an answer the app doesn't understand)."""
+    file (couldn't read/write the file), server (an answer the app doesn't understand),
+    later_failed (the upload
+    to file.kiwi didn't work), later_file (the downloaded file isn't the right one)."""
 
-    def __init__(self, kind, detail=""):
+    def __init__(self, kind, detail="", limit=None):
         super().__init__(f"{kind}: {detail}" if detail else kind)
         self.kind = kind
         self.detail = detail
+        self.limit = limit   # too_big: the biggest size that can be sent (bytes); detail
+        # "later_off": a bigger one works with the send-later tick
 
 
 # ---------- the code ----------
@@ -161,6 +175,7 @@ class Relay:
         if p.username or p.password or p.query or p.fragment:
             raise ShareError("server", "relay address not allowed")
         self.url = url
+        self.local = bool(allow_local and local)   # a test relay: test addresses allowed
         self.timeout = timeout
         self.sleep = sleep
         self.token = None
@@ -222,7 +237,7 @@ class Relay:
         if status == 404:
             return ShareError("not_found")
         if status == 409:
-            return ShareError("used")
+            return ShareError("used", kind)
         if status == 410:
             return ShareError(_CLOSED.get(kind, "ended"), kind)
         if status == 413:
@@ -261,7 +276,8 @@ class Relay:
         """The receiver takes the mailbox (only the first join ever counts; a repeat of
         this same join after a network blip gets the same answer)."""
         self.channel = channel
-        jid = secrets.token_hex(16)
+        # This app takes sends kept for later (file.kiwi).
+        jid = secrets.token_hex(16) + "|caps=later"
         try:
             _s, data = self._call("POST", f"/{PROTOCOL}/join/{channel}", jid.encode("ascii"),
                                   ok=(200,))
@@ -269,7 +285,12 @@ class Relay:
             if e.kind in ("wrong_code", "ended", "expired"):   # a closed mailbox
                 raise ShareError("not_found", e.detail) from e
             raise
-        self._take_token(self._json(data))
+        out = self._json(data)
+        if out.get("later") is True:
+            self._take_token(out)   # the watch token: GET /later needs it
+            return "later"
+        self._take_token(out)
+        return None
 
     def put_msg(self, slot, data):
         self._call("PUT", f"/{PROTOCOL}/{self.channel}/msg/{slot}", data)
@@ -291,6 +312,58 @@ class Relay:
                                   max_bytes=CHUNK + TAG + 64)
         return data if status == 200 else None
 
+    def ping(self, permille=None):
+        """Still here (uploads for later, with their progress). A closed mailbox raises; a
+        network blip doesn't (the upload's own retries decide)."""
+        body = json.dumps({"p": permille}).encode("ascii") if permille is not None else b""
+        try:
+            self._call("POST", f"/{PROTOCOL}/{self.channel}/ping", body)
+        except ShareError as e:
+            if e.kind not in ("offline", "timeout"):
+                raise
+
+    # ---------- send later ----------
+    def start_later(self, hours, salt_hex, verifier):
+        """Turn the waiting code into a send-later one. False if the other PC joined just
+        now (go on live)."""
+        body = json.dumps({"hours": hours, "salt": salt_hex, "verifier": verifier})
+        try:
+            self._call("POST", f"/{PROTOCOL}/{self.channel}/later", body.encode("ascii"))
+        except ShareError as e:
+            if e.kind == "used" and e.detail == "joined":
+                return False
+            raise
+        return True
+
+    def put_record(self, sealed):
+        """Store the sealed record; seconds the code works from now."""
+        _s, data = self._call("PUT", f"/{PROTOCOL}/{self.channel}/record", sealed, ok=(200,))
+        left = self._json(data).get("left")
+        return left if isinstance(left, int) and left > 0 else 0
+
+    def later_state(self, wait=POLL_WAIT):
+        _s, data = self._call("GET", f"/{PROTOCOL}/{self.channel}/later?wait={wait}",
+                              ok=(200,))
+        out = self._json(data)
+        if out.get("state") not in ("uploading", "ready") or not re.fullmatch(
+                r"[0-9a-f]{32}", str(out.get("salt"))):
+            raise ShareError("server", "bad later state")
+        return out
+
+    def take(self, verifier):
+        """The sealed record, once. A wrong code deletes it (wrong_code)."""
+        body = json.dumps({"verifier": verifier}).encode("ascii")
+        status, data = self._once("POST", f"/{PROTOCOL}/{self.channel}/take", body)
+        if status == 403:
+            raise ShareError("wrong_code", "later")
+        if status != 200:
+            raise self._error(status, data)
+        rec = self._json(data).get("record")
+        try:
+            return base64.b64decode(rec, validate=True)
+        except (TypeError, ValueError) as e:
+            raise ShareError("server", "bad record") from e
+
     def close(self, reason):
         """Tell the relay to delete the mailbox now. Never raises."""
         if not self.token or self.channel is None:
@@ -300,6 +373,39 @@ class Relay:
                        json.dumps({"reason": reason}).encode("ascii"), timeout=5)
         except Exception:
             pass
+
+
+# ---------- size checks ----------
+def size_check(size, later_on):
+    """True when the file goes straight to send later (over MAX_SIZE, the tick on).
+    Raises too_big (with the limit) when it can't be sent at all."""
+    if size > LATER_MAX_SIZE:
+        raise ShareError("too_big", limit=LATER_MAX_SIZE)
+    if size > MAX_SIZE:
+        if not later_on:
+            raise ShareError("too_big", "later_off", limit=MAX_SIZE)
+        return True
+    return False
+
+
+def precheck(unpacked, later_on, folder, disk_usage=shutil.disk_usage):
+    """Before making a new backup to send: refuse early (no minutes of zipping) when the zip
+    surely can't be sent, or the backup folder's drive can't hold it. unpacked = addon
+    folder bytes (backup.addons_size)."""
+    low, high = int(unpacked * ZIP_GUESS_LOW), int(unpacked * ZIP_GUESS_HIGH)
+    if low > LATER_MAX_SIZE:
+        raise ShareError("too_big", limit=LATER_MAX_SIZE)
+    if low > MAX_SIZE and not later_on:
+        raise ShareError("too_big", "later_off", limit=MAX_SIZE)
+    try:
+        probe = folder
+        while probe and not os.path.isdir(probe) and os.path.dirname(probe) != probe:
+            probe = os.path.dirname(probe)
+        free = disk_usage(probe).free
+    except (OSError, ValueError):
+        return
+    if free < high + SPARE_DISK:
+        raise ShareError("disk_full", limit=high + SPARE_DISK)
 
 
 # ---------- waiting ----------
@@ -333,16 +439,20 @@ def _close_for(relay, e):
 
 
 # ---------- send ----------
-def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic):
+def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic, later=None,
+         on_later=None):
     """Send a backup file. on_code(code, seconds) is called once the code is ready (show
-    it); progress(done, total) while sending. Returns the size sent. Raises ShareError."""
+    it); progress(done, total) while sending. Returns the size sent. Raises ShareError.
+    later = {"hours", "api", "allow_local"} when the player ticked send later: if nobody
+    joined after share_later.LATER_AFTER seconds, it goes to file.kiwi instead (a file
+    over MAX_SIZE goes there at once, before the code is shown);
+    on_later("uploading", None) / on_later("ready", seconds the code works)."""
     from spake2 import SPAKE2_A
     try:
         size = os.path.getsize(path)
     except OSError as e:
         raise ShareError("not_backup", type(e).__name__) from e
-    if size > MAX_SIZE:
-        raise ShareError("too_big")
+    big = size_check(size, bool(later))
     try:
         info = backup.read(path, received=True)   # the same check the other PC makes
     except backup.BackupError as e:
@@ -353,12 +463,35 @@ def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic)
     chunks = max(1, math.ceil(size / CHUNK))
     channel, ttl = relay.open()
     words = new_words()
+    if big:   # too big for the relay: send later at once (nobody can join live first)
+        try:
+            _send_later(path, relay, channel, words, size, sha, later, progress, cancel, clock,
+                        on_later, lambda: on_code(format_code(channel, words), ttl))
+            return size
+        except BaseException as e:
+            _close_for(relay, e)
+            if isinstance(e, OSError):
+                raise _file_error(e) from e
+            raise
     spake = SPAKE2_A(_password(channel, words), idA=ID_A, idB=ID_B)
     msg_a = spake.start()
     try:
         relay.put_msg("pakeA", msg_a)
         on_code(format_code(channel, words), ttl)
-        msg_b = _wait_msg(relay, "pakeB", clock() + ttl, cancel, clock)
+        code_end = clock() + ttl
+        msg_b = None
+        if later:
+            try:
+                msg_b = _wait_msg(relay, "pakeB", min(code_end, clock() + share_later.LATER_AFTER),
+                                  cancel, clock)
+            except ShareError as e:
+                if e.kind != "expired" or clock() >= code_end:
+                    raise
+                if _send_later(path, relay, channel, words, size, sha, later, progress,
+                               cancel, clock, on_later):
+                    return size
+        if msg_b is None:
+            msg_b = _wait_msg(relay, "pakeB", code_end, cancel, clock)
         try:
             keys = _Keys(spake.finish(msg_b), channel)
         except ShareError:
@@ -402,6 +535,174 @@ def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic)
         raise
 
 
+# ---------- send later ----------
+def _later_error(e):
+    if isinstance(e, ShareError):
+        return e
+    kind = getattr(e, "kind", "")
+    if kind == "cancelled":
+        return ShareError("cancelled")
+    if kind == "file":
+        return ShareError("not_backup", "file changed")
+    return ShareError("later_failed", f"{type(e).__name__} {kind}")
+
+
+def _send_later(path, relay, channel, words, size, sha, later, progress, cancel, clock,
+                on_later, show_code=None):
+    """Nobody came (or the file is too big for the relay): upload to file.kiwi and leave
+    the sealed record for the code. False if the other PC joined at the last moment (the
+    live send goes on). show_code() once the mailbox is a send-later one."""
+    salt = os.urandom(16)
+    rkey, verifier = share_later.record_keys(_password(channel, words), salt)
+    if not relay.start_later(int(later["hours"]), salt.hex(), verifier):
+        if show_code:   # nobody had the code yet: can't happen
+            raise ShareError("server", "joined before the code was shown")
+        return False
+    if show_code:
+        show_code()
+    if on_later:
+        on_later("uploading", "big" if show_code else None)
+    file_key, kiwi_key, name = os.urandom(32), os.urandom(16), share_later.random_name()
+    blob = share_later.Blob(path, file_key, size, sha)
+    kiwi = share_later.FileKiwi(later.get("api") or share_later.API_URL,
+                                allow_local=bool(later.get("allow_local")), sleep=relay.sleep)
+    stop = threading.Event()
+    result = {}
+    seen = [0, blob.total]
+
+    def moved(done, total):
+        seen[0], seen[1] = done, total
+        if progress:
+            progress(min(size, done * size // max(1, total)), size)
+
+    def run():
+        try:
+            result["link"] = kiwi.upload(blob, name, kiwi_key, stop.is_set, moved)
+        except BaseException as e:   # noqa: BLE001 (handed to the main thread)
+            result["error"] = e
+
+    if progress:
+        progress(0, size)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    last_ping = clock()
+    try:
+        while t.is_alive():
+            if cancel is not None and cancel.is_set():
+                raise ShareError("cancelled")
+            if clock() - last_ping >= PING_EVERY:
+                relay.ping(min(1000, seen[0] * 1000 // max(1, seen[1])))
+                last_ping = clock()
+            t.join(0.25)
+    finally:
+        stop.set()
+        t.join(10)
+    if "error" in result:
+        raise _later_error(result["error"])
+    record = {"v": 1, "link": result["link"], "key": file_key.hex(), "size": size,
+              "sha256": sha, "blob": blob.total, "name": name}
+    left = relay.put_record(share_later.seal_record(rkey, channel, record))
+    if on_later:
+        on_later("ready", left)
+    return True
+
+
+@dataclasses.dataclass
+class LaterTicket:
+    """What the code unlocked for a send-later: download `link` in the browser (it saves
+    `name`), then open_later() with the file. Kept in memory only."""
+    link: str
+    key: bytes
+    size: int
+    sha256: str
+    blob: int
+    name: str
+
+
+def _receive_later(channel, words, relay, cancel, clock, on_later):
+    deadline = clock() + share_later.UPLOAD_WAIT
+    wait = 0   # first a quick look: an upload that is done needs no waiting
+    while True:
+        _check(cancel, deadline, clock, "ended")
+        st = relay.later_state(wait)
+        wait = POLL_WAIT
+        if st["state"] == "ready":
+            break
+        p = st.get("p")
+        if on_later:
+            on_later("uploading", p if isinstance(p, int) else 0)
+    rkey, verifier = share_later.record_keys(_password(channel, words),
+                                             bytes.fromhex(st["salt"]))
+    sealed = relay.take(verifier)
+    try:
+        r = share_later.open_record(rkey, channel, sealed, relay.local)
+    except ValueError as e:
+        raise ShareError("broken", "record") from e
+    if r["size"] > LATER_MAX_SIZE:
+        raise ShareError("too_big", limit=LATER_MAX_SIZE)
+    return LaterTicket(r["link"], bytes.fromhex(r["key"]), r["size"], r["sha256"], r["blob"],
+                       r["name"])
+
+
+def open_later(ticket, blob_path, dest_folder, progress=None, cancel=None):
+    """Open the file downloaded from file.kiwi with the ticket's key: the backup goes to
+    dest_folder ("... received.zip") after the same checks as a live send. Returns the
+    path. The downloaded file itself is left alone."""
+    try:
+        if os.path.getsize(blob_path) != ticket.blob:
+            raise ShareError("later_file", "size")
+        _h, plain = share_later.open_blob(blob_path, ticket.key, ticket.size)
+    except OSError as e:
+        raise ShareError("later_file", type(e).__name__) from e
+    except ValueError as e:
+        raise ShareError("later_file", str(e)) from e
+    os.makedirs(dest_folder, exist_ok=True)
+    try:
+        free = shutil.disk_usage(dest_folder).free
+    except OSError:
+        free = None
+    if free is not None and free < ticket.size + SPARE_DISK:
+        raise ShareError("disk_full", limit=ticket.size + SPARE_DISK)
+    part = os.path.join(dest_folder, f"{PART_PREFIX}{secrets.token_hex(4)}{PART_EXT}")
+    try:
+        h, got = hashlib.sha256(), 0
+        if progress:
+            progress(0, ticket.size)
+        with open(part, "xb") as f:
+            try:
+                for data in plain:
+                    if cancel is not None and cancel.is_set():
+                        raise ShareError("cancelled")
+                    got += len(data)
+                    h.update(data)
+                    f.write(data)
+                    if progress:
+                        progress(got, ticket.size)
+            except ValueError as e:   # cut off or not ours (a changed chunk = broken)
+                raise ShareError("later_file", "damaged") from e
+        if got != ticket.size or not hmac.compare_digest(h.hexdigest(), ticket.sha256):
+            raise ShareError("broken", "checksum")
+        try:
+            info = backup.read(part, received=True)
+        except backup.BackupError as e:
+            raise ShareError("not_backup", e.kind) from e
+        if info.kind != "backup":
+            raise ShareError("not_backup", "safety copy")
+        backup.mark_received(part)
+        final = backup.received_path(dest_folder)
+        os.rename(part, final)
+        part = None
+        return final
+    except OSError as e:
+        raise _file_error(e) from e
+    finally:
+        if part is not None:
+            try:
+                os.remove(part)
+            except OSError:
+                log.warning("Could not remove an unfinished file")
+
+
 # ---------- receive ----------
 def _header(cipher, box):
     try:
@@ -417,21 +718,24 @@ def _header(cipher, box):
             or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)):
         raise ShareError("broken", "header")
     if size > MAX_SIZE:
-        raise ShareError("too_big")
+        raise ShareError("too_big", limit=MAX_SIZE)
     if size < 1 or chunks != max(1, math.ceil(size / CHUNK)):
         raise ShareError("broken", "header")
     return size, chunks, sha
 
 
 def receive(code, relay, dest_folder, progress=None, cancel=None, clock=time.monotonic,
-            on_start=None):
+            on_start=None, on_later=None):
     """Receive a backup into dest_folder ("AddonManager backup <date> received.zip").
     progress(done, total) while receiving; on_start() once the code matched. The file is
     written to a hidden .part first and kept only if every check passes, including
-    backup.read(received=True). Returns the new file's path. Raises ShareError."""
+    backup.read(received=True). Returns the new file's path, or a LaterTicket when the
+    other PC uploaded it for later (on_later("uploading", per mille) while it still
+    uploads). Raises ShareError."""
     from spake2 import SPAKE2_B
     channel, words = parse_code(code)
-    relay.join(channel)
+    if relay.join(channel) == "later":
+        return _receive_later(channel, words, relay, cancel, clock, on_later)
     spake = SPAKE2_B(_password(channel, words), idA=ID_A, idB=ID_B)
     msg_b = spake.start()
     part = None
@@ -457,7 +761,7 @@ def receive(code, relay, dest_folder, progress=None, cancel=None, clock=time.mon
         except OSError:
             free = None
         if free is not None and free < size + SPARE_DISK:
-            raise ShareError("disk_full")
+            raise ShareError("disk_full", limit=size + SPARE_DISK)
         part = os.path.join(dest_folder, f"{PART_PREFIX}{secrets.token_hex(4)}{PART_EXT}")
         h, got = hashlib.sha256(), 0
         if progress:

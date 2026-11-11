@@ -20,6 +20,7 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 import zipfile
@@ -39,7 +40,8 @@ SKIP_FILES = {"chat-cache.txt"}            # chat history: private and not neede
 BINDING_FILES = {"bindings-cache.wtf", "macros-cache.txt"}
 RESTORE_PREFIX = ".addonmanager-restore-"  # staging folder inside WTF during a restore
 MAX_ENTRIES = 200_000
-MAX_TOTAL = 4 * 1024 * 1024 * 1024         # unpacked size of a whole backup
+MAX_TOTAL = 8 * 1024 * 1024 * 1024         # unpacked size of a whole backup
+SPARE_DISK = 50 * 1024 * 1024              # kept free on a drive after a restore
 MAX_RATIO = 200                            # compressed -> unpacked, per file over 1 MB
 MAX_WTF_DEPTH = 4                          # realm/character/SavedVariables/file
 
@@ -50,10 +52,11 @@ class BackupError(Exception):
     """kind: bad_folder, nothing, inside_game, not_backup, newer_format, unsafe, bad_zip,
     no_account, same_account, locked, permission, disk_full, other."""
 
-    def __init__(self, kind, detail=""):
+    def __init__(self, kind, detail="", need=None):
         super().__init__(f"{kind}: {detail}")
         self.kind = kind
         self.detail = detail
+        self.need = need   # disk_full: bytes needed (when known)
 
 
 # ---------- names and places ----------
@@ -721,6 +724,15 @@ def _walk(root, depth=0, max_depth=None):
             yield [e.name], e.path
 
 
+# Spoken (AI voice-over addons: "Spoken" and every "Spoken*" folder) are big and hold almost
+# no settings; the player can leave their folders out of a backup (their WTF files stay).
+SPOKEN_PREFIX = "spoken"
+
+
+def is_spoken(folder):
+    return folder.lower().startswith(SPOKEN_PREFIX)
+
+
 def addon_folders(addons_dir):
     """Addon folders in AddOns that a backup holds: a real folder with a .toc inside;
     never Blizzard_*, links or the app's own .addonmanager-* folders."""
@@ -763,12 +775,23 @@ def _size(files):
     return total
 
 
-def addons_size(addons_dir):
+def addons_size(addons_dir, leave_out=()):
     """Bytes of the addon folders a backup would hold (for the window's label)."""
     try:
-        return _size(_addon_files(places(addons_dir), addon_folders(addons_dir)))
+        return _size(_addon_files(places(addons_dir), [
+            f for f in addon_folders(addons_dir) if f not in leave_out]))
     except (BackupError, OSError):
         return 0
+
+
+def spoken_folders(addons_dir):
+    """[(folder, bytes)] of the Spoken addons a backup would hold ([] if none)."""
+    try:
+        p = places(addons_dir)
+        return [(f, _size(_addon_files(p, [f]))) for f in addon_folders(addons_dir)
+                if is_spoken(f)]
+    except (BackupError, OSError):
+        return []
 
 
 def _os_error(e, what):
@@ -777,14 +800,17 @@ def _os_error(e, what):
                        err.detail)
 
 
-def _write_zip(path, files, kind, parts, progress=None):
-    """Write files [(arcname, source)] + backup.json into path (via path.part)."""
+def _write_zip(path, files, kind, parts, progress=None, left_out=()):
+    """Write files [(arcname, source)] + backup.json into path (via path.part).
+    left_out: addon folders the player chose to leave out (listed in backup.json)."""
     part = path + ".part"
     total = _size(files) or 1
     done = 0
     info = {"app": BACKUP_APP, "format": FORMAT, "version": APP_VERSION, "kind": kind,
             "created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             "parts": sorted(parts)}
+    if left_out:
+        info["left_out"] = sorted(left_out, key=str.lower)
     try:
         with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED, compresslevel=6,
                              strict_timestamps=False) as zf:
@@ -815,15 +841,61 @@ def _discard(path):
         log.exception("Could not remove %s", path)
 
 
-def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress=None):
+def _existing(path):
+    """The folder itself, or the nearest parent that exists."""
+    path = os.path.abspath(path)
+    while not os.path.isdir(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    return path
+
+
+def free_space(folder, disk_usage=None):
+    """Free bytes on folder's drive (None = can't tell)."""
+    try:
+        return (disk_usage or shutil.disk_usage)(_existing(folder)).free
+    except (OSError, ValueError):
+        return None
+
+
+def same_drive(a, b):
+    try:
+        return os.stat(_existing(a)).st_dev == os.stat(_existing(b)).st_dev
+    except OSError:
+        return True   # can't tell: count both on one drive (the safe side)
+
+
+def space_needed(game_folder, unpack, safety_folder, safety):
+    """[(folder, bytes)] a restore needs free: the unpacked files on the game drive
+    (staging), the safety copy (at most the size of what it replaces) on the backup
+    folder's drive; one entry when both are the same drive."""
+    if not safety:
+        return [(game_folder, unpack + SPARE_DISK)]
+    if same_drive(game_folder, safety_folder):
+        return [(game_folder, unpack + safety + SPARE_DISK)]
+    return [(game_folder, unpack + SPARE_DISK), (safety_folder, safety + SPARE_DISK)]
+
+
+def check_space(needs, disk_usage=None):
+    """Raises BackupError disk_full (need = bytes) before anything is written."""
+    for folder, need in needs:
+        free = free_space(folder, disk_usage)
+        if free is not None and free < need:
+            raise BackupError("disk_full", folder, need=need)
+
+
+def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress=None,
+         leave_out=()):
     """Make a backup in dest_folder. Returns (path, size in bytes, counts dict).
-    settings: everything restorable below WTF\\Account (incl. key bindings and macros)."""
+    settings: everything restorable below WTF\\Account (incl. key bindings and macros).
+    leave_out: addon folders not to save (the Spoken ones, when the player said so)."""
     p = places(addons_dir)
     dest_folder = os.path.abspath(dest_folder)
     if in_game_folder(dest_folder, p.addons):
         raise BackupError("inside_game", dest_folder)
     try:
-        folders = addon_folders(addons_dir) if addons else []
+        found = addon_folders(addons_dir) if addons else []
+        folders = [f for f in found if f not in leave_out]
+        left = [f for f in found if f in leave_out]
         files = _addon_files(p, folders) if addons else []
         wtf_files = _settings_files(p) if settings else []
     except OSError as e:
@@ -835,7 +907,8 @@ def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress
     except OSError as e:
         raise _os_error(e, f"making {dest_folder}") from e
     parts = ([ADDONS] if files else []) + ([SETTINGS] if wtf_files else [])
-    path = _write_zip(backup_path(dest_folder, now), files + wtf_files, "backup", parts, progress)
+    path = _write_zip(backup_path(dest_folder, now), files + wtf_files, "backup", parts, progress,
+                      left)
     counts = {"addons": len(folders), "settings_files": len(wtf_files)}
     log.info("Backup made: %s (%s)", path, counts)
     return path, os.path.getsize(path), counts
@@ -855,6 +928,7 @@ class BackupInfo:
     entries: list = dataclasses.field(default_factory=list)    # (ZipInfo, parts, kind)
     received: bool = False     # came from another PC with a send code (am\share.py)
     forever_tocs: dict = dataclasses.field(default_factory=dict)   # folder -> ZipInfo
+    left_out: list = dataclasses.field(default_factory=list)   # folders the maker left out
 
     @property
     def characters(self):
@@ -902,6 +976,10 @@ def read(zip_path, received=None):
             info.created = created
         if meta.get("kind") == "safety":
             info.kind = "safety"
+        left = meta.get("left_out")
+        if isinstance(left, list):   # only shown as text: plain, safe names
+            info.left_out = [f for f in left[:50] if isinstance(f, str) and len(f) <= 64
+                             and safe_part(f)]
         infos = zf.infolist()
         if len(infos) > MAX_ENTRIES:
             raise BackupError("unsafe", "too many files")
@@ -1190,7 +1268,7 @@ def recover_restore(addons_dir):
 
 
 def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bindings=True,
-            account_map=None, now=None, progress=None):
+            account_map=None, now=None, progress=None, disk_usage=None):
     """Restore a backup into this PC's AddOns and WTF\\Account (merge). Returns
     RestoreResult. Raises BackupError; on any failure nothing is changed (and the safety
     copy made for it is removed again)."""
@@ -1229,6 +1307,14 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
     # 1. The safety copy of everything that will be replaced.
     old_addons = [f for f, t in addon_targets if os.path.isdir(t)]
     old_files = [(f"WTF/Account/{rel}", t) for _zi, t, rel in file_targets if os.path.isfile(t)]
+    safety_files = _addon_files(p, old_addons) + old_files if old_addons or old_files else []
+    # Room for all of it, checked before anything is written (big backups: several GB).
+    wanted = {f for f, _t in addon_targets}
+    unpack = sum(zi.file_size for zi, parts, kind in info.entries
+                 if kind == ADDONS and parts[1] in wanted)
+    unpack += sum(zi.file_size for zi, _t, _r in file_targets)
+    check_space(space_needed(p.addons, unpack, safety_folder, _size(safety_files)),
+                disk_usage)
     safety = None
     if old_addons or old_files:
         if in_game_folder(safety_folder, p.addons):
@@ -1238,8 +1324,7 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
         except OSError as e:
             raise _os_error(e, f"making {safety_folder}") from e
         parts = ([ADDONS] if old_addons else []) + ([SETTINGS] if old_files else [])
-        safety = _write_zip(safety_path(safety_folder, now),
-                            _addon_files(p, old_addons) + old_files, "safety", parts)
+        safety = _write_zip(safety_path(safety_folder, now), safety_files, "safety", parts)
         log.info("Safety copy before restore: %s", safety)
 
     steps = len(addon_targets) + len(file_targets)

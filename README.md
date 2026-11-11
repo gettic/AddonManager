@@ -73,7 +73,7 @@ Keep `AddonManager.exe` in a normal folder, such as Desktop, Downloads or Docume
 
 ## Beta versions
 
-A beta is a test version of an addon. It may have bugs. The checkbox **Show beta versions** (at the bottom of the main window, next to **Settings**, and also in the **Settings** window; both always match) is off by default, and the app remembers your choice.
+A beta is a test version of an addon. It may have bugs. The checkbox **Show beta versions** (at the bottom of the main window, next to **Backup** and **Settings**, and also in the **Settings** window; both always match) is off by default, and the app remembers your choice.
 
 - When it is on, an addon's newest beta is offered if it is newer than its normal version. It is shown as "v1.2.0 (beta)".
 - Turning it off does not remove the beta. You keep it until a newer normal version comes out.
@@ -98,7 +98,9 @@ Only the guild's addons and the ones you added from a file can be removed, never
 
 ## Backup and restore
 
-Click **Settings**, then look under **Backup**. Close WoW first.
+Click **Backup** (bottom row, left of **Settings**). Close WoW first.
+
+The **Backup** window has **Make a backup...** and **Restore a backup...** (This PC), and **Send to another PC...** and **Receive...** (Another PC). It also shows "Last backup: <date> (<place>)" and an **Open folder** button.
 
 **Make a backup...** saves your addons and their settings (saved variables, key bindings and macros) in one file called `AddonManager backup <date>.zip`.
 
@@ -110,6 +112,7 @@ Click **Settings**, then look under **Backup**. Close WoW first.
   | Windows | OneDrive, Google Drive (also on its own drive letter), iCloud Drive, Dropbox, MEGA, pCloud, Box, Proton Drive, Nextcloud, Sync.com |
   | Linux | Dropbox, MEGA, pCloud (while it is running), Nextcloud |
 - You can untick the addons or the settings.
+- **Spoken** (the AI voice-over addon, any folder starting with "Spoken") is big and holds almost no settings. The first time a backup would hold it, the app asks once: **Leave them out** or **Keep them**, with the size. Your answer is remembered. To change it, use the tick "Leave out Spoken (AI voice-over addon)" in the Make a backup window (shown only when Spoken is installed). Only the addon folders are left out. Their settings are still saved.
 - The file holds your account and character names. Don't share it.
 - `Config.wtf` and the saved chat history (also of chat addons like Elephant or WIM) are never included.
 - A backup folder can't be inside the WoW folder. The app asks for another one.
@@ -117,20 +120,35 @@ Click **Settings**, then look under **Backup**. Close WoW first.
 **Restore a backup...** (for example on a new PC): a list of **Backups found** opens (Documents, your backup folder and the cloud folders), newest first with date, size and place. Click one. Safety copies show under their own heading when ticked. A cloud file marked (online) is only downloaded when you click it. **Browse...** picks any other file. Then choose what to restore (addons, addon settings, key bindings and macros).
 
 - If the account name here is different, you pick which account gets the settings. With two accounts in the backup and one here, you choose which one goes there.
-- It merges: addons and settings that aren't in the backup stay.
+- It merges: addons and settings that aren't in the backup stay. Nothing is removed.
+- If the backup left out some addons (like Spoken), the window says "This backup left out: ...". Install them yourself if you want them.
+- The app checks there is enough free space first. A big backup needs roughly 2-3 times its size free.
 - Before it replaces anything it saves a safety copy, `Before restore <date> <time>.zip`, in the same backup folder. It can't be inside the WoW folder either.
 - If a restore is cut off (power cut, crash), the app undoes it the next time it starts and tells you. You can restore again.
 - If there is no account folder yet, log in to the game once, close it, then restore.
 
 ### Send a backup to another PC
 
-In **Settings**, under **Backup**, click **Send to another PC...**. Choose a new backup, your newest one, or another file. The app shows a short code like `37-amber-lamp-river`. On the other PC click **Receive...** (or **Use a code...** in the Restore list) and type the code. Spaces work too.
+In the **Backup** window, click **Send to another PC...**. Choose a new backup, your newest one, or another file. The app shows a short code like `37-amber-lamp-river` (a number and three words). On the other PC click **Receive...** (or **Use a code...** in the Restore list) and type the code. Spaces work too. The window shows "about N min left" while it sends.
 
-- The code works once and for 10 minutes. Files can be up to 500 MB.
+- The code works once. Both PCs must be online together: the code lasts 10 minutes, and a backup up to 500 MB goes straight across.
 - Before the code appears, the app warns you: the file has your account and character names and data your addons saved about other players. Only give the code to yourself or someone you trust.
-- The file is encrypted from end to end. The code never leaves the two PCs.
+- The file is encrypted from end to end, so nobody in the middle can open it.
 - The relay in the middle is a Cloudflare Worker run by the app's maker. It only sees encrypted bytes, the code's channel number, sizes and times. Nothing is kept: it is deleted when the transfer ends, is cancelled or times out. Logs are off and IP addresses are not stored. The code of the relay is public: see `AddonManager\share_worker\`.
 - Nothing changes on the receiving PC yet. The normal Restore window opens and you choose what to restore.
+- Before it zips, the app tells you if the disk is too full.
+
+### If the other PC isn't ready (send later)
+
+This is optional and **off by default**. It uses file.kiwi, a file host run by another company, not by the app's maker. Tick "Upload to file.kiwi (a third-party host) when the other PC isn't ready in 5 min, or right away if the backup is over 500 MB, so it can get it later". The window links to file.kiwi's terms and privacy pages. The app remembers your choice.
+
+- **Not ready in 5 minutes:** with the tick on, the backup is uploaded to file.kiwi. Keep the window open until it says "Uploaded". Then you can close the PC.
+- **Over 500 MB (up to 5 GB):** this only works with the tick on. The backup is uploaded to file.kiwi right away, with no 5-minute wait. With the tick off, the app says the backup is too big and suggests you make a backup and copy it yourself, for example with a USB stick or a cloud folder.
+- **Code time:** "The code works for" 1, 2, 4, 8, 12 or 24 hours (12 by default). The other PC can type the code any time in that time. The code works once.
+- **On the other PC:** click **Receive...**, type the code and click **Download**. Your browser gets the file from file.kiwi. The Addon Manager finds it in your Downloads folder by itself (or click **Open the download...**), checks it and opens the usual Restore window.
+- **What file.kiwi sees:** its servers are in the US, and it uses Cloudflare and Google. It sees your IP address, the file's size and when it was sent. The file is encrypted, so they can't open it.
+- **It can't be deleted early.** The file stays on their servers for a few days. Only the code opens it, so keep the code private: anyone who gets it first can open the file.
+- If file.kiwi keeps failing, the app stops after a fixed number of tries and says the upload didn't work.
 
 A file received this way is handled with extra care:
 
@@ -141,7 +159,7 @@ A file received this way is handled with extra care:
 
 ## Adding an addon from a file
 
-For an addon that isn't in the guild's list (from CurseForge, Wago or a friend), click **Add file...** in the bottom row and pick a `.zip`, `.rar` or `.7z` file. Other ways:
+For an addon that isn't in the guild's list (from CurseForge, Wago or a friend), click **Add file...** (on its own line above the addon list) and pick a `.zip`, `.rar` or `.7z` file. Other ways:
 
 - Drop the file on the app's window, or on the program's icon. If the app is already open, the open window gets it.
 - Right-click **Add file...** and choose **Install from folder...** for an addon you already unpacked.

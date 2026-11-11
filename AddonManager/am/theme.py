@@ -95,6 +95,15 @@ def apply(root):
           background=[("active", BG)],
           foreground=[("disabled", DISABLED)],
           indicatorbackground=[("disabled", BG), ("selected", ACCENT), ("pressed", BUTTON_HOVER)])
+    # Pick-one choices (Send to another PC: a new backup / newest / other file): dark like
+    # the tick boxes, never the theme's light default.
+    s.configure("TRadiobutton", background=BG, foreground=TEXT, indicatorbackground=SURFACE,
+                indicatorforeground=ACCENT_TEXT, bordercolor=BORDER, focuscolor=BG,
+                upperbordercolor=BORDER, lowerbordercolor=BORDER, padding=(2, 2))
+    s.map("TRadiobutton",
+          background=[("active", BG)],
+          foreground=[("disabled", DISABLED)],
+          indicatorbackground=[("disabled", BG), ("selected", ACCENT), ("pressed", BUTTON_HOVER)])
     # A pick-one button with a dark drop-down menu (Restore: which account).
     s.configure("TMenubutton", background=BUTTON, foreground=TEXT, bordercolor=BORDER,
                 lightcolor=BUTTON, darkcolor=BUTTON, arrowcolor=TEXT, padding=(8, 3))

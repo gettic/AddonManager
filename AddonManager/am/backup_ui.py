@@ -1,7 +1,8 @@
-"""The two small Backup windows opened from Settings: Make a backup and Restore a
-backup. The work runs in a thread (am\\backup.py); results come back through the App's
-queue as ("backup_size"/"backup_clouds"/"backup_progress"/"backup_done"/"backup_error"/
-"restore_progress"/"restore_done"/"restore_error", ...)."""
+"""The Backup window (main window's Backup button) and the small windows it opens: Make
+a backup and Restore a backup. The work runs in a thread (am\\backup.py); results come
+back through the App's queue as ("backup_size"/"backup_clouds"/"backup_progress"/
+"backup_done"/"backup_error"/"backup_last"/"restore_progress"/"restore_done"/
+"restore_error", ...)."""
 
 import datetime
 import logging
@@ -50,15 +51,291 @@ def backup_folder(settings):
     return backup.default_folder()
 
 
+def owner_window(app):
+    """The window the backup dialogs open over: the Backup window, else Settings (the
+    Licences window), else the main window."""
+    if app.backup_win is not None:
+        return app.backup_win.win
+    return app.settings_win if app.settings_win is not None else app.root
+
+
+class BackupWindow:
+    """The Backup window (the main window's Backup button): Make / Restore on this PC,
+    Send / Receive with another PC (only with a relay), the last backup's date and place.
+    Modal like Settings; can't close while a backup or restore runs."""
+
+    def __init__(self, app, show=True):
+        self.app = app
+        self.shown = show
+        self.closed = False
+        self.last = None          # FoundBackup of the newest own backup, once found
+        self._looking = 0         # searches started (only the newest one's answer counts)
+        win = self.win = tk.Toplevel(app.root)
+        win.withdraw()
+        win.title(errors.BACKUP_HEADING)
+        win.configure(background=theme.BG)
+        win.resizable(False, False)
+        win.transient(app.root)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=errors.BACKUP_HEADING, font=theme.font("bold", bigger=1)).pack(
+            anchor="w")
+        ttk.Label(frame, text=errors.BACKUP_NOTE, style="Muted.TLabel", wraplength=WRAP,
+                  justify="left").pack(anchor="w", pady=(2, 0))
+        self.make_button, self.restore_button = self._pair(
+            frame, errors.BACKUP_THIS_PC, (errors.BACKUP_BUTTON, app.open_backup, True),
+            (errors.RESTORE_BUTTON, app.open_restore, False))
+        self.share_buttons = []
+        if app.share_url:
+            self.share_buttons = list(self._pair(
+                frame, errors.BACKUP_OTHER_PC, (errors.SEND_BUTTON, app.open_send, False),
+                (errors.RECEIVE_BUTTON, app.open_receive, False)))
+        self.last_var = tk.StringVar(value=errors.BACKUP_LAST_LOOKING)
+        ttk.Label(frame, textvariable=self.last_var, wraplength=WRAP, justify="left").pack(
+            anchor="w", pady=(12, 0))
+        self.status_var = tk.StringVar()
+        ttk.Label(frame, textvariable=self.status_var, wraplength=WRAP, justify="left").pack(
+            anchor="w", pady=(4, 0))
+        bar = ttk.Frame(frame)
+        bar.pack(fill="x", pady=(12, 0))
+        self.close_button = ttk.Button(bar, text=errors.CLOSE, command=app.close_backup_window)
+        self.close_button.pack(side="right")
+        # Open folder: only once a backup is found (its folder exists then).
+        self.open_button = ttk.Button(bar, text=errors.BACKUP_OPEN_FOLDER,
+                                      command=self.open_result)
+        win.protocol("WM_DELETE_WINDOW", app.close_backup_window)
+        win.bind("<Escape>", lambda _e: app.close_backup_window())
+        self.render()
+        self.refresh()
+        if show:
+            win.update_idletasks()
+            root = app.root
+            x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_reqwidth()) // 2)
+            y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_reqheight()) // 3)
+            win.geometry(f"+{x}+{y}")
+            win.deiconify()
+            theme.dark_title_bar(win)
+            self.make_button.focus_set()
+            win.grab_set()
+
+    def _pair(self, frame, heading, left, right):
+        """A bold heading and two equal buttons side by side."""
+        ttk.Label(frame, text=heading, font=theme.font("bold")).pack(anchor="w", pady=(12, 0))
+        grid = ttk.Frame(frame)
+        grid.pack(fill="x", pady=(4, 0))
+        out = []
+        for col, (text, command, accent) in enumerate((left, right)):
+            grid.columnconfigure(col, weight=1, uniform="pair")
+            # The small windows open shown only when this one is (tests: never shown).
+            b = ttk.Button(grid, text=text, command=lambda c=command: c(show=self.shown),
+                           style="Accent.TButton" if accent else "TButton")
+            b.grid(row=0, column=col, sticky="ew", padx=(0, 3) if col == 0 else (3, 0))
+            out.append(b)
+        return out
+
+    def buttons(self):
+        return [self.make_button, self.restore_button, *self.share_buttons]
+
+    def render(self):
+        """Actions only while nothing else runs and the WoW folder is known."""
+        ok = not self.app.busy and bool(self.app.addons_dir)
+        for b in self.buttons():
+            b.state(["!disabled"] if ok else ["disabled"])
+
+    def refresh(self):
+        """Look for the newest own backup again (in a thread)."""
+        if self.closed:
+            return
+        self._looking += 1
+        threading.Thread(target=_last_worker, daemon=True,
+                         args=(self.app.queue, self._looking,
+                               backup_folder(config.load_settings()))).start()
+
+    def set_status(self, text):
+        self.status_var.set(text)
+
+    def handle(self, msg):
+        """("backup_last", search number, FoundBackup or None)."""
+        if self.closed or msg[1] != self._looking:
+            return
+        self.last = f = msg[2]
+        self.last_var.set(errors.backup_last(found_date(f.mtime), f.place) if f
+                          else errors.BACKUP_LAST_NONE)
+        if f:
+            self.open_button.pack(side="left")
+        else:
+            self.open_button.pack_forget()
+
+    def open_result(self):
+        if self.last is not None:
+            self.app.open_folder(os.path.dirname(self.last.path))
+
+    def destroy(self):
+        self.closed = True
+        try:
+            self.win.grab_release()
+            self.win.destroy()
+        except tk.TclError:
+            pass
+
+
+def spoken_answer():
+    """The remembered answer about the Spoken addons: "skip", "keep" or None (never asked)."""
+    a = config.load_settings().get("backup_spoken")
+    return a if a in ("skip", "keep") else None
+
+
+def save_spoken_answer(answer):
+    settings = config.load_settings()
+    settings["backup_spoken"] = answer
+    config.save_settings(settings)
+
+
+def _has_spoken(addons_dir):
+    try:
+        return any(backup.is_spoken(f) for f in backup.addon_folders(addons_dir))
+    except (backup.BackupError, OSError):
+        return False
+
+
+class SpokenAsk:
+    """The one-time question over a Make backup / Send window: leave the Spoken addons'
+    folders out? done("skip" / "keep") saves the answer; Esc or closing keeps them this
+    time without saving (it asks again next time)."""
+
+    def __init__(self, dialog, spoken, others, done, show=True):
+        self.done_cb = done
+        self.closed = False
+        self.shown = show
+        self.parent = dialog.win
+        total = sum(size for _f, size in spoken)
+        win = self.win = tk.Toplevel(self.parent)
+        win.withdraw()
+        win.title(errors.SPOKEN_TITLE)
+        win.configure(background=theme.BG)
+        win.resizable(False, False)
+        win.transient(self.parent)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=errors.SPOKEN_TITLE, font=theme.font("bold", bigger=1)).pack(
+            anchor="w")
+        for text, style, gap in (
+                (errors.spoken_found([f for f, _s in spoken], total), "TLabel", 10),
+                (errors.SPOKEN_WHY, "TLabel", 8),
+                (errors.SPOKEN_KEPT, "Muted.TLabel", 8),
+                (errors.spoken_sizes(others, others + total), "Muted.TLabel", 8)):
+            ttk.Label(frame, text=text, style=style, wraplength=WRAP, justify="left").pack(
+                anchor="w", pady=(gap, 0))
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(14, 0))
+        self.keep_button = ttk.Button(buttons, text=errors.SPOKEN_KEEP,
+                                      command=lambda: self.answer("keep"))
+        self.keep_button.pack(side="right")
+        self.skip_button = ttk.Button(buttons, text=errors.SPOKEN_SKIP, style="Accent.TButton",
+                                      command=lambda: self.answer("skip"))
+        self.skip_button.pack(side="right", padx=(0, 6))
+        win.protocol("WM_DELETE_WINDOW", lambda: self.answer(None))
+        win.bind("<Escape>", lambda _e: self.answer(None))
+        win.bind("<Return>", lambda _e: self.answer("skip"))
+        if show:
+            win.update_idletasks()
+            p = self.parent
+            x = p.winfo_rootx() + max(0, (p.winfo_width() - win.winfo_reqwidth()) // 2)
+            y = p.winfo_rooty() + max(0, (p.winfo_height() - win.winfo_reqheight()) // 3)
+            win.geometry(f"+{x}+{y}")
+            win.deiconify()
+            theme.dark_title_bar(win)
+            self.skip_button.focus_set()
+            try:
+                win.grab_set()
+            except tk.TclError:
+                pass
+
+    def answer(self, answer):
+        if self.closed:
+            return
+        self.closed = True
+        if answer is not None:
+            save_spoken_answer(answer)
+        try:
+            self.win.grab_release()
+            self.win.destroy()
+        except tk.TclError:
+            pass
+        if self.shown:
+            try:
+                self.parent.grab_set()
+            except tk.TclError:
+                pass
+        self.done_cb(answer)
+
+
+class _SpokenCheck:
+    """For a window that makes a backup: the Spoken addons found (a thread looks), and the
+    question the first time. Call spoken_ready() with the scan; ask_spoken() in start()."""
+
+    def _spoken_init(self):
+        self.spoken = None        # [(folder, bytes)] once looked at
+        self.others = 0           # bytes of the other addon folders
+        self.spoken_once = None   # "keep" for this backup only (question closed with Esc)
+        self.spoken_pending = False
+        self.spoken_ask = None
+
+    def spoken_ready(self, spoken, total):
+        self.spoken = spoken
+        self.others = max(0, total - sum(size for _f, size in spoken))
+        self.spoken_shown()
+        if self.spoken_pending:
+            self.spoken_pending = False
+            self.start()
+
+    def ask_spoken(self):
+        """True when start() must wait (still looking, or the question is open)."""
+        if self.spoken is None and not _has_spoken(self.app.addons_dir):
+            self.spoken = []          # the names alone say there are none: no need to wait
+        if self.spoken is None:
+            self.spoken_pending = True
+            self.set_status(errors.SPOKEN_CHECKING)
+            return True
+        if self.spoken and spoken_answer() is None and self.spoken_once is None:
+            if self.spoken_ask is None or self.spoken_ask.closed:
+                self.spoken_ask = SpokenAsk(self, self.spoken, self.others,
+                                            self._spoken_answered, show=self.shown)
+            return True
+        return False
+
+    def _spoken_answered(self, answer):
+        self.spoken_once = "keep" if answer is None else None
+        self.spoken_changed(answer)
+        if not self.closed:
+            self.start()
+
+    def spoken_changed(self, answer):
+        pass
+
+    def spoken_shown(self):
+        pass
+
+    def leave_out(self):
+        """The Spoken folders to leave out of this backup."""
+        if not self.spoken or self.spoken_once == "keep":
+            return ()
+        return tuple(f for f, _s in self.spoken) if self.spoken_skip() else ()
+
+    def spoken_skip(self):
+        return spoken_answer() == "skip"
+
+
 class _Dialog:
-    """A small dark modal window over the Settings window (or the main window)."""
+    """A small dark modal window over the Backup window, the Settings window (Licences)
+    or the main window."""
 
     def __init__(self, app, title, show):
         self.app = app
         self.running = False
         self.closed = False
         self.shown = show
-        self.parent = app.settings_win if app.settings_win is not None else app.root
+        self.parent = owner_window(app)
         win = self.win = tk.Toplevel(self.parent)
         win.withdraw()
         win.title(title)
@@ -129,12 +406,15 @@ class _Dialog:
             self.win.destroy()
         except tk.TclError:
             pass
-        settings_win = self.app.settings_win
-        if self.shown and settings_win is not None:
-            try:
-                settings_win.grab_set()
-            except tk.TclError:
-                pass
+        if self.parent is not self.app.root:
+            if self.shown:
+                try:
+                    self.parent.grab_set()   # the Backup (or Settings) window is modal again
+                except tk.TclError:
+                    pass
+            hub = self.app.backup_win
+            if hub is not None and self.parent is hub.win:
+                hub.refresh()   # a backup may have been made or received
 
     def _begin(self, text):
         self.running = True
@@ -195,7 +475,7 @@ class LicenceDialog(_Dialog):
         return
 
 
-class BackupDialog(_Dialog):
+class BackupDialog(_SpokenCheck, _Dialog):
     """Make a backup: what to include, where it goes, the don't-share line."""
 
     def __init__(self, app, show=True):
@@ -211,6 +491,9 @@ class BackupDialog(_Dialog):
         self.addons_check = ttk.Checkbutton(self.frame, text=errors.BACKUP_ADDONS,
                                             variable=self.addons_var)
         self.addons_check.pack(anchor="w")
+        self._spoken_init()
+        self.spoken_var = tk.BooleanVar(value=spoken_answer() != "keep")
+        self.spoken_check = None    # shown only when Spoken addons are there
 
         where = ttk.Frame(self.frame)
         where.pack(fill="x", pady=(10, 0))
@@ -227,6 +510,9 @@ class BackupDialog(_Dialog):
         ttk.Label(self.frame, text=errors.BACKUP_PRIVATE, style="Muted.TLabel",
                   wraplength=WRAP, justify="left").pack(anchor="w", pady=(10, 0))
         self._status_area()
+        # The progress bar is there from the start (empty), so the window never changes
+        # size when the backup begins.
+        self.progress.pack(fill="x", pady=(6, 0), before=self.buttons)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
         self.make_button = ttk.Button(self.buttons, text=errors.BACKUP_MAKE,
@@ -284,18 +570,73 @@ class BackupDialog(_Dialog):
         if not (addons or settings_on):
             self.set_status(errors.BACKUP_PICK_ONE)
             return False
+        if addons and self.ask_spoken():
+            return True
+        leave_out = self.leave_out() if addons else ()
+        self.spoken_once = None
         settings = config.load_settings()
         settings["backup_addons"], settings["backup_settings"] = addons, settings_on
         config.save_settings(settings)
         self.open_button.pack_forget()
         for w in (self.make_button, self.change_button, self.cancel_button,
-                  self.settings_check, self.addons_check, *self.cloud_buttons):
+                  self.settings_check, self.addons_check, *self.cloud_buttons,
+                  *([self.spoken_check] if self.spoken_check else [])):
             w.state(["disabled"])
-        self._begin(errors.BACKUP_MAKING)
+        self._begin(errors.BACKUP_MAKING + (" " + errors.SPOKEN_LEFT_OUT if leave_out else ""))
+        # Moving at once while the files are listed; filled by bytes written from the
+        # first "backup_progress" on (see handle).
+        self.progress.configure(mode="indeterminate", value=0)
+        self.progress.start(15)
         threading.Thread(target=_backup_worker, daemon=True,
                          args=(self.app.queue, self.app.check_game, self.app.addons_dir,
-                               self.folder, addons, settings_on)).start()
+                               self.folder, addons, settings_on, leave_out)).start()
         return True
+
+    def spoken_skip(self):
+        return bool(self.spoken_var.get())
+
+    def spoken_changed(self, answer):
+        # Esc (None): kept for this backup, so the tick shows them kept too.
+        self.spoken_var.set(answer == "skip")
+        self._addons_label()
+
+    def _toggle_spoken(self):
+        if self.running or self.spoken_check is None:
+            return
+        self.spoken_var.set(not self.spoken_var.get())
+        self.save_spoken()
+
+    def save_spoken(self):
+        save_spoken_answer("skip" if self.spoken_var.get() else "keep")
+        self._addons_label()
+
+    def _addons_label(self):
+        skip = self.spoken and self.spoken_var.get() and spoken_answer() is not None
+        total = self.others + (0 if skip else sum(s for _f, s in self.spoken or []))
+        self.addons_check.configure(text=errors.addons_label(total))
+
+    def spoken_shown(self):
+        spoken = self.spoken
+        if spoken and self.spoken_check is None and not self.closed:
+            # The tick and a wrapped label (a wide Linux font keeps the window <= 420 px).
+            line = ttk.Frame(self.frame)
+            line.pack(anchor="w", fill="x", after=self.addons_check)
+            self.spoken_check = ttk.Checkbutton(line, variable=self.spoken_var,
+                                                command=self.save_spoken)
+            self.spoken_check.pack(side="left", anchor="n")
+            self.spoken_label = ttk.Label(
+                line, text=errors.spoken_tick(sum(s for _f, s in spoken)),
+                wraplength=WRAP - 30, justify="left")
+            self.spoken_label.pack(side="left", anchor="w")
+            self.spoken_label.bind("<Button-1>", lambda _e: self._toggle_spoken())
+            if self.running:
+                self.spoken_check.state(["disabled"])
+        self._addons_label()
+
+    def _determinate(self):
+        if str(self.progress.cget("mode")) != "determinate":
+            self.progress.stop()
+            self.progress.configure(mode="determinate", value=0)
 
     def open_result(self):
         self.app.open_folder(os.path.dirname(self.path) if self.path else self.folder)
@@ -305,17 +646,23 @@ class BackupDialog(_Dialog):
         if not kind.startswith("backup_"):
             return
         if kind == "backup_size":
-            self.addons_check.configure(text=errors.addons_label(msg[1]))
+            self.spoken_ready(msg[2], msg[1])
             return
         if kind == "backup_clouds":
             self.show_clouds(msg[1])
             return
         if kind == "backup_progress":
+            if not self.running:
+                return
+            self._determinate()
             self.set_progress(msg[1], msg[2])
+            self.set_status(errors.backup_making(int(self.progress.cget("value"))))
             return
+        self._determinate()
         self._end()
         for w in (self.make_button, self.change_button, self.cancel_button,
-                  self.settings_check, self.addons_check, *self.cloud_buttons):
+                  self.settings_check, self.addons_check, *self.cloud_buttons,
+                  *([self.spoken_check] if self.spoken_check else [])):
             w.state(["!disabled"])
         if kind == "backup_done":
             self.path = msg[1]
@@ -324,7 +671,7 @@ class BackupDialog(_Dialog):
             self.cancel_button.configure(text=errors.CLOSE)
             self.open_button.pack(side="left")
         else:
-            self.progress.pack_forget()
+            self.progress.configure(value=0)
             self.set_status(msg[1])
 
 
@@ -513,6 +860,10 @@ class RestoreDialog(_Dialog):
             if line:
                 ttk.Label(self.frame, text=line, style="Muted.TLabel", wraplength=WRAP,
                           justify="left").pack(anchor="w", pady=(4, 0))
+        if getattr(info, "left_out", None):
+            ttk.Label(self.frame, text=errors.restore_left_out(info.left_out),
+                      style="Muted.TLabel", wraplength=WRAP, justify="left").pack(
+                anchor="w", pady=(8, 0))
         if info.accounts and not self.local:
             ttk.Label(self.frame, text=errors.NO_ACCOUNT, wraplength=WRAP,
                       justify="left").pack(anchor="w", pady=(8, 0))
@@ -619,7 +970,8 @@ def _game_open(check_game):
 
 
 def _size_worker(q, addons_dir):
-    q.put(("backup_size", backup.addons_size(addons_dir) if addons_dir else 0))
+    q.put(("backup_size", backup.addons_size(addons_dir) if addons_dir else 0,
+           backup.spoken_folders(addons_dir) if addons_dir else []))
 
 
 def _cloud_worker(q):
@@ -661,7 +1013,8 @@ def backup_places(chosen, clouds, documents):
     return [(place_label(f, clouds, documents), f) for f in folders if f]
 
 
-def _find_worker(q, chosen):
+def _search(chosen):
+    """[FoundBackup] in Documents, the chosen folder and the clouds (newest first)."""
     try:
         clouds = backup.cloud_folders()
     except Exception as e:
@@ -674,11 +1027,27 @@ def _find_worker(q, chosen):
     except Exception as e:
         log.info("Clean-up of unfinished downloads failed (%s)", type(e).__name__)
     try:
-        found = backup.find_backups(places)
+        return backup.find_backups(places)
     except Exception as e:
         log.info("Backup search failed (%s)", type(e).__name__)
-        found = []
-    q.put(("restore_found", found))
+        return []
+
+
+def _find_worker(q, chosen):
+    q.put(("restore_found", _search(chosen)))
+
+
+def newest_made(found):
+    """The newest backup made here (the Backup window's "Last backup" line): never a
+    safety copy or a file received from another PC (by name; no file is opened)."""
+    for f in found:
+        if not f.safety and not backup.is_received(f.path):
+            return f
+    return None
+
+
+def _last_worker(q, number, chosen):
+    q.put(("backup_last", number, newest_made(_search(chosen))))
 
 
 def _open_worker(q, path):
@@ -689,13 +1058,13 @@ def _open_worker(q, path):
         q.put(("restore_open_error", path, errors.backup_message(e)))
 
 
-def _backup_worker(q, check_game, addons_dir, folder, addons, settings):
+def _backup_worker(q, check_game, addons_dir, folder, addons, settings, leave_out=()):
     if _game_open(check_game):
         q.put(("backup_error", errors.GAME_OPEN))
         return
     try:
         path, size, _counts = backup.make(
-            addons_dir, folder, addons=addons, settings=settings,
+            addons_dir, folder, addons=addons, settings=settings, leave_out=leave_out,
             progress=lambda done, total: q.put(("backup_progress", done, total)))
         q.put(("backup_done", path, size))
     except Exception as e:

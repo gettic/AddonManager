@@ -22,11 +22,10 @@ MAX_VISIBLE_ROWS = 8            # more addons: the list scrolls
 ROW_HEIGHT = 40 if LINUX else 36
 
 # ---------- texts ----------
-# Short, so the bottom row still fits the smallest window (560 px).
 ADD_BUTTON = "Add file..."
-# Linux (fonts about 1.2x wider): the button sits on its own line above the list instead
-# of in the bottom row; ADD_HINT is shown next to it there.
-ADD_ON_TOP = LINUX
+ADD_WIDTH = 10   # characters: the same size as the list's Install/Update/Uninstall buttons
+# The button sits on its own line above the list (on every system), with ADD_HINT next to
+# it, so the bottom row keeps room for Backup and Settings in the smallest window.
 ADD_HINT = "Other addons from a .zip, .rar or .7z file:"
 ADD_TIP = "Install an addon from a .zip, .rar or .7z file (from CurseForge, Wago or a friend)."
 FOLDER_TIP = "Right-click: install from an unpacked folder. You can also drop a file on the window."
@@ -402,19 +401,17 @@ class FileAddons:
         self._grid_rows = 0
 
     # ----- building -----
-    def build_button(self, parent, drop_widget, top=False):
-        """The button in the bottom row (parent), or with top=True (Linux) on its own line
-        above the list with ADD_HINT; drop_widget: the frame filling the window (tkdnd
-        passes a drop on any widget inside it up to it; the Tk root itself can't be a drop
-        target in tkinterdnd2)."""
+    def build_button(self, parent, drop_widget):
+        """The button at the right of its own line above the list (parent), with ADD_HINT
+        before it; drop_widget: the frame filling the window (tkdnd passes a drop on any
+        widget inside it up to it; the Tk root itself can't be a drop target in
+        tkinterdnd2)."""
         app = self.app
-        self.button = ttk.Button(parent, text=ADD_BUTTON, command=self.add_from_file)
-        if top:
-            self.button.pack(side="right")
-            self.hint = ttk.Label(parent, text=ADD_HINT, style="Muted.TLabel")
-            self.hint.pack(side="right", padx=(0, 8))
-        else:
-            self.button.pack(side="left", padx=(8, 0))
+        self.button = ttk.Button(parent, text=ADD_BUTTON, command=self.add_from_file,
+                                 width=ADD_WIDTH)
+        self.button.pack(side="right")
+        self.hint = ttk.Label(parent, text=ADD_HINT, style="Muted.TLabel")
+        self.hint.pack(side="right", padx=(0, 8))
         self.tip = _tooltip(app, self.button, ADD_TIP + " " + FOLDER_TIP)
         self.menu = tk.Menu(app.root, tearoff=0, background=theme.SURFACE,
                             foreground=theme.TEXT, activebackground=theme.ACCENT,

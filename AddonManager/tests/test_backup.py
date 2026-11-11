@@ -6,6 +6,7 @@ import datetime
 import gc
 import json
 import os
+import shutil
 import time
 import tkinter as tk
 import unittest
@@ -618,8 +619,110 @@ class BackupCoreTests(unittest.TestCase):
                          os.path.join(self.base, "x", "Documents"))
 
 
+class SpokenTests(unittest.TestCase):
+    """Spoken (AI voice-over addons): their folders can be left out; their settings stay."""
+
+    def setUp(self):
+        self.work = fixtures.temp_dir("spoken_")
+        self.addCleanup(fixtures.remove, self.work)
+        self.root, self.addons, self.client = make_pc(os.path.join(self.work, "pc"))
+        for name in ("Spoken", "SpokenQuests", "spokenNPCs", "Unspoken"):
+            fixtures.make_addon_folder(self.addons, name, "1.0")
+        write(os.path.join(self.addons, "SpokenQuests", "voice.ogg"), "x" * 5000)
+        acc = os.path.join(self.client, "WTF", "Account", "ACCOUNT1", "SavedVariables")
+        write(os.path.join(acc, "SpokenQuests.lua"), "SpokenDB = {}\n")
+
+    def test_matching(self):
+        self.assertTrue(all(backup.is_spoken(n) for n in ("Spoken", "SPOKEN", "spokenx")))
+        self.assertFalse(any(backup.is_spoken(n) for n in ("Unspoken", "Spoke", "TaxiTime")))
+        found = dict(backup.spoken_folders(self.addons))
+        self.assertEqual(sorted(found, key=str.lower), ["Spoken", "spokenNPCs", "SpokenQuests"])
+        self.assertGreater(found["SpokenQuests"], 5000)
+        self.assertEqual(backup.addons_size(self.addons, tuple(found)),
+                         backup.addons_size(self.addons) - sum(found.values()))
+
+    def test_left_out_but_settings_kept(self):
+        out = os.path.join(self.work, "b")
+        leave = tuple(f for f, _s in backup.spoken_folders(self.addons))
+        path, _size, counts = backup.make(self.addons, out, now=NOW, leave_out=leave)
+        got = names(path)
+        self.assertFalse([n for n in got if n.lower().startswith("addons/spoken")])
+        self.assertTrue([n for n in got if n.startswith("AddOns/Unspoken/")])
+        self.assertIn("WTF/Account/ACCOUNT1/SavedVariables/SpokenQuests.lua", got)
+        info = backup.read(path)
+        self.assertEqual(info.left_out, ["Spoken", "spokenNPCs", "SpokenQuests"])
+        self.assertNotIn("Spoken", info.addons)
+        full = backup.read(backup.make(self.addons, out, now=NOW)[0])   # kept: all there
+        self.assertEqual(full.left_out, [])
+        self.assertIn("SpokenQuests", full.addons)
+
+    def test_left_out_names_are_checked(self):
+        bad = os.path.join(self.work, "bad.zip")
+        raw_backup(bad, [("AddOns/A/A_Forever.toc", "x")],
+                   meta={"app": "AddonManager", "format": 1,
+                         "left_out": ["Spoken", "../x", 5, "a" * 100]})
+        self.assertEqual(backup.read(bad).left_out, ["Spoken"])
+
+
+class SpaceTests(unittest.TestCase):
+    """Big backups: room checked before a restore writes anything, and
+    the 8 GiB unpacked limit."""
+
+    def setUp(self):
+        self.base = fixtures.temp_dir("space_")
+        self.addCleanup(shutil.rmtree, self.base, True)
+        _r, addons, _c = make_pc(os.path.join(self.base, "pc1"))
+        self.path, _s, _n = backup.make(addons, os.path.join(self.base, "backups"))
+        _r2, self.addons2, self.client2 = make_pc(os.path.join(self.base, "pc2"),
+                                                  account="MINE", tag="new")
+        self.safety = os.path.join(self.base, "safety")
+
+    def tree(self):
+        out = []
+        for folder, _dirs, files in os.walk(self.client2):
+            for f in files:
+                with open(os.path.join(folder, f), "rb") as fh:
+                    out.append((os.path.relpath(os.path.join(folder, f), self.client2),
+                                fh.read()))
+        return sorted(out)
+
+    def test_restore_checks_space_first(self):
+        before = self.tree()
+        with self.assertRaises(BackupError) as cm:
+            backup.restore(self.path, self.addons2, self.safety,
+                           account_map={"ACCOUNT1": "MINE"},
+                           disk_usage=lambda p: mock.Mock(free=1000))
+        self.assertEqual(cm.exception.kind, "disk_full")
+        self.assertGreater(cm.exception.need, backup.SPARE_DISK)
+        self.assertIn("about", errors.backup_message(cm.exception))
+        self.assertEqual(self.tree(), before)               # nothing changed
+        self.assertFalse(os.path.exists(self.safety))      # no safety copy either
+        result = backup.restore(self.path, self.addons2, self.safety,
+                                account_map={"ACCOUNT1": "MINE"},
+                                disk_usage=lambda p: mock.Mock(free=10 ** 12))
+        self.assertTrue(result.addons)
+
+    def test_space_needed(self):
+        one = backup.space_needed(self.addons2, 100, self.safety, 30)
+        self.assertEqual(one, [(self.addons2, 130 + backup.SPARE_DISK)])   # same drive here
+        self.assertEqual(backup.space_needed(self.addons2, 100, self.safety, 0),
+                         [(self.addons2, 100 + backup.SPARE_DISK)])
+        with mock.patch.object(backup, "same_drive", return_value=False):
+            self.assertEqual(backup.space_needed(self.addons2, 100, self.safety, 30),
+                             [(self.addons2, 100 + backup.SPARE_DISK),
+                              (self.safety, 30 + backup.SPARE_DISK)])
+        self.assertIsNotNone(backup.free_space(os.path.join(self.base, "not", "made", "yet")))
+
+    def test_max_total(self):
+        self.assertEqual(backup.MAX_TOTAL, 8 * 1024 ** 3)
+        with mock.patch.object(backup, "MAX_TOTAL", 10):
+            with self.assertRaises(BackupError) as cm:
+                backup.read(self.path)
+        self.assertEqual(cm.exception.kind, "unsafe")
+
+
 class WindowBackupTests(unittest.TestCase):
-    """The hidden window: Settings section, Make a backup and Restore windows."""
+    """The hidden window: the Backup window, Make a backup and Restore windows."""
 
     @classmethod
     def setUpClass(cls):
@@ -684,19 +787,76 @@ class WindowBackupTests(unittest.TestCase):
             out.extend(self.texts(w))
         return out
 
-    def test_settings_section(self):
+    def test_backup_window(self):
+        """The main window's Backup button opens the Backup window (Make / Restore, the
+        last backup); Settings has nothing about backups any more."""
+        docs = os.path.join(self.work, "docs")
+        for target in ("documents_dir", "default_folder"):
+            value = docs if target == "documents_dir" else os.path.join(docs, backup.FOLDER_NAME)
+            patcher = mock.patch.object(backup, target, lambda v=value: v)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         app = self.make_app()
-        win = app.open_settings(show=False)
-        texts = self.texts(win)
-        for t in (errors.BACKUP_BUTTON, errors.RESTORE_BUTTON, errors.BACKUP_NOTE):
+        self.assertIs(app.backup_main_button.master, app.settings_button.master)
+        self.assertEqual(app.backup_main_button.cget("text"), errors.BACKUP_HEADING)
+        self.assertFalse(app.backup_main_button.instate(["disabled"]))
+        settings = app.open_settings(show=False)
+        for t in (errors.BACKUP_BUTTON, errors.RESTORE_BUTTON, errors.BACKUP_HEADING,
+                  errors.SEND_BUTTON, errors.BACKUP_NOTE):
+            self.assertNotIn(t, self.texts(settings))
+        app.close_settings()
+        hub = app.open_backup_window(show=False)   # what the Backup button calls (shown)
+        self.assertIs(app.open_backup_window(show=False), hub)   # only one window
+        self.assertEqual(hub.win.state(), "withdrawn")
+        texts = self.texts(hub.win)
+        for t in (errors.BACKUP_BUTTON, errors.RESTORE_BUTTON, errors.BACKUP_NOTE,
+                  errors.BACKUP_THIS_PC):
             self.assertIn(t, texts)
-        self.assertFalse(app.backup_button.instate(["disabled"]))
-        win.update_idletasks()
-        self.assertLessEqual(win.winfo_reqwidth(), 420)
+        self.assertNotIn(errors.SEND_BUTTON, texts)   # no relay here: no Send/Receive
+        self.assertFalse(hub.make_button.instate(["disabled"]))
+        self.pump(app)
+        self.assertEqual(hub.last_var.get(), errors.BACKUP_LAST_NONE)
+        self.assertEqual(hub.open_button.winfo_manager(), "")   # nothing to open yet
+        hub.win.update_idletasks()
+        self.assertLessEqual(hub.win.winfo_reqwidth(), 420)
+        # Make a backup opens over the Backup window; the line updates when it closes.
+        hub.make_button.invoke()
+        dlg = app.backup_dialog
+        self.assertIsInstance(dlg, backup_ui.BackupDialog)
+        self.assertIs(dlg.parent, hub.win)
+        self.assertTrue(dlg.start())
+        self.assertTrue(app.backup_main_button.instate(["disabled"]))   # busy
+        self.assertTrue(hub.make_button.instate(["disabled"]))
+        app.close_backup_window()   # refused while the backup runs
+        self.assertIs(app.backup_win, hub)
+        app.close()                 # the main window waits too
+        self.assertFalse(app.closed)
+        self.pump(app)
+        self.assertTrue(dlg.path and os.path.isfile(dlg.path))
+        dlg.close()
+        self.pump(app)
+        when = backup_ui.found_date(os.path.getmtime(dlg.path))
+        self.assertEqual(hub.last_var.get(), errors.backup_last(when, errors.PLACE_DOCUMENTS))
+        self.assertEqual(hub.open_button.winfo_manager(), "pack")
+        hub.open_button.invoke()
+        self.assertEqual(self.opened, [os.path.dirname(dlg.path)])
+        self.assertFalse(hub.make_button.instate(["disabled"]))
+        # A safety copy or a received file never counts as the last backup.
+        f = backup.FoundBackup
+        older = f(dlg.path, "Documents", 1, 1, False, False)
+        newer = [f(os.path.join(docs, "Before restore 2030-01-01 1200.zip"), "Documents", 1, 9,
+                   True, False),
+                 f(backup.received_path(docs), "Documents", 1, 8, False, False)]
+        self.assertIs(backup_ui.newest_made(newer + [older]), older)
+        self.assertIsNone(backup_ui.newest_made(newer))
+        self.assertTrue(hub.win.bind("<Escape>"))   # Esc closes it
+        app.close_backup_window()
+        self.assertIsNone(app.backup_win)
+        self.assertTrue(hub.closed)
 
     def test_make_backup(self):
         app = self.make_app()
-        app.open_settings(show=False)
+        app.open_backup_window(show=False)
         dlg = app.open_backup(show=False)
         texts = self.texts(dlg.win)
         self.assertIn(errors.BACKUP_PRIVATE, texts)   # the don't-share line
@@ -704,8 +864,19 @@ class WindowBackupTests(unittest.TestCase):
         self.assertTrue(dlg.settings_var.get() and dlg.addons_var.get())
         self.pump(app)
         self.assertTrue(dlg.addons_check.cget("text").startswith(errors.BACKUP_ADDONS + " (about"))
+        # The progress bar: there (empty) before the start, so the window keeps its size.
+        self.assertEqual(dlg.progress.winfo_manager(), "pack")
+        self.assertEqual(float(dlg.progress.cget("value")), 0)
         self.assertTrue(dlg.start())
+        self.assertEqual(str(dlg.progress.cget("mode")), "indeterminate")   # moving at once
+        dlg.handle(("backup_progress", 50, 200))   # bytes written so far: filled by bytes
+        self.assertEqual(str(dlg.progress.cget("mode")), "determinate")
+        self.assertEqual(float(dlg.progress.cget("value")), 25)
+        self.assertEqual(dlg.status_var.get(), errors.backup_making(25))
         self.pump(app)
+        self.assertEqual(float(dlg.progress.cget("value")), 100)
+        dlg.handle(("backup_progress", 1, 200))    # a late message after the end: ignored
+        self.assertEqual(float(dlg.progress.cget("value")), 100)
         self.assertTrue(dlg.path and os.path.isfile(dlg.path))
         self.assertEqual(os.path.dirname(dlg.path), backup.default_folder())
         self.assertTrue(dlg.status_var.get().startswith("Backup saved: AddonManager backup "))
@@ -720,7 +891,7 @@ class WindowBackupTests(unittest.TestCase):
                   "Box", "Proton Drive", "Nextcloud", "Sync.com"]
         self.clouds = [(n, os.path.join(self.work, "cloud", n)) for n in names_]
         app = self.make_app()
-        app.open_settings(show=False)
+        app.open_backup_window(show=False)
         dlg = app.open_backup(show=False)
         self.assertEqual(dlg.cloud_buttons, [])   # filled from the thread, not at once
         self.pump(app)
@@ -750,8 +921,8 @@ class WindowBackupTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         app = self.make_app()
-        app.open_settings(show=False)
-        dlg = app.open_restore(show=False)   # the Settings button's call
+        app.open_backup_window(show=False)
+        dlg = app.open_restore(show=False)   # the Backup window's Restore button
         self.assertIsInstance(dlg, backup_ui.BackupListDialog)
         self.assertEqual(dlg.status_var.get(), errors.FOUND_LOOKING)
         for _ in range(100):
@@ -891,6 +1062,66 @@ class WindowBackupTests(unittest.TestCase):
         self.assertFalse(again.settings_var.get())
         self.assertEqual(again.folder, picked)
 
+    def test_spoken_question(self):
+        for name in ("Spoken", "SpokenQuests"):
+            fixtures.make_addon_folder(self.addons, name, "1.0")
+        write(os.path.join(self.client, "WTF", "Account", "ACCOUNT1", "SavedVariables",
+                           "Spoken.lua"), "SpokenDB = {}\n")
+        app = self.make_app()
+        dlg = app.open_backup(show=False)
+        self.assertTrue(dlg.start())
+        end = time.time() + 20
+        while dlg.spoken_ask is None and time.time() < end:   # looked at, then asked
+            self.root.update()
+            time.sleep(0.02)
+        ask = dlg.spoken_ask
+        texts = " ".join(self.texts(ask.win))
+        for want in ("Spoken (AI voice-over addon)", "Spoken, SpokenQuests",
+                     errors.SPOKEN_SKIP, errors.SPOKEN_KEEP, "settings are still saved"):
+            self.assertIn(want, texts)
+        self.assertFalse(dlg.running)
+        ask.answer(None)                     # Esc: kept this time, nothing remembered
+        self.pump(app)
+        self.assertIsNone(config.load_settings().get("backup_spoken"))
+        self.assertFalse(dlg.spoken_var.get())   # the tick shows them kept too
+        self.assertIn("AddOns/Spoken/Spoken.lua", names(dlg.path))
+        dlg.close()
+        dlg = app.open_backup(show=False)
+        self.pump(app)
+        self.assertTrue(dlg.start())
+        while dlg.spoken_ask is None and time.time() < end:
+            self.root.update()
+        dlg.spoken_ask.answer("skip")        # remembered
+        self.pump(app)
+        self.assertEqual(config.load_settings()["backup_spoken"], "skip")
+        got = names(dlg.path)
+        self.assertFalse([n for n in got if n.startswith("AddOns/Spoken")])
+        self.assertIn("WTF/Account/ACCOUNT1/SavedVariables/Spoken.lua", got)
+        self.assertEqual(backup.read(dlg.path).left_out, ["Spoken", "SpokenQuests"])
+        self.assertIn(errors.SPOKEN_LEFT_OUT, dlg.status_var.get() + errors.SPOKEN_LEFT_OUT)
+        path = dlg.path
+        dlg.close()
+        again = app.open_backup(show=False)  # no question now: the tick shows the answer
+        self.pump(app)
+        self.assertIsNotNone(again.spoken_check)
+        self.assertTrue(again.spoken_var.get())
+        self.assertIn("Spoken (AI voice-over addon)", again.spoken_label.cget("text"))
+        self.assertTrue(int(str(again.spoken_label.cget("wraplength"))) > 0)   # wraps
+        again.win.update_idletasks()
+        self.assertLessEqual(again.win.winfo_reqwidth(), 420)
+        again.spoken_var.set(False)
+        again.save_spoken()                  # changed with the tick: kept from now on
+        self.assertEqual(config.load_settings()["backup_spoken"], "keep")
+        self.assertTrue(again.start())
+        self.assertIsNone(again.spoken_ask)
+        self.pump(app)
+        self.assertIn("AddOns/Spoken/Spoken.lua", names(again.path))
+        again.close()
+        rest = app.open_restore(show=False, path=path)   # Restore says what was left out
+        self.assertIn(errors.restore_left_out(["Spoken", "SpokenQuests"]),
+                      self.texts(rest.win))
+        rest.close()
+
     def test_game_running_blocks(self):
         app = self.make_app()
         self.game = True
@@ -908,9 +1139,12 @@ class WindowBackupTests(unittest.TestCase):
         os.rename(acc, os.path.join(self.client, "WTF", "Account", "ACCOUNT2"))
         os.makedirs(os.path.join(self.client, "WTF", "Account", "SECOND"))
         app = self.make_app()
-        app.open_settings(show=False)
+        app.open_backup_window(show=False)
         dlg = app.open_restore(show=False, path=path)
-        self.assertIn("From: 2026-11-10", " ".join(self.texts(dlg.win)))
+        # The date written into backup.json when the backup was made (not today's date).
+        made = backup.read(path).created.split(" ")[0]
+        self.assertRegex(made, r"^\d{4}-\d{2}-\d{2}$")
+        self.assertIn(f"From: {made}", " ".join(self.texts(dlg.win)))
         self.assertIn("ACCOUNT1", dlg.account_vars)   # two accounts here: the player picks
         self.assertEqual(dlg.account_vars["ACCOUNT1"].get(), errors.RESTORE_SKIP)
         dlg.account_vars["ACCOUNT1"].set("ACCOUNT2")
@@ -933,11 +1167,11 @@ class WindowBackupTests(unittest.TestCase):
 
     def test_restore_refuses_bad_file_and_game(self):
         app = self.make_app()
-        app.open_settings(show=False)
+        app.open_backup_window(show=False)
         bad = os.path.join(self.work, "bad.zip")
         write(bad, "no zip")
         self.assertIsNone(app.open_restore(show=False, path=bad))
-        self.assertIn("isn't an Addon Manager backup", app.backup_status.get())
+        self.assertIn("isn't an Addon Manager backup", app.backup_win.status_var.get())
         listed = app.open_restore(show=False)   # no path: the Backups found window
         self.assertIsInstance(listed, backup_ui.BackupListDialog)
         self.assertIsNone(app.open_restore(show=False))   # one window at a time

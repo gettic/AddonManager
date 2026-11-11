@@ -47,3 +47,7 @@ MAX_BYTES = "545259520"      # 520 MiB per transfer (the app sends at most 500 M
 HARD_OPEN = "20"             # hard cap per IP: new codes ...
 HARD_JOIN = "30"             # ... and code tries ...
 HARD_WINDOW = "600"          # ... per 10 minutes (RateBox, memory only)
+# Send later (file.kiwi; only when the player ticked it). The record holds no file, only a sealed link.
+LATER_IDLE = "300"           # an upload for later stops after 5 minutes without the sender
+LATER_UPLOAD_SECONDS = "21600"   # and after 6 hours of uploading in any case
+LATER_MAX_HOURS = "24"       # the longest a later code can work (the player picks 1-24 h)
