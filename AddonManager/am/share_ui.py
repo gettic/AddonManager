@@ -101,10 +101,21 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         # stays inside small screens (Steam Deck, 150 % on 1080p); back after an error.
         box = self.what_box = ttk.Frame(self.frame)
         box.pack(fill="x")
-        ttk.Label(box, text=errors.SEND_WHAT, style="Muted.TLabel").pack(
-            anchor="w", pady=(6, 0))
-        self.what_line = ttk.Label(self.frame, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                                   justify="left")
+        # "What to send:" with Other file... at its right (one row: a shorter window).
+        head = ttk.Frame(box)
+        head.pack(fill="x", pady=(4, 0))
+        ttk.Label(head, text=errors.SEND_WHAT, style="Muted.TLabel").pack(side="left",
+                                                                          anchor="s")
+        # Folded: one line with the choice made, and after an error a Change... link that
+        # opens the choices again (what_row).
+        row = self.what_row = ttk.Frame(self.frame)
+        self.what_line = ttk.Label(row, style="Muted.TLabel", justify="left",
+                                   wraplength=theme.px(WRAP - 70))
+        self.what_line.pack(side="left", anchor="nw")
+        self.change_link = tk.Label(row, text=errors.SEND_CHANGE, cursor="hand2",
+                                    background=theme.BG, foreground=theme.LINK,
+                                    font=theme.font("underline"))
+        self.change_link.bind("<Button-1>", lambda _e: self.unfold())
         self.choice = tk.StringVar(value="new")
         settings = config.load_settings()
         self.new_radio = ttk.Radiobutton(box, value="new", variable=self.choice,
@@ -118,20 +129,24 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.newest_radio.pack(anchor="w", pady=(2, 0))
         self.other_radio = ttk.Radiobutton(box, text=errors.SEND_CHOSEN, value="other",
                                            variable=self.choice)
-        self.other_button = ttk.Button(box, text=errors.SEND_OTHER, command=self.pick,
+        self.other_button = ttk.Button(head, text=errors.SEND_OTHER, command=self.pick,
                                        width=max(theme.button_chars(self.frame), theme.chars(
                                            self.frame, (errors.SEND_OTHER,))))
-        self.other_button.pack(anchor="w", pady=(4, 0))
+        self.other_button.pack(side="right")
         # WoW open: a new backup still works; the strip (under the choices, only while
         # "A new backup" is picked and the choices are open) says what it holds.
         self.game_open = False
         self.game_label = backup_ui.game_strip(self.frame, errors.SEND_GAME_OPEN)
         self.private_label = ttk.Label(self.frame, text=errors.SEND_PRIVATE,
                                        wraplength=theme.px(WRAP), justify="left")
-        self.private_label.pack(anchor="w", pady=(10, 0))
+        self.private_label.pack(anchor="w", pady=(6, 0))
         self.choice.trace_add("write", lambda *_a: self._game_state())
-        ttk.Label(self.frame, text=errors.SEND_SAFE, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(4, 0))
+        # "Sent encrypted, works once, for 10 minutes": only while file.kiwi is off (with
+        # the tick the code works for the chosen hours and the file.kiwi note says the rest;
+        # see _later_state). It also keeps the window short.
+        self.safe_label = ttk.Label(self.frame, text=errors.SEND_SAFE, style="Muted.TLabel",
+                                    wraplength=theme.px(WRAP), justify="left")
+        self.safe_label.pack(anchor="w", pady=(4, 0))
         self._later_area()
         self.code_area = ttk.Frame(self.frame)
         self.code_area.pack(fill="x")
@@ -153,10 +168,10 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         """The WoW-open strip shows while WoW is open, "A new backup" is picked and the
         choices are open (folded while a send runs: the window stays short)."""
         want = (self.game_open and self.choice.get() == "new" and not self.closed
-                and not self.what_line.winfo_manager())
+                and not self.active)
         try:
             if want and not self.game_label.winfo_manager():
-                self.game_label.pack(fill="x", pady=(theme.px(6), 0), before=self.private_label)
+                self.game_label.pack(fill="x", pady=(theme.px(4), 0), before=self.private_label)
             elif not want and self.game_label.winfo_manager():
                 self.game_label.pack_forget()
         except tk.TclError:
@@ -182,12 +197,12 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         ok = (isinstance(hours, int) and not isinstance(hours, bool) and 1 <= hours <= 24
               and hours in share_later.HOURS)   # true / 48 / 3 in a hand-edited file -> 12
         self.hours_var = tk.IntVar(value=hours if ok else share_later.DEFAULT_HOURS)
-        area = ttk.Frame(self.frame)
-        area.pack(fill="x", pady=(10, 0))
+        area = self.later_box = ttk.Frame(self.frame)
+        area.pack(fill="x", pady=(6, 0))
         self.later_check = ttk.Checkbutton(area, variable=self.later_var,
                                            command=self.save_later)
         self.later_check.grid(row=0, column=0, sticky="nw")
-        tick_text = ttk.Label(area, text=errors.LATER_TICK, wraplength=theme.px(WRAP - 30),
+        tick_text = ttk.Label(area, text=errors.LATER_TICK, wraplength=theme.px(WRAP - 24),
                               justify="left")
         tick_text.grid(row=0, column=1, sticky="w")
         tick_text.bind("<Button-1>", lambda _e: self.toggle_later())
@@ -198,7 +213,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         # Upload right away (no 5-min wait for the other PC): off each time, never saved.
         self.now_var = tk.BooleanVar(value=False)
         now = ttk.Frame(rest)
-        now.pack(anchor="w", pady=(4, 0))
+        now.pack(anchor="w", pady=(2, 0))
         self.now_check = ttk.Checkbutton(now, variable=self.now_var)
         self.now_check.grid(row=0, column=0, sticky="nw")
         self.now_label = ttk.Label(now, text=errors.LATER_NOW_TICK,
@@ -206,7 +221,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.now_label.grid(row=0, column=1, sticky="w")
         self.now_label.bind("<Button-1>", lambda _e: self.toggle_now())
         keep = ttk.Frame(rest)
-        keep.pack(anchor="w", pady=(4, 0))
+        keep.pack(anchor="w", pady=(2, 0))
         ttk.Label(keep, text=errors.LATER_KEEP).pack(side="left")
         self.hours_text = tk.StringVar(value=errors.later_hours(self.hours_var.get()))
         self.hours_button = ttk.Menubutton(keep, textvariable=self.hours_text, width=9)
@@ -217,7 +232,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.hours_button["menu"] = menu
         self.hours_button.pack(side="left", padx=(6, 0))
         links = ttk.Frame(rest)
-        links.pack(anchor="w", pady=(4, 0))
+        links.pack(anchor="w", pady=(2, 0))
         self.later_links = []
         for text, url in ((errors.LATER_TERMS, share_later.TERMS_URL),
                           (errors.LATER_PRIVACY, share_later.PRIVACY_URL)):
@@ -226,8 +241,8 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             link.pack(side="left", padx=(0, 10))
             link.bind("<Button-1>", lambda _e, u=url: self.app.open_link(u))
             self.later_links.append(link)
-        ttk.Label(rest, text=errors.LATER_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP - 30),
-                  justify="left").pack(anchor="w", pady=(4, 0))
+        ttk.Label(rest, text=errors.LATER_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP - 24),
+                  justify="left").pack(anchor="w", pady=(2, 0))
         self._later_state()
 
     def toggle_later(self):
@@ -248,6 +263,10 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         ticked = bool(self.later_var.get())
         if not ticked:
             self.now_var.set(False)
+        if ticked and self.safe_label.winfo_manager():
+            self.safe_label.pack_forget()
+        elif not ticked and not self.safe_label.winfo_manager():
+            self.safe_label.pack(anchor="w", pady=(4, 0), before=self.later_box)
         show = ticked and not self.active   # folded away while a send runs (_fold)
         if show and not self.later_rest.winfo_manager():
             self.later_rest.grid(row=1, column=1, sticky="w")
@@ -286,7 +305,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             self.other = path
             self.other_radio.configure(text=errors.SEND_CHOSEN + os.path.basename(path))
             if not self.other_radio.winfo_manager():
-                self.other_radio.pack(anchor="w", pady=(2, 0), before=self.other_button)
+                self.other_radio.pack(anchor="w", pady=(2, 0), after=self.newest_radio)
             self.choice.set("other")
 
     def chosen_path(self):
@@ -368,33 +387,44 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             w.destroy()
         self.code_area.configure(height=1)   # the emptied frame shrinks back
 
-    def _fold(self, folded):
+    def _fold(self, folded, change=False):
         """While a send runs, "What to send" is one line (the choice made) and the
-        file.kiwi details are hidden: the window stays short (Steam Deck: 800 px)."""
+        file.kiwi details are hidden: the window stays short (Steam Deck: 800 px). After an
+        error that Try again can fix it stays one line, with Change... (change=True) to open
+        the choices again; the file.kiwi details come back (they show before every try)."""
         try:
             if folded:
                 radio = {"newest": self.newest_radio, "other": self.other_radio}.get(
                     self.choice.get(), self.new_radio)
                 self.what_line.configure(text=errors.SEND_WHAT + " " + " ".join(
                     str(radio.cget("text")).split()))
-                if not self.what_line.winfo_manager():
-                    self.what_line.pack(anchor="w", pady=(6, 0), before=self.what_box)
+                if change and not self.change_link.winfo_manager():
+                    self.change_link.pack(side="right", anchor="ne", padx=(theme.px(8), 0))
+                elif not change and self.change_link.winfo_manager():
+                    self.change_link.pack_forget()
+                if not self.what_row.winfo_manager():
+                    self.what_row.pack(fill="x", pady=(6, 0), before=self.what_box)
                 self.what_box.pack_forget()
-                self._later_state()   # active: the file.kiwi details fold away too
-                self._game_state()
             else:
                 if not self.what_box.winfo_manager():
-                    self.what_box.pack(fill="x", before=self.what_line)
-                self.what_line.pack_forget()
-                self._later_state()   # the file.kiwi details back while ticked
-                self._game_state()
+                    self.what_box.pack(fill="x", before=self.what_row)
+                self.what_row.pack_forget()
+            self._later_state()   # hidden while a send runs, back while ticked
+            self._game_state()
         except tk.TclError:
             pass   # the window is closing
 
+    def unfold(self):
+        """Change... after an error: the choices open again."""
+        if self.active or self.closed:
+            return
+        self._fold(False)
+
     def _after_error(self, retry):
         """The window works again: the choices as they were, and Try again (or Get code when
-        the same try can't work, e.g. a picked file that isn't a backup). Click-only."""
-        self._fold(False)
+        the same try can't work, e.g. a picked file that isn't a backup). Click-only.
+        Try again: "What to send" stays one line (Change... opens it); Get code: open."""
+        self._fold(bool(retry), change=True)
         for w in (self.new_radio, self.other_radio, self.other_button, self.go_button,
                   self.later_check):
             w.state(["!disabled"])

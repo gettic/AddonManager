@@ -403,6 +403,7 @@ def send_new(addons=True, settings=True):
 
 SEND_NEWEST = "Newest backup: "
 SEND_OTHER = "Other file..."
+SEND_CHANGE = "Change..."   # after an error: opens "What to send" again
 SEND_CHOSEN = "File: "
 SEND_PRIVATE = ("This file has your account and character names and data your addons saved "
                 "about other players. Only give the code to yourself or someone you trust.")

@@ -2010,9 +2010,19 @@ class WindowShareTests(unittest.TestCase):
         self.pump_until(app, lambda: not dlg.active)
         dlg._after_error(True)                                     # as after a failed try
         self.assertNotIn("disabled", dlg.now_check.state())
-        self.assertTrue(dlg.what_box.winfo_manager())              # unfolded again
-        self.assertFalse(dlg.what_line.winfo_manager())
+        # Try again: still one line, with Change...; the file.kiwi note shows again
+        self.assertFalse(dlg.what_box.winfo_manager())
+        self.assertTrue(dlg.change_link.winfo_manager())
         self.assertTrue(dlg.later_rest.winfo_manager())
+        self.assertFalse(dlg.safe_label.winfo_manager())          # file.kiwi on: hours apply
+        dlg.unfold()                                               # Change...: choices open
+        self.assertTrue(dlg.what_box.winfo_manager())
+        self.assertFalse(dlg.what_row.winfo_manager())
+        dlg._after_error(False)                                    # Get code: choices open
+        self.assertTrue(dlg.what_box.winfo_manager())
+        dlg.toggle_later()                                         # file.kiwi off: 10-min line
+        self.assertTrue(dlg.safe_label.winfo_manager())
+        dlg.toggle_later()
         dlg.close()
         again = app.open_send(show=False)                          # off each time
         self.assertTrue(again.later_var.get())

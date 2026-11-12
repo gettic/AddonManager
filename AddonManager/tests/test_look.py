@@ -233,6 +233,7 @@ class LookWindowTests(unittest.TestCase):
         self.assertEqual(len({height(b) for b in buttons}), 1, name)
 
     def check_dialog(self, win, name):
+        self.check_height(win, name)   # every dialog fits a small screen too
         buttons = self.check_buttons(win, name)
         self.assertTrue(buttons, name)
         rows = {}
@@ -259,7 +260,8 @@ class LookWindowTests(unittest.TestCase):
                                         f"{name}: {b.cget('text')!r} narrower than a row button")
 
     # The tallest a window may be (its content, no title bar): a Steam Deck screen is 800 px
-    # (Linux stand-in at 100 %: 760), a 1080p laptop at 150 % about 1000 px. None = no check.
+    # (Linux stand-in at 100 %: 760), a 1080p laptop at 150 % about 1000 px (the Linux
+    # stand-in at 150 %: 960, see test_buttons_linux_fonts_150). None = no check.
     height_limit = 760
 
     def check_height(self, win, name):
@@ -419,11 +421,25 @@ class LookWindowTests(unittest.TestCase):
                                      width(d.win), "upload right away text cut")
                 self.assertLessEqual(lab.winfo_reqwidth(), int(lab.cget("wraplength")) + 2)
                 self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "send width")
+                # Try again: "What to send" stays one line with Change...; the file.kiwi
+                # note shows (it is shown before every try)
+                self.assertTrue(d.what_row.winfo_manager())
+                self.assertTrue(d.change_link.winfo_manager())
+                self.assertTrue(d.later_rest.winfo_manager())
                 self.check_height(d.win, "send (ticks on, after an error)")
+                # Change...: every choice open again, ticks on, WoW open, error still shown
+                d.unfold()
+                self.assertTrue(d.what_box.winfo_manager())
+                self.assertFalse(d.what_row.winfo_manager())
+                d.win.update_idletasks()
+                self.check_dialog(d.win, "send (choices open after an error)")
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "send width (open)")
+                self.check_height(d.win, "send (choices open, ticks on, after an error)")
                 d.active = True
                 d.later = d.later_choice()
                 d._fold(True)            # what start() does: the choices fold to one line
-                self.assertTrue(d.what_line.winfo_manager())
+                self.assertTrue(d.what_row.winfo_manager())
+                self.assertFalse(d.change_link.winfo_manager())
                 self.assertFalse(d.what_box.winfo_manager())
                 d.show_code(share.format_code(37, share.new_words()), 600)
                 d.handle(("share_later", d.tag, "uploading", "now"))
@@ -535,7 +551,9 @@ class LookWindowTests(unittest.TestCase):
         """Linux fonts at 150 % (the CI's 150 % is 1.56)."""
         factor = self.linux_on_windows() * 1.5 if os.name == "nt" else 1.5
         self.root.tk.call("tk", "scaling", self.base_scaling * factor)
-        self.height_limit = None   # no 150 % on the Steam Deck's own screen
+        # The real Linux CI runs test_buttons_150 with these fonts against 1000 px; the
+        # stand-in measured 1030 where the CI measured 1028, so 960 here keeps a margin.
+        self.height_limit = 960
         self.run_checks()
 
     # ---------- the scrolling list ----------
