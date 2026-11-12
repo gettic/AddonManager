@@ -114,10 +114,16 @@ class BackupWindow:
         bar.pack(fill="x", pady=(theme.px(12), 0))
         self.status_var.trace_add("write", lambda *_a: self._place_status())
         self.close_button = ttk.Button(bar, text=errors.CLOSE, command=app.close_backup_window)
-        self.close_button.pack(side="right")
+        # The gap keeps Close apart from Old backups... when the row is full (Linux fonts).
+        self.close_button.pack(side="right", padx=(theme.px(6), 0))
         # Open folder: only once a backup is found (its folder exists then).
         self.open_button = ttk.Button(bar, text=errors.BACKUP_OPEN_FOLDER,
                                       command=self.open_result)
+        # Old backups...: the Delete old backups window (am\backup_delete_ui.py), also
+        # only once a backup is found.
+        self.old_button = ttk.Button(bar, text=errors.DELETE_OPEN, command=self.open_old)
+        from am import ui   # imported here: ui imports this module
+        ui.Tooltip(self.old_button, errors.DELETE_OPEN_TIP)
         theme.even_buttons(bar)
         win.protocol("WM_DELETE_WINDOW", app.close_backup_window)
         win.bind("<Escape>", lambda _e: app.close_backup_window())
@@ -169,7 +175,7 @@ class BackupWindow:
     def render(self):
         """Actions only while nothing else runs and the WoW folder is known."""
         ok = not self.app.busy and bool(self.app.addons_dir)
-        for b in self.buttons():
+        for b in (*self.buttons(), self.old_button):
             b.state(["!disabled"] if ok else ["disabled"])
 
     def refresh(self):
@@ -185,20 +191,29 @@ class BackupWindow:
         self.status_var.set(text)
 
     def handle(self, msg):
-        """("backup_last", search number, FoundBackup or None)."""
+        """("backup_last", search number, FoundBackup or None[, any backup found]).
+        The last item also counts safety copies and received files (Old backups...)."""
         if self.closed or msg[1] != self._looking:
             return
         self.last = f = msg[2]
+        any_found = bool(msg[3]) if len(msg) > 3 else bool(f)
         self.last_var.set(errors.backup_last(found_date(f.mtime), f.place) if f
                           else errors.BACKUP_LAST_NONE)
+        self.open_button.pack_forget()
+        self.old_button.pack_forget()
         if f:
             self.open_button.pack(side="left")
-        else:
-            self.open_button.pack_forget()
+        if any_found:
+            self.old_button.pack(side="left", padx=(theme.px(6) if f else 0, 0))
 
     def open_result(self):
         if self.last is not None:
             self.app.open_folder(os.path.dirname(self.last.path))
+
+    def open_old(self):
+        """The Delete old backups window over this one."""
+        from am import backup_delete_ui   # imported here: it imports this module
+        return backup_delete_ui.open_delete(self.app, show=self.shown)
 
     def destroy(self):
         self.closed = True
@@ -548,6 +563,8 @@ class BackupDialog(_SpokenCheck, _Dialog):
         settings = config.load_settings()
         self.folder = backup_folder(settings)
         self.path = None
+        self.cancel_event = None    # set by Cancel/Esc while making: the zip stops
+        self.left_out = False       # Spoken addons left out of this run (kept in the text)
         self.settings_var = tk.BooleanVar(value=settings.get("backup_settings") is not False)
         self.addons_var = tk.BooleanVar(value=settings.get("backup_addons") is not False)
         self.settings_check = ttk.Checkbutton(self.frame, text=errors.BACKUP_SETTINGS,
@@ -647,10 +664,14 @@ class BackupDialog(_SpokenCheck, _Dialog):
         settings["backup_addons"], settings["backup_settings"] = addons, settings_on
         config.save_settings(settings)
         self.open_button.pack_forget()
-        for w in (self.make_button, self.change_button, self.cancel_button,
+        # Cancel stays live: it stops the backup (the half-written file is removed).
+        for w in (self.make_button, self.change_button,
                   self.settings_check, self.addons_check, *self.cloud_buttons,
                   *([self.spoken_check] if self.spoken_check else [])):
             w.state(["disabled"])
+        self.cancel_button.state(["!disabled"])
+        self.left_out = bool(leave_out)
+        self.cancel_event = threading.Event()
         self._begin(errors.BACKUP_MAKING + (" " + errors.SPOKEN_LEFT_OUT if leave_out else ""))
         # Moving at once while the files are listed; filled by bytes written from the
         # first "backup_progress" on (see handle).
@@ -659,8 +680,22 @@ class BackupDialog(_SpokenCheck, _Dialog):
         threading.Thread(target=_backup_worker, daemon=True,
                          args=(self.app.queue, self.app.check_game, self.app.addons_dir,
                                self.folder, addons, settings_on, leave_out,
-                               other_record(self.app))).start()
+                               other_record(self.app), self.cancel_event)).start()
         return True
+
+    def close(self):
+        """Cancel/Esc/X while making: stop the backup (the window stays to say so)."""
+        if self.running:
+            self.stop()
+            return
+        super().close()
+
+    def stop(self):
+        if not self.running or self.cancel_event is None or self.cancel_event.is_set():
+            return
+        self.cancel_event.set()
+        self.cancel_button.state(["disabled"])
+        self.set_status(errors.BACKUP_STOPPING)
 
     def spoken_skip(self):
         return bool(self.spoken_var.get())
@@ -717,7 +752,9 @@ class BackupDialog(_SpokenCheck, _Dialog):
                 return
             self._determinate()
             self.set_progress(msg[1], msg[2])
-            self.set_status(errors.backup_making(int(self.progress.cget("value"))))
+            if not (self.cancel_event and self.cancel_event.is_set()):   # keep "Stopping..."
+                self.set_status(errors.backup_making(int(self.progress.cget("value")),
+                                                     self.left_out))
             return
         self._determinate()
         self._end()
@@ -994,7 +1031,10 @@ class RestoreDialog(_Dialog):
         if kind not in ("restore_progress", "restore_done", "restore_error"):
             return   # a late message from a Backup or Backups found window
         if kind == "restore_progress":
+            if not self.running:
+                return   # a late message after the end
             self.set_progress(msg[1], msg[2])
+            self.set_status(errors.restoring(int(self.progress.cget("value"))))
             return
         self._end()
         self.cancel_button.state(["!disabled"])
@@ -1117,7 +1157,8 @@ def newest_made(found):
 
 
 def _last_worker(q, number, chosen):
-    q.put(("backup_last", number, newest_made(_search(chosen))))
+    found = _search(chosen)
+    q.put(("backup_last", number, newest_made(found), bool(found)))
 
 
 def _open_worker(q, path):
@@ -1147,19 +1188,35 @@ def other_record(app):
         return {}
 
 
+def progress_poster(post):
+    """progress(done, total) for a worker thread that calls post(done, total) only when
+    the whole percent changes (at most 101 queue messages per run, the last at 100 %)."""
+    last = [None]
+
+    def progress(done, total):
+        percent = min(100, done * 100 // max(total, 1))
+        if percent != last[0]:
+            last[0] = percent
+            post(done, total)
+    return progress
+
+
 def _backup_worker(q, check_game, addons_dir, folder, addons, settings, leave_out=(),
-                   others=None):
+                   others=None, cancel=None):
     if _game_open(check_game):
         q.put(("backup_error", errors.GAME_OPEN))
         return
     try:
         path, size, _counts = backup.make(
             addons_dir, folder, addons=addons, settings=settings, leave_out=leave_out,
-            others=others,
-            progress=lambda done, total: q.put(("backup_progress", done, total)))
+            others=others, cancel=cancel,
+            progress=progress_poster(lambda done, total: q.put(("backup_progress", done, total))))
         q.put(("backup_done", path, size))
     except Exception as e:
-        log.exception("Backup failed")
+        if getattr(e, "kind", "") == "cancelled":
+            log.info("Backup stopped by the player")
+        else:
+            log.exception("Backup failed")
         q.put(("backup_error", errors.backup_message(e)))
 
 
@@ -1170,7 +1227,8 @@ def _restore_worker(q, check_game, path, addons_dir, safety, flags, account_map)
     try:
         result = backup.restore(
             path, addons_dir, safety, account_map=account_map,
-            progress=lambda done, total: q.put(("restore_progress", done, total)), **flags)
+            progress=progress_poster(lambda done, total: q.put(("restore_progress", done, total))),
+            **flags)
         q.put(("restore_done", result))
     except Exception as e:
         log.exception("Restore failed")

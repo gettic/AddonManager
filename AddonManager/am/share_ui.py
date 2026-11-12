@@ -73,7 +73,12 @@ class _ShareDialog(backup_ui._Dialog):
 
     def close(self):
         if self.running:
-            return   # making the backup: it takes seconds and can't stop half-way
+            # Making the backup: Cancel/Esc/X stops it (the half-written file is removed);
+            # the window stays until the thread says so (it frees the app's busy flag).
+            if not self.cancel_event.is_set():
+                self.cancel_event.set()
+                self.set_status(errors.BACKUP_STOPPING)
+            return
         self.cancel_event.set()
         self.active = False
         super().close()
@@ -90,6 +95,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.code = None
         self.ends_at = None
         self.started = False     # the other PC joined (progress began)
+        self.left_out = False    # Spoken addons left out of the new backup
         ttk.Label(self.frame, text=errors.SEND_WHAT, style="Muted.TLabel").pack(
             anchor="w", pady=(6, 0))
         self.choice = tk.StringVar(value="new")
@@ -248,11 +254,16 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.tag = object()
         self.speed = Speed()
         if path is None:
-            self.running = True          # backup.make can't be stopped half-way
+            self.running = True          # making the backup (Cancel stops it, see close)
+            self.left_out = bool(flags.get("leave_out"))
             self.app.busy = True
             self.app.render()
+            # The bar moves at once while the files are listed, then fills by bytes.
+            self.progress.pack(fill="x", pady=(theme.px(6), 0), before=self.buttons)
+            self.progress.configure(mode="indeterminate", value=0)
+            self.progress.start(15)
             self.set_status(errors.SEND_MAKING + (" " + errors.SPOKEN_LEFT_OUT
-                                                  if flags.get("leave_out") else ""))
+                                                  if self.left_out else ""))
         else:
             self.set_status(errors.SEND_CONNECTING)
         threading.Thread(target=_send_worker, daemon=True,
@@ -261,6 +272,11 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                                self.app.share_url, self.app.allow_local,
                                self.cancel_event, self.later)).start()
         return True
+
+    def _determinate(self):
+        if str(self.progress.cget("mode")) != "determinate":
+            self.progress.stop()
+            self.progress.configure(mode="determinate", value=0)
 
     def _ends_text(self, seconds):
         return errors.later_in(seconds) if self.later else errors.code_ends(seconds)
@@ -321,11 +337,24 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             return
         if not self.active:
             return
-        if kind == "share_made":
+        if kind == "share_making":   # bytes of the new backup written so far
+            if not self.running:
+                return
+            self._determinate()
+            self.set_progress(msg[2], msg[3])
+            if not self.cancel_event.is_set():   # keep "Stopping..."
+                self.set_status(errors.backup_making(int(self.progress.cget("value")),
+                                                     self.left_out))
+        elif kind == "share_made":
             self.running = False
             self.app.busy = False
             self.app.render()
-            self.set_status(errors.SEND_CONNECTING)
+            # The making bar goes; it comes back for the sending progress.
+            self._determinate()
+            self.progress.configure(value=0)
+            self.progress.pack_forget()
+            if msg[2] is not None:
+                self.set_status(errors.SEND_CONNECTING)
         elif kind == "share_code":
             self.show_code(msg[2], msg[3])
         elif kind == "share_progress":
@@ -566,6 +595,7 @@ def _spoken_worker(q, tag, addons_dir):
 
 def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow_local, cancel,
                  later=None):
+    fresh = path is None   # a new backup is made for this send
     try:
         relay = share.Relay(url, allow_local=allow_local)
         if path is None:
@@ -577,7 +607,9 @@ def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow
                 share.precheck(backup.addons_size(addons_dir, flags.get("leave_out", ())),
                                bool(later), folder)
             try:
-                path, _size, _c = backup.make(addons_dir, folder, **flags)
+                path, _size, _c = backup.make(
+                    addons_dir, folder, cancel=cancel, progress=backup_ui.progress_poster(
+                        lambda d, t: q.put(("share_making", tag, d, t))), **flags)
             finally:
                 q.put(("share_made", tag, path))
         share.send(path, relay, lambda code, ttl: q.put(("share_code", tag, code, ttl)),
@@ -585,8 +617,9 @@ def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow
                    later=later, on_later=lambda s, v: q.put(("share_later", tag, s, v)))
         q.put(("share_sent", tag))
     except Exception as e:
-        log.warning("Send failed (%s %s)", type(e).__name__, getattr(e, "kind", ""))
-        msg = (errors.share_message(e) if isinstance(e, share.ShareError)
+        log.warning("Send failed (%s %s %s)", type(e).__name__, getattr(e, "kind", ""),
+                    getattr(e, "detail", ""))
+        msg = (errors.share_message(e, fresh=fresh) if isinstance(e, share.ShareError)
                else errors.backup_message(e))
         q.put(("share_error", tag, msg))
 

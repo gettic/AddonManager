@@ -125,6 +125,41 @@ class ShareTests(unittest.TestCase):
         self.assertTrue(result.safety and os.path.exists(result.safety))
         self.assertFalse(os.path.exists(os.path.join(client2, "WTF", "Account", "ACCOUNT1")))
 
+    def test_highly_compressible_backup_is_sent(self):
+        """A new backup holding a >1 MB file that deflates over 200:1 (empty texture space)
+        passes the send check and arrives (it used to say "isn't a backup")."""
+        with open(os.path.join(self.addons, "TaxiTime", "border.tga"), "wb") as f:
+            f.write(b"\0" * (2 * 1024 * 1024))
+        path = backup.make(self.addons, os.path.join(self.base, "packed"))[0]
+        s = Sender(path, self.relay.url)
+        got = self.receive(s.code())
+        s.join()
+        self.assertIsNone(s.error)
+        self.assertSameBackup(got, path)
+
+    def test_failed_check_of_new_backup_message(self):
+        """A backup made just now for the send that fails the check: "Couldn't check the
+        new backup" (not "isn't a backup"); the real reason is kept in the error's detail.
+        A file the player picked keeps the "isn't a backup" text."""
+        from am import errors, share_ui
+        refused = backup.BackupError("unsafe", "suspicious compression 'AddOns/A/x.tga'")
+        with mock.patch.object(backup, "read", side_effect=refused):
+            with self.assertRaises(ShareError) as cm:
+                share.send(self.path, self.receiver(), lambda c, t: None)
+            self.assertEqual((cm.exception.kind, cm.exception.detail),
+                             ("not_backup", share.CHECK_PREFIX + "unsafe"))
+            for given, text in ((None, errors.NEW_BACKUP_CHECK),
+                                (self.path, errors.share_message(ShareError("not_backup")))):
+                q = queue.Queue()
+                share_ui._send_worker(q, "t", lambda: False, self.addons,
+                                      os.path.join(self.base, "fresh"), {}, given,
+                                      self.relay.url, True, None)
+                msgs = [m for m in list(q.queue) if m[0] == "share_error"]
+                self.assertEqual(msgs, [("share_error", "t", text)])
+        self.assertIn("Couldn't check the new backup", errors.NEW_BACKUP_CHECK)
+        self.assertIn("isn't a backup", errors.share_message(cm.exception))   # not fresh
+        self.assertEqual(self.relay.calls, [])   # refused before going online
+
     def test_bigger_file_many_chunks_and_retries(self):
         big = os.path.join(self.base, "big", "AddonManager backup 2026-11-10.zip")
         os.makedirs(os.path.dirname(big))
@@ -959,6 +994,7 @@ class LocalWorkerTests(ShareTests):
     test_cut_off = test_replayed_chunk_from_another_transfer = _skip
     test_bad_confirmation_from_relay = test_receiver_cancel_removes_part = _skip
     test_busy_offline_and_rate = test_only_real_backups_are_sent = _skip
+    test_failed_check_of_new_backup_message = _skip
 
 
 @unittest.skipUnless(LIVE_URL.startswith(("http://127.0.0.1:", "http://localhost:")),
@@ -1363,6 +1399,64 @@ class WindowShareTests(unittest.TestCase):
         self.assertTrue(backup.is_received(out["path"]))
         dlg.close()
         self.assertIsNone(app.backup_dialog)
+
+    def test_send_shows_making_progress(self):
+        """A new backup: the bar moves at once, fills by bytes, goes when the backup is
+        made (the code comes next); another try's messages are ignored."""
+        from am import errors
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        self.assertTrue(dlg.start())
+        self.assertTrue(dlg.running)
+        self.assertEqual(dlg.progress.winfo_manager(), "pack")
+        self.assertEqual(str(dlg.progress.cget("mode")), "indeterminate")
+        dlg.handle(("share_making", object(), 50, 200))   # an older try: ignored
+        self.assertEqual(str(dlg.progress.cget("mode")), "indeterminate")
+        dlg.handle(("share_making", dlg.tag, 50, 200))
+        self.assertEqual(str(dlg.progress.cget("mode")), "determinate")
+        self.assertEqual(float(dlg.progress.cget("value")), 25)
+        self.assertEqual(dlg.status_var.get(), errors.backup_making(25))
+        self.pump_until(app, lambda: dlg.code is not None)
+        self.assertFalse(dlg.running)
+        self.assertFalse(app.busy)
+        self.assertEqual(dlg.progress.winfo_manager(), "")   # back once sending starts
+        dlg.handle(("share_making", dlg.tag, 10, 200))     # late: ignored
+        self.assertEqual(dlg.progress.winfo_manager(), "")
+        dlg.handle(("share_progress", dlg.tag, 10, 100))   # the sending progress
+        self.assertEqual(dlg.progress.winfo_manager(), "pack")
+        self.assertEqual(float(dlg.progress.cget("value")), 10)
+        dlg.close()
+        self.assertIsNone(app.backup_dialog)
+
+    def test_send_cancel_while_making(self):
+        """Cancel while the new backup is made: it stops, no file, nothing is sent."""
+        from am import errors
+        real = backup.make
+
+        def held(*args, cancel=None, **kw):
+            cancel.wait(10)
+            return real(*args, cancel=cancel, **kw)
+        p = mock.patch.object(backup, "make", held)
+        p.start()
+        self.addCleanup(p.stop)
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        self.assertTrue(dlg.start())
+        self.assertTrue(dlg.running)
+        dlg.close()                                   # = Cancel / Esc / X
+        self.assertFalse(dlg.closed)
+        self.assertTrue(dlg.cancel_event.is_set())
+        self.assertEqual(dlg.status_var.get(), errors.BACKUP_STOPPING)
+        self.pump_until(app, lambda: not dlg.active)
+        self.assertFalse(app.busy)
+        self.assertIsNone(dlg.code)
+        self.assertEqual(dlg.status_var.get(), errors.BACKUP_STOPPED)
+        folder = backup.default_folder()
+        self.assertEqual(os.listdir(folder) if os.path.isdir(folder) else [], [])
+        dlg.close()
+        self.assertTrue(dlg.closed)
 
     def test_send_asks_about_spoken(self):
         from am import config, errors

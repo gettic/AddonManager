@@ -313,8 +313,17 @@ BACKUP_MAKE = "Make backup"
 BACKUP_MAKING = "Making the backup..."
 
 
-def backup_making(percent):
-    return f"Making the backup... {percent} %"
+BACKUP_STOPPING = "Stopping..."
+BACKUP_STOPPED = "Backup stopped. Nothing was saved."
+
+
+def backup_making(percent, left_out=False):
+    """left_out: the Spoken addons were left out (the note stays with the %)."""
+    return f"Making the backup... {percent} %" + (" " + SPOKEN_LEFT_OUT if left_out else "")
+
+
+def restoring(percent):
+    return f"Restoring... {percent} %"
 
 
 BACKUP_OPEN_FOLDER = "Open folder"
@@ -539,8 +548,17 @@ def code_ends(seconds):
     return f"Works once. Ends in {seconds // 60}:{seconds % 60:02d}"
 
 
-def share_message(exc):
-    """Sending or receiving didn't work (nothing on this PC was changed)."""
+NEW_BACKUP_CHECK = ("Couldn't check the new backup, so it wasn't sent. Nothing was "
+                    "changed." + DETAILS)
+
+
+def share_message(exc, fresh=False):
+    """Sending or receiving didn't work (nothing on this PC was changed).
+    fresh: the backup was made just now for this send (a failed check isn't the player's
+    file being wrong)."""
+    if (fresh and getattr(exc, "kind", "") == "not_backup"
+            and str(getattr(exc, "detail", "")).startswith("check ")):
+        return NEW_BACKUP_CHECK
     kind = getattr(exc, "kind", "")
     if kind == "bad_format":
         return "That code isn't right. It looks like 37-amber-lamp-river."
@@ -636,6 +654,41 @@ def found_row(when, size, place, online=False):
     return " · ".join((when, size_text(size), f"{place} ({ONLINE_MARK})" if online else place))
 
 
+# Delete old backups (Backup window > Old backups...; am\backup_delete_ui.py).
+DELETE_TITLE = "Delete old backups"
+DELETE_OPEN = "Old backups..."
+DELETE_OPEN_TIP = "Delete backups you don't need any more"
+DELETE_NOTE = "Tick the backups you don't need any more."
+DELETE_LOOKING = "Looking for backups..."
+DELETE_NONE = "No backups found in your backup folders."
+DELETE_SAFETY = "Show safety copies (made before a restore or install)"
+DELETE_SAFETY_HEADING = "Safety copies:"
+DELETE_NEWEST = "Tick all but the newest"
+DELETE_NOTHING = "Nothing ticked"
+DELETE_BUTTON = "Delete..."
+DELETE_RECEIVED = "received"
+DELETE_MORE = "Only the newest {n} are listed."
+DELETING = "Deleting..."
+DELETE_OK_BIN = f"Move to {BIN_NAME}"
+DELETE_OK_GOOD = "Delete for good"
+DELETE_TO_BIN = f"Moved to the {BIN_NAME} (you can get them back from there):"
+DELETE_FOR_GOOD = f"No {BIN_NAME} on that drive, so these are deleted for good:"
+DELETE_CLOUD = ("Backups in {clouds} are deleted on your other PCs too (the cloud keeps "
+                "them in its own bin for a while).")
+DELETE_SAFETY_LINE = "Safety copies let you undo a restore or an Add from file."
+# Why a ticked backup was left (keys = am\backup_delete.py result kinds).
+DELETE_REASONS = {
+    "in_use": "in use: close anything that has it open, then try again",
+    "permission": "no permission to delete it",
+    "changed": "it changed since the list was made",
+    "gone": "it's not there any more",
+    "restore": "a restore didn't finish: start the app again first",
+    "no_bin": f"its drive has no {BIN_NAME} now",
+    "refused": "not one of this app's backups",
+    "other": f"{SYSTEM} couldn't delete it",
+}
+
+
 def account_line(name):
     return f'Settings of account "{name}" go to:'
 
@@ -674,6 +727,8 @@ def backup_message(exc):
     if kind == "unsafe":
         return ("That backup holds files in places it shouldn't, so I didn't use it. "
                 "Nothing was changed." + DETAILS)
+    if kind == "cancelled":
+        return BACKUP_STOPPED
     if kind == "nothing":
         return "There was nothing to back up or restore."
     if kind == "inside_game":

@@ -80,6 +80,25 @@ def make_raw_zip(path, entries):
     return path
 
 
+def forge_size(path, name, size):
+    """Make the zip's central directory claim `size` unpacked bytes for entry `name` (a lying
+    header, as in a zip bomb). Returns path."""
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    raw = name.encode("utf-8")
+    pos = 0
+    while True:
+        pos = data.index(b"PK\x01\x02", pos)
+        n = int.from_bytes(data[pos + 28:pos + 30], "little")
+        if bytes(data[pos + 46:pos + 46 + n]) == raw:
+            data[pos + 24:pos + 28] = size.to_bytes(4, "little")
+            break
+        pos += 4
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
 def sha256(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()

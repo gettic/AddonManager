@@ -6,6 +6,7 @@ import shutil
 import stat
 import sys
 import tkinter as tk
+from tkinter import ttk
 import unittest
 import zipfile
 
@@ -13,7 +14,8 @@ from am import archive, backup, fileinstall, fileinstall_ui, installer, instance
 from am.archive import ArchiveError
 from am.installer import InstallError
 from tests import archive_fixtures as af
-from tests.fixtures import make_addon_folder, make_fake_wow, temp_dir, tree_snapshot
+from tests.fixtures import (forge_size, make_addon_folder, make_fake_wow, temp_dir,
+                            tree_snapshot)
 
 GUILD = ["TaxiTime"]
 
@@ -121,8 +123,15 @@ class ZipSafetyTests(Base):
             f.seek(0)
             f.write(data)
         self.assertRefused(enc, "encrypted")
-        self.assertRefused(self.zip([("A/A.toc", "x"), ("A/big.lua", b"\0" * (5 * 1024 * 1024))]),
-                           "too_big")
+        bomb = self.zip([("A/A.toc", "x"), ("A/big.lua", "x" * 4000)], "bomb.zip")
+        with zipfile.ZipFile(bomb) as zf:
+            csize = zf.getinfo("A/big.lua").compress_size
+        forge_size(bomb, "A/big.lua", max(1024 * 1024 + 1, (archive.MAX_RATIO + 1) * csize))
+        self.assertRefused(bomb, "too_big")   # a header claiming more than deflate can do
+        # A real >1 MB file that deflates about 1000:1 (an empty texture) is fine.
+        plan = self.scan(self.zip([("A/A.toc", "## Interface: 16001\n"),
+                                   ("A/border.tga", b"\0" * (5 * 1024 * 1024))], "tga.zip"))
+        self.assertEqual([a.folder for a in plan.addons], ["A"])
         old = archive.MAX_ENTRIES
         archive.MAX_ENTRIES = 10
         self.addCleanup(setattr, archive, "MAX_ENTRIES", old)
@@ -819,6 +828,47 @@ class WindowFileTests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertLessEqual(self.root.minsize()[0], 680)
 
+    def test_add_file_in_list_footer(self):
+        """Add file... sits in the list box's footer (under the scrolling rows, never
+        scrolled), the hint at its left: the drop note while no other addon is installed,
+        the file types after. No Other addons heading until there is one. Ctrl+O opens
+        Add file... (not while busy)."""
+        app = self.make_app()
+        files = app.files
+        self.assertIs(files.button.master, app.list_footer)
+        self.assertIs(app.list_footer.master, app.list_box)
+        self.assertEqual(int(app.list_footer.grid_info()["row"]), 1)
+        self.assertEqual(files.hint.cget("text"), fileinstall_ui.ADD_HINT_EMPTY
+                         if files.drop_ok else fileinstall_ui.ADD_HINT)
+        files.drop_ok = False
+        app.render()
+        self.assertEqual(files.hint.cget("text"), fileinstall_ui.ADD_HINT)
+        files.drop_ok = True
+        app.render()
+        self.assertEqual(files.hint.cget("text"), fileinstall_ui.ADD_HINT_EMPTY)
+        self.assertEqual(app._head_rows, [0])   # no Other addons heading yet
+        self.assertIn("Ctrl+O", files.tip.text)
+        for key in fileinstall_ui.ADD_KEYS:
+            self.assertIn("add_key", self.root.bind(key))
+        asked = []
+        files.ask_file = lambda: asked.append(1) or ""
+        self.assertEqual(files.add_key(), "break")
+        self.assertEqual(asked, [1])
+        app.busy = True
+        app.render()
+        files.add_key()
+        self.assertEqual(asked, [1])   # ignored while busy
+        app.busy = False
+        app.render()
+        button = files.button
+        d = self.install_pack(app)
+        d.close()
+        self.root.update_idletasks()
+        self.assertIs(files.button, button)   # the footer isn't rebuilt with the rows
+        self.assertEqual(files.hint.cget("text"), fileinstall_ui.ADD_HINT)
+        self.assertEqual(len(app._head_rows), 2)
+        self.assert_footer_fits(app)
+
     def test_busy_greys_button(self):
         app = self.make_app()
         app.busy = True
@@ -917,20 +967,46 @@ class WindowFileTests(unittest.TestCase):
                 self.assertEqual((add.winfo_reqwidth(), add.winfo_reqheight()),
                                  (app.folder_button.winfo_reqwidth(),
                                   app.folder_button.winfo_reqheight()))
-                self.assertIn(str(add.cget("style")), ("", "TButton"))   # same look as Install
-                from tkinter import ttk
+                self.assertIn(str(add.cget("style")), ("", "TButton"))   # like Change...
                 natural = ttk.Button(add.master, text=add.cget("text"), width=0)
                 self.assertLessEqual(natural.winfo_reqwidth(), add.winfo_reqwidth())
                 natural.destroy()
-                # the Add file... line above the list fits too
-                self.assertGreaterEqual(self.root.minsize()[0],
-                                        app.files.button.master.winfo_reqwidth() + 20)
+                # Add file... in the list box's footer, which never makes the list
+                # wider than its rows need
+                self.assert_footer_fits(app)
                 if factor == 1.0:
                     self.assertEqual(self.root.minsize()[0],
                                      max(ui.MIN_WIDTH, app._min_width))
                     self.assertLessEqual(row.winfo_reqwidth(), 560 - 20)
                 app.closed = True
         self.root.tk.call("tk", "scaling", base)
+
+    def assert_footer_fits(self, app):
+        """Add file... in the list box's footer: as wide as the row buttons, the same right
+        edge, a normal button (as tall as Change...), its text not cut; the hint at its
+        left fits beside it (the footer never makes the list wider than its rows)."""
+        self.root.update_idletasks()
+        add, f = app.files.button, app.list_frame
+        self.assertEqual(str(add.cget("style")), "")   # a normal button, like Change...
+        self.assertEqual((add.winfo_reqwidth(), add.winfo_reqheight()),
+                         (app.folder_button.winfo_reqwidth(),
+                          app.folder_button.winfo_reqheight()))
+        rows = [w[1] for w in app.row_widgets.values() if w[1] is not None]
+        rows += [c["button"] for c in app.files.cells]
+        self.assertTrue(rows)
+        for b in rows:
+            self.assertEqual(add.winfo_reqwidth(), b.winfo_reqwidth())
+        natural = ttk.Button(add.master, text=add.cget("text"), width=0)
+        self.assertLessEqual(natural.winfo_reqwidth(), add.winfo_reqwidth())
+        natural.destroy()
+        # widest hint + gap + button fits inside the rows' width (strictly: the rows
+        # set the list's width, not the footer)
+        hint = app.files.hint
+        widest = max(app._text_width(t) for t in (fileinstall_ui.ADD_HINT,
+                                                  fileinstall_ui.ADD_HINT_EMPTY))
+        self.assertLess(widest + theme.px(8) + add.winfo_reqwidth(),
+                        f.winfo_reqwidth() - app.box_pad)
+        self.assertLessEqual(hint.winfo_reqwidth(), widest + 4)
 
     LONG_TITLE = "Very Long Addon Name Number 0 With Extra Words And More"
 
@@ -965,7 +1041,7 @@ class WindowFileTests(unittest.TestCase):
 
     def test_linux_layout(self):
         """The Linux layout (on Linux for real; on Windows simulated: Linux fonts are about
-        1.2x wider): Add file... on its own line above the list, slim bottom-row buttons
+        1.2x wider): Add file... in the list box's footer, slim bottom-row buttons
         (Backup and Settings as narrow as their text) with real room inside 540 px, and a
         long Other-addon title keeps the window well under 680 px. The Windows layout is
         checked by test_stats."""
@@ -1012,12 +1088,10 @@ class WindowFileTests(unittest.TestCase):
             sizes.append((app.all_button.winfo_reqwidth(), bottom.winfo_reqwidth()))
             self.assertLessEqual(bottom.winfo_reqwidth(), 680 - 40)
         self.assertEqual(sizes[0], sizes[1])
-        self.assertLessEqual(app.files.button.master.winfo_reqwidth(), 540 - 30)
         for b in [w[1] for w in app.row_widgets.values() if w[1] is not None]:
             self.assertEqual(app.files.button.winfo_reqwidth(), b.winfo_reqwidth())
-        # the button above the list, below the folder line
-        children = app.outer.pack_slaves()
-        self.assertLess(children.index(app.files.button.master), children.index(app.list_box))
+        # the button in the list box's footer (no Other addons heading yet)
+        self.assert_footer_fits(app)
         before = self.root.minsize()[0]
         self.install_long_title(app)
         # the title adds nothing to what the guild rows already need (and stays in 680 px)
@@ -1025,6 +1099,7 @@ class WindowFileTests(unittest.TestCase):
         self.assertLessEqual(self.root.minsize()[0],
                              before + max(0, fileinstall_ui.MIN_TITLE_PX - widest))
         self.assertLessEqual(self.root.minsize()[0], 680)
+        self.assert_footer_fits(app)
         # right-click menu still there
         self.assertEqual(app.files.menu.entrycget(1, "label"), fileinstall_ui.FOLDER_MENU)
 

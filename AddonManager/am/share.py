@@ -58,6 +58,7 @@ PART_EXT = ".part"
 PART_MAX_AGE = 2 * 3600                    # older than any transfer can run: left over
 ID_A, ID_B = b"AddonManager-send", b"AddonManager-receive"
 _PREFIX = {w[:3]: w for w in WORDS}
+CHECK_PREFIX = "check "   # not_backup detail: backup.read refused the file (+ its kind)
 
 
 class ShareError(Exception):
@@ -456,8 +457,9 @@ def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic,
     big = size_check(size, bool(later))
     try:
         info = backup.read(path, received=True)   # the same check the other PC makes
-    except backup.BackupError as e:
-        raise ShareError("not_backup", e.kind) from e
+    except backup.BackupError as e:   # detail CHECK_PREFIX + the real reason (unsafe, ...)
+        log.warning("The backup to send didn't pass the check: %s", e)
+        raise ShareError("not_backup", CHECK_PREFIX + e.kind) from e
     if info.kind != "backup":
         raise ShareError("not_backup", "safety copy")
     sha = _sha256_file(path)

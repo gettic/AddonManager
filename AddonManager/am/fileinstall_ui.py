@@ -24,10 +24,13 @@ ROW_HEIGHT = 40 if LINUX else 36
 # ---------- texts ----------
 ADD_BUTTON = "Add file..."
 ADD_WIDTH = 10   # characters: the same size as the list's Install/Update/Uninstall buttons
-# The button sits on its own line above the list (on every system), with ADD_HINT next to
-# it, so the bottom row keeps room for Backup and Settings in the smallest window.
-ADD_HINT = "Other addons from a .zip, .rar or .7z file:"
-ADD_TIP = "Install an addon from a .zip, .rar or .7z file (from CurseForge, Wago or a friend)."
+# The button sits in the list box's footer (under the scrolling rows, always in view),
+# lined up under the row buttons, with ADD_HINT at the left of the footer.
+ADD_HINT = "From a .zip, .rar or .7z file:"
+ADD_HINT_EMPTY = "Drop a file here or use Add file:"   # no other addons yet (drag and drop)
+ADD_TIP = ("Install an addon from a .zip, .rar or .7z file (from CurseForge, Wago or a "
+           "friend). Shortcut: Ctrl+O.")
+ADD_KEYS = ("<Control-o>", "<Control-O>")
 FOLDER_TIP = "Right-click: install from an unpacked folder. You can also drop a file on the window."
 FILE_MENU = "Install from file..."
 FOLDER_MENU = "Install from folder..."
@@ -419,26 +422,38 @@ class FileAddons:
 
     # ----- building -----
     def build_button(self, parent, drop_widget):
-        """The button at the right of its own line above the list (parent), with ADD_HINT
-        before it; drop_widget: the frame filling the window (tkdnd passes a drop on any
-        widget inside it up to it; the Tk root itself can't be a drop target in
-        tkinterdnd2)."""
+        """The list box's footer (parent): a thin line, ADD_HINT at the left and Add file...
+        at the right, under the row buttons (same width and right edge). drop_widget: the
+        frame filling the window (tkdnd passes a drop on any widget inside it up to it; the
+        Tk root itself can't be a drop target in tkinterdnd2)."""
         app = self.app
-        # As wide as the list's row buttons and Change..., at the same right edge (the
-        # boxes' inner padding + their border).
+        tk.Frame(parent, height=1, background=theme.ROW_LINE).pack(
+            side="top", fill="x", pady=(0, theme.px(6)))
+        # A normal button (as tall as Change...), as wide as the row buttons.
         self.button = ttk.Button(parent, text=ADD_BUTTON, command=self.add_from_file,
                                  width=theme.button_chars(parent))
-        self.button.pack(side="right", padx=(0, getattr(app, "box_right", -1) + 1))
-        self.hint = ttk.Label(parent, text=ADD_HINT, style="Muted.TLabel")
-        self.hint.pack(side="right", padx=(0, theme.px(8)))
+        self.button.pack(side="right")
+        self.hint = ttk.Label(parent, text=ADD_HINT, style="Muted.TLabel",
+                              background=theme.PANEL)
+        self.hint.pack(side="left", padx=(0, theme.px(8)))
         self.tip = _tooltip(app, self.button, ADD_TIP + " " + FOLDER_TIP)
         self.menu = tk.Menu(app.root, tearoff=0, **theme.menu_options())
         self.menu.add_command(label=FILE_MENU, command=self.add_from_file)
         self.menu.add_command(label=FOLDER_MENU, command=self.add_from_folder)
         self.button.bind("<Button-3>", self._menu_popup)
-        # The hint label opens the same menu (and with press-and-hold on a touch screen).
+        # The hint opens the same menu (and with press-and-hold on a touch screen).
         touch.bind_menu(self.hint, self._menu_popup)
         self.drop_ok = enable_drop(app.root, drop_widget, self.dropped)
+
+    def hint_text(self):
+        """ADD_HINT, or ADD_HINT_EMPTY while no other addon is installed (only where a
+        file can be dropped on the window)."""
+        return ADD_HINT_EMPTY if self.drop_ok and not self.rows else ADD_HINT
+
+    def add_key(self, _event=None):
+        """Ctrl+O: Add file... (ignored while busy)."""
+        self.add_from_file()
+        return "break"
 
     def _menu_popup(self, event):
         state = "normal" if self._free() else "disabled"
@@ -514,6 +529,9 @@ class FileAddons:
         app = self.app
         free = self._free()
         app._set_enabled(self.button, free)
+        text = self.hint_text()
+        if self.hint.cget("text") != text:
+            self.hint.configure(text=text)
         for row, cells in zip(self.rows, self.cells):
             name, installed, latest, status = cells["labels"]
             shown = fit_title(row.title, self._title_px(), app._name_width)

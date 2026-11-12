@@ -216,6 +216,9 @@ class App:
         # F5 / Ctrl+R: Check again (ignored while busy).
         for key in ("<F5>", "<Control-r>", "<Control-R>"):
             root.bind(key, self._check_key)
+        # Ctrl+O: Add file... (ignored while busy).
+        for key in fileinstall_ui.ADD_KEYS:
+            root.bind(key, self.files.add_key)
         self._resolve_folder(wow_override)
         self._after = None
         root.bind("<Destroy>", self._on_destroy, add="+")
@@ -274,11 +277,6 @@ class App:
                                         width=self._row_chars())
         self.folder_button.grid(row=0, column=1, sticky="e", padx=(P, 0))
         folder.columnconfigure(0, weight=1)
-        # "Add file..." gets its own line above the list, so the bottom row keeps room
-        # (Backup and Settings) inside the smallest window.
-        add_row = ttk.Frame(outer)
-        add_row.pack(fill="x", pady=(0, theme.px(4)))
-        self.files.build_button(add_row, outer)
 
         self.banner_var = tk.StringVar()
         self.banner = tk.Label(outer, textvariable=self.banner_var, background=theme.BANNER_BG,
@@ -299,7 +297,7 @@ class App:
                                     font=theme.font("underline"))
         self.update_link.pack(side="left", padx=(theme.px(8), 0))
         self.update_link.bind("<Button-1>", lambda _e: self.whats_new())
-        # Later: as wide as Add file... above it; Update now: its own measured width.
+        # Later: as wide as the row buttons; Update now: its own measured width.
         self.update_later_button = ttk.Button(self.update_bar, text="Later",
                                               command=self.update_later,
                                               width=self._row_chars())
@@ -312,6 +310,9 @@ class App:
         # The list is packed after the bottom block (below), so a short window scrolls the
         # list, never cuts the buttons or the message line.
         self._build_list_box(outer)
+        # "Add file...": in the list box's footer, always in view (not scrolled).
+        self.files.build_button(self.list_footer, outer)
+        self._wheel_all(self.list_footer)
 
         bottom = ttk.Frame(outer)
         bottom.pack(fill="x", side="bottom")
@@ -431,6 +432,10 @@ class App:
         box.columnconfigure(1, minsize=max(self.box_right,
                                            bar.winfo_reqwidth() + 2 * theme.px(4)))
         bar.grid_remove()
+        # The footer (Add file..., see fileinstall_ui.build_button): under the scrolling
+        # part, so it never scrolls away; its right edge = the row buttons'.
+        self.list_footer = ttk.Frame(box, style="List.TFrame")
+        self.list_footer.grid(row=1, column=0, sticky="ew", padx=(P, 0), pady=(0, P))
         self.list_frame = ttk.Frame(view, style="List.TFrame", padding=(P, 0, 0, P - 2))
         self.list_frame.place(x=0, y=0, relwidth=1, height=1)
         self._list_top = 0     # pixels scrolled (a whole number of rows)
@@ -834,12 +839,11 @@ class App:
         the row buttons can't be cut off. At least MIN_WIDTH."""
         self.list_frame.update_idletasks()
         # The bottom row's buttons too: at 150 % display scaling and more they need more
-        # than the list (Check again ... Backup, Settings would be cut off); and the
-        # Add file... line above the list.
+        # than the list (Check again ... Backup, Settings would be cut off). Add file... is
+        # in the list box (its footer).
         m = 2 * self.margin
         need = max(MIN_WIDTH, self.list_box.winfo_reqwidth() + m,
-                   self.settings_button.master.winfo_reqwidth() + m,
-                   self.files.button.master.winfo_reqwidth() + m)
+                   self.settings_button.master.winfo_reqwidth() + m)
         if need != self._min_width:
             self._min_width = need
             self.root.minsize(need, theme.px(MIN_HEIGHT))

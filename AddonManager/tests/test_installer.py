@@ -121,8 +121,24 @@ class InstallerTests(unittest.TestCase):
         self.assert_fails(self.addon(z), "unsafe")
 
     def test_zip_bomb(self):
-        z = self.good_zip(files={"TaxiTime/zeros.bin": b"\0" * (5 * 1024 * 1024)})
+        """A header claiming more than MAX_RATIO x its packed size (more than deflate can
+        really do) is refused."""
+        z = self.good_zip(files={"TaxiTime/zeros.bin": "x" * 4000})
+        with zipfile.ZipFile(z) as zf:
+            csize = zf.getinfo("TaxiTime/zeros.bin").compress_size
+        fixtures.forge_size(z, "TaxiTime/zeros.bin",
+                            max(1024 * 1024 + 1, (installer.MAX_RATIO + 1) * csize))
         self.assert_fails(self.addon(z), "unsafe")
+
+    def test_highly_compressible_file_installs(self):
+        """A real >1 MB file that deflates about 1000:1 (an empty texture) is fine."""
+        z = self.good_zip(files={"TaxiTime/border.tga": b"\0" * (5 * 1024 * 1024)})
+        with zipfile.ZipFile(z) as zf:
+            zi = zf.getinfo("TaxiTime/border.tga")
+            self.assertGreater(zi.file_size, 200 * zi.compress_size)   # the old limit
+        self.assertEqual(self.install(self.addon(z)), "1.3.0")
+        self.assertEqual(os.path.getsize(os.path.join(self.addons, "TaxiTime", "border.tga")),
+                         5 * 1024 * 1024)
 
     def test_not_a_zip(self):
         p = os.path.join(self.zips, "bad.zip")

@@ -42,7 +42,8 @@ RESTORE_PREFIX = ".addonmanager-restore-"  # staging folder inside WTF during a 
 MAX_ENTRIES = 200_000
 MAX_TOTAL = 8 * 1024 * 1024 * 1024         # unpacked size of a whole backup
 SPARE_DISK = 50 * 1024 * 1024              # kept free on a drive after a restore
-MAX_RATIO = 200                            # compressed -> unpacked, per file over 1 MB
+MAX_RATIO = 1100                           # per file over 1 MB: above deflate's ~1032:1 =
+                                           # forged header (MAX_TOTAL counts the real bytes)
 MAX_WTF_DEPTH = 4                          # realm/character/SavedVariables/file
 MAX_INFO = 256 * 1024                      # backup.json bigger than this: not a backup
 OTHERS_KEY = "other_addons"                # backup.json: the "Other addons" (Add file...) record
@@ -55,7 +56,8 @@ ADDONS, SETTINGS, BINDINGS = "addons", "settings", "bindings"
 
 class BackupError(Exception):
     """kind: bad_folder, nothing, inside_game, not_backup, newer_format, unsafe, bad_zip,
-    no_account, same_account, locked, permission, disk_full, other."""
+    no_account, same_account, locked, permission, disk_full, cancelled (the player stopped
+    making a backup), other."""
 
     def __init__(self, kind, detail="", need=None):
         super().__init__(f"{kind}: {detail}")
@@ -831,12 +833,58 @@ def _clean_others(value, folders=None):
     return out
 
 
-def _write_zip(path, files, kind, parts, progress=None, left_out=(), others=None):
+def _file_sizes(files):
+    """Bytes of each file (0 when it can't be read): one stat per file."""
+    sizes = []
+    for _arc, src in files:
+        try:
+            sizes.append(os.path.getsize(src))
+        except OSError:
+            sizes.append(0)
+    return sizes
+
+
+WRITE_CHUNK = 1024 * 1024   # bytes per read: Cancel and the bar react within one chunk
+
+
+def _stopped(cancel, path):
+    if cancel is not None and cancel.is_set():
+        raise BackupError("cancelled", path)
+
+
+def _write_entry(zf, src, arc, base, size, total, progress, cancel, path):
+    """One file into the zip in WRITE_CHUNK pieces (same entry as zf.write: deflate at
+    the zip's level, the file's date). Checks cancel before each piece; progress gets
+    base + bytes read (never past this file's listed size, so totals stay exact)."""
+    _stopped(cancel, path)
+    zinfo = zipfile.ZipInfo.from_file(src, arc, strict_timestamps=zf._strict_timestamps)
+    zinfo.compress_type = zf.compression
+    zinfo.compress_level = zf.compresslevel
+    read = 0
+    with open(src, "rb") as f, zf.open(zinfo, "w") as dst:
+        while True:
+            _stopped(cancel, path)
+            chunk = f.read(WRITE_CHUNK)
+            if not chunk:
+                break
+            dst.write(chunk)
+            read += len(chunk)
+            if progress and read < size:
+                progress(base + read, total)
+
+
+def _write_zip(path, files, kind, parts, progress=None, left_out=(), others=None,
+               cancel=None, sizes=None):
     """Write files [(arcname, source)] + backup.json into path (via path.part).
     left_out: addon folders the player chose to leave out (listed in backup.json).
-    others: the "Other addons" record (already cleaned) for folders in this zip."""
+    others: the "Other addons" record (already cleaned) for folders in this zip.
+    progress(done, total): bytes read so far / all bytes. cancel: a threading.Event;
+    when set, BackupError("cancelled") and the .part is removed (nothing is kept).
+    sizes: the files' sizes when already known (one stat per file)."""
     part = path + ".part"
-    total = _size(files) or 1
+    if sizes is None:
+        sizes = _file_sizes(files)
+    total = sum(sizes) or 1
     done = 0
     info = {"app": BACKUP_APP, "format": FORMAT, "version": APP_VERSION, "kind": kind,
             "created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -849,12 +897,9 @@ def _write_zip(path, files, kind, parts, progress=None, left_out=(), others=None
         with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED, compresslevel=6,
                              strict_timestamps=False) as zf:
             zf.writestr(INFO_NAME, json.dumps(info, indent=2))
-            for arc, src in files:
-                zf.write(src, arc)
-                try:
-                    done += os.path.getsize(src)
-                except OSError:
-                    pass
+            for (arc, src), size in zip(files, sizes):
+                _write_entry(zf, src, arc, done, size, total, progress, cancel, path)
+                done += size
                 if progress:
                     progress(done, total)
         os.replace(part, path)
@@ -918,8 +963,10 @@ def check_space(needs, disk_usage=None):
 
 
 def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress=None,
-         leave_out=(), others=None):
+         leave_out=(), others=None, cancel=None):
     """Make a backup in dest_folder. Returns (path, size in bytes, counts dict).
+    progress(done, total): bytes so far. cancel: threading.Event; set = stop between
+    files with BackupError("cancelled"), nothing saved.
     settings: everything restorable below WTF\\Account (incl. key bindings and macros).
     leave_out: addon folders not to save (the Spoken ones, when the player said so).
     others: the app's "Other addons" record (settings file_addons); the entries for
@@ -945,7 +992,7 @@ def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress
     parts = ([ADDONS] if files else []) + ([SETTINGS] if wtf_files else [])
     record = _clean_others(others, folders) if files else {}
     path = _write_zip(backup_path(dest_folder, now), files + wtf_files, "backup", parts, progress,
-                      left, record)
+                      left, record, cancel=cancel)
     counts = {"addons": len(folders), "settings_files": len(wtf_files)}
     log.info("Backup made: %s (%s)", path, counts)
     return path, os.path.getsize(path), counts
@@ -1361,8 +1408,17 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
     unpack = sum(zi.file_size for zi, parts, kind in info.entries
                  if kind == ADDONS and parts[1] in wanted)
     unpack += sum(zi.file_size for zi, _t, _r in file_targets)
-    check_space(space_needed(p.addons, unpack, safety_folder, _size(safety_files)),
-                disk_usage)
+    safety_sizes = _file_sizes(safety_files)
+    safety_bytes = sum(safety_sizes)
+    check_space(space_needed(p.addons, unpack, safety_folder, safety_bytes), disk_usage)
+    # One bar over the three steps, by bytes: the safety copy, the unpacking, then the
+    # renames (fast; a fixed ~2 % slice at the end).
+    swap_share = max(1, (safety_bytes + unpack) // 50)
+    grand = safety_bytes + unpack + swap_share
+
+    def report(done):
+        if progress:
+            progress(min(done, grand), grand)
     safety = None
     if old_addons or old_files:
         if in_game_folder(safety_folder, p.addons):
@@ -1372,7 +1428,9 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
         except OSError as e:
             raise _os_error(e, f"making {safety_folder}") from e
         parts = ([ADDONS] if old_addons else []) + ([SETTINGS] if old_files else [])
-        safety = _write_zip(safety_path(safety_folder, now), safety_files, "safety", parts)
+        safety = _write_zip(safety_path(safety_folder, now), safety_files, "safety", parts,
+                            progress=lambda d, _t: report(d) if safety_bytes else None,
+                            sizes=safety_sizes)
         log.info("Safety copy before restore: %s", safety)
 
     steps = len(addon_targets) + len(file_targets)
@@ -1397,6 +1455,7 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
                             if not _inside(os.path.dirname(dest), staging):
                                 raise BackupError("unsafe", zi.filename)
                             _extract(zf, zi, dest, budget)
+                            report(safety_bytes + budget[0])
                 if file_targets:
                     os.makedirs(p.wtf, exist_ok=True)
                     stage = tempfile.mkdtemp(prefix=RESTORE_PREFIX, dir=p.wtf)
@@ -1404,6 +1463,7 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
                     os.makedirs(os.path.join(stage, "old"))
                     for i, (zi, _target, _rel) in enumerate(file_targets):
                         _extract(zf, zi, os.path.join(stage, "new", str(i)), budget)
+                        report(safety_bytes + budget[0])
         except BackupError:
             raise
         except (zipfile.BadZipFile, EOFError, RuntimeError, ValueError, zlib.error) as e:
@@ -1421,8 +1481,7 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
                     os.replace(target, os.path.join(p.addons, installer.BACKUP_PREFIX + folder))
                 os.replace(os.path.join(p.addons, journal["staging"], folder), target)
                 done += 1
-                if progress:
-                    progress(done, steps)
+                report(safety_bytes + unpack + swap_share * done // max(steps, 1))
             stage = os.path.join(p.wtf, journal["wtf_stage"]) if file_targets else None
             for i, (_zi, target, _rel) in enumerate(file_targets):
                 if os.path.isfile(target):
@@ -1430,8 +1489,7 @@ def restore(zip_path, addons_dir, safety_folder, addons=True, settings=True, bin
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 os.replace(os.path.join(stage, "new", str(i)), target)
                 done += 1
-                if progress:
-                    progress(done, steps)
+                report(safety_bytes + unpack + swap_share * done // max(steps, 1))
             os.remove(_journal_path(p))   # the commit: from here on, the restore stays
             journal_written = False
         except OSError as e:

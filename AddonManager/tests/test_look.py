@@ -320,6 +320,31 @@ class LookWindowTests(unittest.TestCase):
         hub = app.open_backup_window(show=False)
         self.check_dialog(hub.win, "backup window")
         self.check_knots(hub.win, hub.win._am_frame, "backup window")
+        # a backup found: Open folder + Old backups... + Close fit, one size, <= 420 px
+        now = time.time()
+        found = [backup.FoundBackup(os.path.join(self.work, f"AddonManager backup 2026-1{i}-01.zip"),
+                                    "OneDrive" if i else "Documents", (i + 1) * 300 * 2 ** 20,
+                                    now - i * 86400 * 30, False, i == 2) for i in range(3)]
+        found.append(backup.FoundBackup(os.path.join(self.work, "Before restore 2026-09-01 1200.zip"),
+                                        "Documents", 2 ** 20, now - 86400 * 90, True, False))
+        hub.handle(("backup_last", hub._looking, found[0], True))
+        self.assertEqual(hub.old_button.winfo_manager(), "pack")
+        self.check_dialog(hub.win, "backup window (found)")
+        self.check_knots(hub.win, hub.win._am_frame, "backup window (found)")
+        self.assertLessEqual(hub.win.winfo_reqwidth(), theme.px(420), "backup window width")
+        # Delete old backups, with backups listed and two ticked
+        d = hub.open_old()
+        d.handle(("backup_delete_found", d._token, found, [], {"OneDrive"}))
+        d.safety_var.set(True)
+        d.toggle_safety()
+        d.tick_but_newest()
+        self.assertTrue(d.ticked())
+        self.check_dialog(d.win, "delete backups")
+        self.check_knots(d.win, d.win._am_frame, "delete backups")
+        d.win.update_idletasks()
+        self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "delete window width")
+        self.assertEqual(d.delete_button.winfo_reqwidth(), d.close_button.winfo_reqwidth())
+        d.close()
         for opener, name in ((lambda: app.open_backup(show=False), "make backup"),
                              (lambda: app.open_restore(show=False), "restore list"),
                              (lambda: app.open_send(show=False), "send"),

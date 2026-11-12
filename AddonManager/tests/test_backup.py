@@ -7,14 +7,16 @@ import gc
 import json
 import os
 import shutil
+import threading
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 import unittest
 import zipfile
 from unittest import mock
 
-from am import backup, backup_ui, config, errors, ui
+from am import backup, backup_ui, config, errors, theme, ui
 from am.backup import BackupError
 from tests import fixtures
 
@@ -143,6 +145,102 @@ class BackupCoreTests(unittest.TestCase):
             backup.make(self.addons, self.out, addons=False, settings=False)
         self.assertEqual(c.exception.kind, "nothing")
 
+    def test_make_progress_by_bytes(self):
+        """Progress counts bytes read, only goes up and ends exactly at the total."""
+        for flags in ({}, {"settings": False}, {"addons": False}):
+            seen = []
+            path = backup.make(self.addons, self.out, now=NOW,
+                               progress=lambda d, t: seen.append((d, t)), **flags)[0]
+            with zipfile.ZipFile(path) as z:
+                total = sum(i.file_size for i in z.infolist() if i.filename != "backup.json")
+            self.assertTrue(seen, flags)
+            self.assertEqual(seen[-1], (total, total), flags)
+            self.assertEqual({t for _d, t in seen}, {total}, flags)
+            dones = [d for d, _t in seen]
+            self.assertEqual(dones, sorted(dones), flags)
+
+    def test_progress_poster_throttles(self):
+        """Thousands of files: at most 101 queue messages, the last one at 100 %."""
+        posted = []
+        progress = backup_ui.progress_poster(lambda d, t: posted.append((d, t)))
+        for i in range(1, 5001):
+            progress(i, 5000)
+        self.assertLessEqual(len(posted), 101)
+        self.assertEqual(posted[-1], (5000, 5000))
+        self.assertEqual(posted[0], (1, 5000))   # the first call shows at once
+
+    def test_make_cancel_leaves_nothing(self):
+        """Cancel while zipping: BackupError cancelled, no .zip and no .part kept."""
+        stop = threading.Event()
+        before = self.snap()
+        with self.assertRaises(BackupError) as c:
+            backup.make(self.addons, self.out, now=NOW, cancel=stop,
+                        progress=lambda d, t: stop.set())   # stop after the first file
+        self.assertEqual(c.exception.kind, "cancelled")
+        self.assertEqual(errors.backup_message(c.exception), errors.BACKUP_STOPPED)
+        self.assertEqual(os.listdir(self.out), [])
+        self.assertEqual(self.snap(), before)
+
+    def test_make_cancel_inside_one_big_file(self):
+        """One big file: Cancel is seen between chunks (not only between files), the bar
+        moves inside the file, and nothing is kept."""
+        mb = backup.WRITE_CHUNK
+        big = 4 * mb
+        with open(os.path.join(self.addons, "TaxiTime", "big.bin"), "wb") as f:
+            f.write(os.urandom(big))
+        stop = threading.Event()
+        seen = []
+
+        def progress(d, t):
+            seen.append((d, t))
+            if d >= mb:   # only the big file can get this far: one chunk of it is in
+                stop.set()
+        with self.assertRaises(BackupError) as c:
+            backup.make(self.addons, self.out, now=NOW, settings=False, cancel=stop,
+                        progress=progress)
+        self.assertEqual(c.exception.kind, "cancelled")
+        self.assertEqual(os.listdir(self.out), [])          # no .zip, no .part
+        total = seen[-1][1]
+        small = total - big
+        self.assertLess(max(d for d, _t in seen), small + 2 * mb)   # stopped inside it
+        # Without Cancel: progress inside the file, exact totals, the file unchanged.
+        seen.clear()
+        path = backup.make(self.addons, self.out, now=NOW, settings=False,
+                           progress=lambda d, t: seen.append((d, t)))[0]
+        self.assertEqual(seen[-1], (total, total))
+        dones = [d for d, _t in seen]
+        self.assertEqual(dones, sorted(dones))
+        self.assertGreaterEqual(len([d for d in dones if small < d < total]), 3)
+        with zipfile.ZipFile(path) as z:
+            self.assertEqual(z.getinfo("AddOns/TaxiTime/big.bin").file_size, big)
+            self.assertEqual(z.getinfo("AddOns/TaxiTime/big.bin").compress_type,
+                             zipfile.ZIP_DEFLATED)
+            self.assertIsNone(z.testzip())
+
+    def test_restore_progress_through_every_step(self):
+        """One bar over the safety copy, the unpacking and the renames: it moves before
+        the swap (no journal yet), only goes up and ends at 100 %."""
+        path = backup.make(self.addons, self.out, now=NOW)[0]
+        write(os.path.join(self.wtf, "Account", "ACCOUNT1", "SavedVariables", "TaxiTime.lua"),
+              "changed\n")
+        journal = backup._journal_path(backup.places(self.addons))
+        seen = []
+        result = backup.restore(path, self.addons, os.path.join(self.base, "safety"),
+                                account_map={"ACCOUNT1": "ACCOUNT1"},
+                                progress=lambda d, t: seen.append((d, t, os.path.exists(journal))))
+        self.assertTrue(result.safety)
+        total = seen[-1][1]
+        self.assertEqual(seen[-1][0], total)
+        self.assertEqual({t for _d, t, _j in seen}, {total})
+        dones = [d for d, _t, _j in seen]
+        self.assertEqual(dones, sorted(dones))
+        before_swap = [d for d, _t, j in seen if not j]
+        self.assertTrue(before_swap)
+        self.assertGreater(max(before_swap), total * 0.9)   # the slow steps fill most of it
+        self.assertEqual(read_text(os.path.join(self.wtf, "Account", "ACCOUNT1",
+                                                "SavedVariables", "TaxiTime.lua")),
+                         "TaxiTimeDB = 'old'\n")
+
     def test_make_refuses_folder_inside_game(self):
         for inside in (os.path.join(self.addons, "TaxiTime"), os.path.join(self.wtf, "x")):
             with self.assertRaises(BackupError) as c:
@@ -267,6 +365,35 @@ class BackupCoreTests(unittest.TestCase):
                 with self.assertRaises(BackupError, msg=path) as c:
                     backup.read(path)
                 self.assertEqual(c.exception.kind, kind, path)
+
+    def test_highly_compressible_files_back_up_and_restore(self):
+        """Files over 1 MB that deflate very well (empty texture space, repeated data rows)
+        make a backup that its own check, the send check and a restore all accept; a header
+        that lies about the unpacked size is still refused."""
+        tga = os.path.join(self.addons, "TaxiTime", "border.tga")
+        with open(tga, "wb") as f:
+            f.write(b"\0" * (2 * 1024 * 1024))
+        sv = os.path.join(self.wtf, "Account", "ACCOUNT1", "SavedVariables", "Data.lua")
+        write(sv, "{0,0,0,0},\n" * 150000)
+        path = backup.make(self.addons, self.out, now=NOW)[0]
+        with zipfile.ZipFile(path) as z:
+            zi = z.getinfo("AddOns/TaxiTime/border.tga")
+            self.assertGreater(zi.file_size, 200 * zi.compress_size)   # the old limit
+        backup.read(path)
+        backup.read(path, received=True)
+        result = backup.restore(path, self.addons, os.path.join(self.base, "safety"))
+        self.assertTrue(result)
+        self.assertEqual(os.path.getsize(tga), 2 * 1024 * 1024)
+        forged = raw_backup(os.path.join(self.base, "forged.zip"), [
+            ("AddOns/A/A.toc", "## Version: 1\n"), ("AddOns/A/big.lua", "x" * 4000)])
+        with zipfile.ZipFile(forged) as z:
+            csize = z.getinfo("AddOns/A/big.lua").compress_size
+        fixtures.forge_size(forged, "AddOns/A/big.lua", max(1024 * 1024 + 1,
+                                                            (backup.MAX_RATIO + 1) * csize))
+        with self.assertRaises(BackupError) as c:
+            backup.read(forged)
+        self.assertEqual(c.exception.kind, "unsafe")
+        self.assertIn("suspicious compression", c.exception.detail)
 
     def test_folder_without_toc_is_skipped(self):
         path = raw_backup(os.path.join(self.base, "b.zip"),
@@ -947,6 +1074,92 @@ class WindowBackupTests(unittest.TestCase):
         dlg.status_var.set("")
         self.assertEqual(dlg.status.winfo_manager(), "")
         dlg.close()
+
+    def held_make(self):
+        """backup.make that waits until Cancel is pressed, then runs (and stops)."""
+        real = backup.make
+
+        def make(*args, cancel=None, **kw):
+            cancel.wait(10)
+            return real(*args, cancel=cancel, **kw)
+        p = mock.patch.object(backup, "make", make)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_make_backup_cancel(self):
+        """Cancel while making: stops the backup, the window stays to say so, no file."""
+        self.held_make()
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_backup(show=False)
+        folder = backup.default_folder()   # shared with other tests: compare before/after
+        before = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+        self.assertTrue(dlg.start())
+        self.assertTrue(dlg.running)
+        self.assertNotIn("disabled", dlg.cancel_button.state())   # Cancel stays live
+        self.assertIn("disabled", dlg.make_button.state())
+        dlg.close()                                  # = Cancel / Esc / X
+        self.assertFalse(dlg.closed)
+        self.assertIs(app.backup_dialog, dlg)
+        self.assertEqual(dlg.status_var.get(), errors.BACKUP_STOPPING)
+        self.assertIn("disabled", dlg.cancel_button.state())
+        self.pump(app)
+        self.assertFalse(dlg.running)
+        self.assertFalse(app.busy)
+        self.assertEqual(dlg.status_var.get(), errors.BACKUP_STOPPED)
+        self.assertNotIn("disabled", dlg.make_button.state())
+        self.assertEqual(sorted(os.listdir(folder)) if os.path.isdir(folder) else [], before)
+        dlg.close()
+        self.assertTrue(dlg.closed)
+        self.assertIsNone(app.backup_dialog)
+
+    def test_restore_progress_text(self):
+        path = backup.make(self.addons, os.path.join(self.work, "b"), now=NOW)[0]
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_restore(show=False, path=path)
+        self.assertTrue(dlg.start())
+        dlg.handle(("restore_progress", 50, 200))
+        self.assertEqual(float(dlg.progress.cget("value")), 25)
+        self.assertEqual(dlg.status_var.get(), errors.restoring(25))
+        self.pump(app)
+        self.assertTrue(dlg.status_var.get().startswith("Restored."))
+        dlg.handle(("restore_progress", 1, 200))    # a late message after the end: ignored
+        self.assertTrue(dlg.status_var.get().startswith("Restored."))
+
+    def fit_with_bar(self, factor):
+        """The Make backup and Send windows with the bar and the longest progress text
+        stay within 420 px (scaled) and keep their buttons whole."""
+        base = float(self.root.tk.call("tk", "scaling"))
+        self.root.tk.call("tk", "scaling", base * factor)
+        try:
+            self._fit_with_bar(factor)
+        finally:   # Tk keeps the scaling for the next window (as test_look does)
+            self.root.tk.call("tk", "scaling", base)
+            theme.SCALE = 1.0
+
+    def _fit_with_bar(self, factor):
+        app = self.make_app()
+        app.share_url = "https://relay.invalid"
+        app.open_backup_window(show=False)
+        for opener in (lambda: app.open_backup(show=False), lambda: app.open_send(show=False)):
+            dlg = opener()
+            dlg.set_progress(99, 100)
+            dlg.set_status(errors.backup_making(100, True))
+            dlg.win.update_idletasks()
+            self.assertEqual(dlg.progress.winfo_manager(), "pack")
+            self.assertLessEqual(dlg.win.winfo_reqwidth(), theme.px(420), factor)
+            for b in dlg.buttons.winfo_children():
+                self.assertGreaterEqual(b.winfo_reqwidth(), tkfont.Font(
+                    root=self.root, font=theme.button_font()).measure(str(b.cget("text"))))
+            dlg.close()
+        app.close_backup_window()
+
+    def test_bar_fits_at_150(self):
+        self.fit_with_bar(1.5)
+
+    def test_bar_fits_linux_fonts(self):
+        self.fit_with_bar(1.2)   # Linux fonts simulated (about 1.2x wider), as in test_look
 
     def test_licences_keep_their_own_lines(self):
         app = self.make_app()

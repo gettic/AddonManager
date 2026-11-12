@@ -25,7 +25,10 @@ DELETING_PREFIX = ".addonmanager-deleting-"   # being deleted for good: finished
 RESTORE_JOURNAL = ".addonmanager-restore.json"   # in AddOns while a restore swaps (see backup)
 MAX_DOWNLOAD = 50 * 1024 * 1024
 MAX_UNCOMPRESSED = 200 * 1024 * 1024
-MAX_RATIO = 200          # compressed -> uncompressed, per file over 1 MB
+# compressed -> uncompressed, per file over 1 MB. Deflate can't go past about 1032:1, so
+# only a forged size header is refused (real textures/data can reach several hundred:1);
+# MAX_UNCOMPRESSED, counted on the bytes really unpacked, is the zip-bomb guard.
+MAX_RATIO = 1100
 MAX_ENTRIES = 5000
 
 

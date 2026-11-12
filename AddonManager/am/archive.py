@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 MAX_FILE = 200 * 1024 * 1024        # the picked archive
 MAX_UNPACKED = 500 * 1024 * 1024    # everything unpacked (inner archives share it)
 MAX_ENTRIES = 20_000
-MAX_RATIO = 200                     # compressed -> unpacked, per file over 1 MB
+MAX_RATIO = 1100                    # per file over 1 MB: above deflate's ~1032:1 = forged
+                                    # header (MAX_UNPACKED counts the real bytes)
 MAX_DEPTH = 24                      # folder levels inside an archive
 MAX_INNER = 20                      # archives inside the archive (one level only)
 TAR_TIMEOUT = 120                   # seconds for tar to list or unpack

@@ -104,7 +104,9 @@ Only the guild's addons and the ones you added from a file can be removed, never
 
 Click **Backup** (bottom row, left of **Settings**). Close WoW first.
 
-The **Backup** window has **Make a backup...** and **Restore a backup...** (This PC), and **Send to another PC...** and **Receive...** (Another PC). It also shows "Last backup: <date> (<place>)" and an **Open folder** button.
+The **Backup** window has **Make a backup...** and **Restore a backup...** (This PC), and **Send to another PC...** and **Receive...** (Another PC). It also shows "Last backup: <date> (<place>)", and once a backup is found, an **Open folder** button and an **Old backups...** button.
+
+A progress bar with a percentage shows while a backup is made (also when **Send to another PC...** makes a new one) and while restoring. **Cancel** stops a backup being made; nothing is saved. A restore can't be stopped half-way.
 
 **Make a backup...** saves your addons and their settings (saved variables, key bindings and macros) in one file called `AddonManager backup <date>.zip`.
 
@@ -132,6 +134,15 @@ The **Backup** window has **Make a backup...** and **Restore a backup...** (This
 - Before it replaces anything it saves a safety copy, `Before restore <date> <time>.zip`, in the same backup folder. It can't be inside the WoW folder either.
 - If a restore is cut off (power cut, crash), the app undoes it the next time it starts and tells you. You can restore again.
 - If there is no account folder yet, log in to the game once, close it, then restore.
+
+### Delete old backups
+
+Click **Old backups...** in the **Backup** window. Tick the backups you don't need and press **Delete...**. **Tick all but the newest** helps. Safety copies show only with their tick.
+
+- They go to the Recycle Bin (on Linux: the Trash).
+- On a drive without one (USB stick, network, some cloud drives), the question says they are deleted for good.
+- A backup in a cloud folder is deleted on your other PCs too.
+- Only the app's own backup files are offered. Nothing in the WoW folder is touched.
 
 ### Send a backup to another PC
 
@@ -166,7 +177,7 @@ A file received this way is handled with extra care:
 
 ## Adding an addon from a file
 
-For an addon that isn't in the guild's list (from CurseForge, Wago or a friend), click **Add file...** (on its own line above the addon list) and pick a `.zip`, `.rar` or `.7z` file. Other ways:
+For an addon that isn't in the guild's list (from CurseForge, Wago or a friend), click **Add file...** (at the bottom of the addon list box, always in view, even when the list scrolls) or press **Ctrl+O**, and pick a `.zip`, `.rar` or `.7z` file. Other ways:
 
 - Drop the file on the app's window, or on the program's icon. If the app is already open, the open window gets it.
 - Right-click **Add file...** and choose **Install from folder...** for an addon you already unpacked.
