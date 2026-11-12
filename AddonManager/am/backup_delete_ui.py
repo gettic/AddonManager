@@ -16,6 +16,8 @@ MAX_VISIBLE_ROWS = 8     # more backups: the list scrolls
 MAX_ROWS = 500           # sanity cap of rows built
 MAX_CONFIRM_LINES = 4    # files named in the question; the rest as "and N more"
 MAX_RESULT_NAMES = 3
+WRAP_STYLE = backup_ui.SPOKEN_STYLE   # a Checkbutton whose text wraps (style wraplength)
+ROW_STYLE = "Row.TCheckbutton"        # one backup row (9 pt on Linux, like Row.TButton)
 
 def _plural(n, word):
     return f"{n} {word}{'' if n == 1 else 's'}"
@@ -114,8 +116,14 @@ class DeleteBackupsDialog(backup_ui._Dialog):
         self.rows = ttk.Frame(self.frame)
         self.rows.pack(fill="x", pady=(4, 0))
         self.safety_var = tk.BooleanVar(value=False)
+        # The tick's text wraps (wider Linux fonts would widen the window past 420 px);
+        # Linux rows in 9 pt like the Restore list's rows (Row.TButton).
+        style = ttk.Style(self.win)
+        style.configure(WRAP_STYLE, wraplength=theme.px(backup_ui.WRAP - 30))
+        style.configure(ROW_STYLE, font=theme.font(bigger=-1) if backup_ui.LINUX else theme.font())
         self.safety_check = ttk.Checkbutton(self.frame, text=errors.DELETE_SAFETY,
-                                            variable=self.safety_var, command=self.toggle_safety)
+                                            variable=self.safety_var, command=self.toggle_safety,
+                                            style=WRAP_STYLE)
         self.safety_check.pack(anchor="w", pady=(8, 0))
         self.newest_button = ttk.Button(self.frame, text=errors.DELETE_NEWEST,
                                         command=self.tick_but_newest)
@@ -206,7 +214,7 @@ class DeleteBackupsDialog(backup_ui._Dialog):
 
     def _row(self, holder, f):
         c = ttk.Checkbutton(holder, text=row_text(f), variable=self._var(f),
-                            command=self.update_buttons)
+                            command=self.update_buttons, style=ROW_STYLE)
         c.pack(anchor="w", pady=(0, theme.px(2)))
         c.backup = f
         if self.running:

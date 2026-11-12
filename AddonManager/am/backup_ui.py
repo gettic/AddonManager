@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 LINUX = sys.platform != "win32"
 WRAP = 310 if LINUX else 330   # text width: keeps the windows narrow
 SLIM_PADDING = (4, 4)          # Linux only: Cloud.TButton / Row.TButton
+HUB_PADDING = (3, 3)           # Linux only: the Backup window's buttons (Hub.TButton)
 CLOUD_COLUMNS = 3
 MAX_CLOUD_BUTTONS = 9   # 3 rows
 MAX_FOUND_ROWS = 8      # Backups found: older ones via Browse...
@@ -106,6 +107,16 @@ class BackupWindow:
         self.last_var = tk.StringVar(value=errors.BACKUP_LAST_LOOKING)
         ttk.Label(frame, textvariable=self.last_var, wraplength=theme.px(WRAP), justify="left").pack(
             anchor="w", pady=(12, 0))
+        # Open folder + Old backups...: a pair row under the last-backup line, packed only
+        # once something is found (Open folder: an own backup; Old backups...: any file,
+        # safety copies too). Old backups... opens am\backup_delete_ui.py's window.
+        self.found_row = ttk.Frame(frame)
+        self.open_button = self._pair_button(self.found_row, errors.BACKUP_OPEN_FOLDER,
+                                             self.open_result, False)
+        self.old_button = self._pair_button(self.found_row, errors.DELETE_OPEN,
+                                            self.open_old, False)
+        from am import ui   # imported here: ui imports this module
+        ui.Tooltip(self.old_button, errors.DELETE_OPEN_TIP)
         # The status line takes room only while it has text (no empty gap).
         self.status_var = tk.StringVar()
         self.status = ttk.Label(frame, textvariable=self.status_var,
@@ -113,18 +124,10 @@ class BackupWindow:
         bar = self.bar = ttk.Frame(frame)
         bar.pack(fill="x", pady=(theme.px(12), 0))
         self.status_var.trace_add("write", lambda *_a: self._place_status())
-        self.close_button = ttk.Button(bar, text=errors.CLOSE, command=app.close_backup_window)
-        # The gap keeps Close apart from Old backups... when the row is full (Linux fonts).
-        self.close_button.pack(side="right", padx=(theme.px(6), 0))
-        # Open folder: only once a backup is found (its folder exists then).
-        self.open_button = ttk.Button(bar, text=errors.BACKUP_OPEN_FOLDER,
-                                      command=self.open_result)
-        # Old backups...: the Delete old backups window (am\backup_delete_ui.py), also
-        # only once a backup is found.
-        self.old_button = ttk.Button(bar, text=errors.DELETE_OPEN, command=self.open_old)
-        from am import ui   # imported here: ui imports this module
-        ui.Tooltip(self.old_button, errors.DELETE_OPEN_TIP)
-        theme.even_buttons(bar)
+        self.close_button = self._pair_button(bar, errors.CLOSE, app.close_backup_window, False)
+        bar.columnconfigure(0, weight=1)   # Close sits in the right-hand pair column
+        self._cell(self.close_button, 1)
+        self._even_pairs()
         win.protocol("WM_DELETE_WINDOW", app.close_backup_window)
         win.bind("<Escape>", lambda _e: app.close_backup_window())
         self.render()
@@ -154,20 +157,54 @@ class BackupWindow:
         ttk.Label(frame, text=heading, style="Head.TLabel", font=theme.head_font(1)).pack(
             anchor="w", pady=(theme.px(12), 0))
         grid = ttk.Frame(frame)
-        grid.pack(fill="x", pady=(theme.px(4), 0))
+        grid.pack(anchor="w", pady=(theme.px(4), 0))
         out = []
         for col, (text, command, accent) in enumerate((left, right)):
-            grid.columnconfigure(col, weight=1, uniform="pair")
             # The small windows open shown only when this one is (tests: never shown).
-            # Linux: the slim padding of the main window's bottom row (wider fonts; keeps
-            # the window inside 420 px with "Send to another PC...").
-            slim = "Slim." if LINUX else ""
-            b = ttk.Button(grid, text=text, command=lambda c=command: c(show=self.shown),
-                           style=slim + ("Accent.TButton" if accent else "TButton"))
-            b.grid(row=0, column=col, sticky="ew",
-                   padx=(0, theme.px(3)) if col == 0 else (theme.px(3), 0))
+            b = self._pair_button(grid, text, lambda c=command: c(show=self.shown), accent)
+            self._cell(b, col)
             out.append(b)
         return out
+
+    def _pair_button(self, parent, text, command, accent):
+        """One of the window's buttons. Linux: `HUB_PADDING` (wider fonts; with "Send to
+        another PC..." the window stays well inside 420 px)."""
+        slim = "Hub." if LINUX else ""
+        if LINUX:
+            for name in ("Hub.TButton", "Hub.Accent.TButton"):
+                ttk.Style(parent).configure(name, padding=tuple(theme.px(n) for n in HUB_PADDING))
+        return ttk.Button(parent, text=text, command=command,
+                          style=slim + ("Accent.TButton" if accent else "TButton"))
+
+    @staticmethod
+    def _cell(button, col):
+        """A button in a pair row's column (the gap is split over the two cells)."""
+        button.grid(row=0, column=col, sticky="ew",
+                    padx=(0, theme.px(3)) if col == 0 else (theme.px(3), 0))
+
+    def _even_pairs(self):
+        """Every button of this window gets one width: the same text width in characters
+        (the widest text, at least a row button) and, for the pair rows, one fixed column
+        width in pixels (no stretching, so 1 px font rounding can never make two buttons
+        differ). The pair rows are at least as wide as the text lines, so Close (packed
+        right) ends where the pair rows end."""
+        buttons = [*self.buttons(), self.open_button, self.old_button, self.close_button]
+        style = str(buttons[1].cget("style")) or "TButton"
+        width = max(theme.button_chars(self.win, style),
+                    theme.chars(self.win, [b.cget("text") for b in buttons], style))
+        for b in buttons:
+            b.configure(width=width)
+        self.win.update_idletasks()
+        gap = theme.px(3)
+        column = max(max(b.winfo_reqwidth() for b in buttons) + gap,
+                     -(-theme.px(WRAP) // 2))
+        for b in buttons:
+            if b.master is self.bar:
+                self.bar.columnconfigure(1, minsize=column, weight=0)
+            else:
+                b.master.columnconfigure(0, minsize=column, weight=0)
+                b.master.columnconfigure(1, minsize=column, weight=0)
+        self.column_px = column
 
     def buttons(self):
         return [self.make_button, self.restore_button, *self.share_buttons]
@@ -199,12 +236,20 @@ class BackupWindow:
         any_found = bool(msg[3]) if len(msg) > 3 else bool(f)
         self.last_var.set(errors.backup_last(found_date(f.mtime), f.place) if f
                           else errors.BACKUP_LAST_NONE)
-        self.open_button.pack_forget()
-        self.old_button.pack_forget()
+        self.open_button.grid_remove()
+        self.old_button.grid_remove()
         if f:
-            self.open_button.pack(side="left")
+            self._cell(self.open_button, 0)
         if any_found:
-            self.old_button.pack(side="left", padx=(theme.px(6) if f else 0, 0))
+            self._cell(self.old_button, 1 if f else 0)
+        try:
+            if not (f or any_found):
+                self.found_row.pack_forget()
+            elif not self.found_row.winfo_manager():
+                below = self.status if self.status.winfo_manager() else self.bar
+                self.found_row.pack(anchor="w", pady=(theme.px(6), 0), before=below)
+        except tk.TclError:
+            pass   # the window is closing
 
     def open_result(self):
         if self.last is not None:

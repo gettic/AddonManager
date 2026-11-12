@@ -328,7 +328,7 @@ class LookWindowTests(unittest.TestCase):
         found.append(backup.FoundBackup(os.path.join(self.work, "Before restore 2026-09-01 1200.zip"),
                                         "Documents", 2 ** 20, now - 86400 * 90, True, False))
         hub.handle(("backup_last", hub._looking, found[0], True))
-        self.assertEqual(hub.old_button.winfo_manager(), "pack")
+        self.assertEqual(hub.old_button.winfo_manager(), "grid")
         self.check_dialog(hub.win, "backup window (found)")
         self.check_knots(hub.win, hub.win._am_frame, "backup window (found)")
         self.assertLessEqual(hub.win.winfo_reqwidth(), theme.px(420), "backup window width")
@@ -400,16 +400,39 @@ class LookWindowTests(unittest.TestCase):
         self.root.tk.call("tk", "scaling", self.base_scaling * 1.5)
         self.run_checks()
 
-    def test_buttons_linux_fonts(self):
-        """Linux simulated on Windows (fonts about 1.2x wider, slim bottom row)."""
+    def linux_on_windows(self):
+        """Linux simulated on Windows: Linux constants, slim bottom row and Verdana 10
+        (the metrics of DejaVu Sans, the font the Linux build's CI has) with a DejaVu-like
+        serif, at the CI's display scaling (1.043). Measured: this gives the CI's widths
+        to within 1-2 px (Segoe UI x 1.2 was 50+ px too narrow)."""
+        from am import backup_ui
+        families = set(tkfont.families(self.root))
+        family = "Verdana" if "Verdana" in families else theme.FONT_FAMILY
         patches = [mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True),
                    mock.patch.object(ui, "SETTINGS_BUTTON", "Settings"),
-                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas")] if os.name == "nt" else []
+                   mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas"),
+                   mock.patch.object(backup_ui, "LINUX", True),
+                   mock.patch.object(backup_ui, "WRAP", 310),
+                   mock.patch.object(backup_ui, "PLACE_MAX", 12),
+                   mock.patch.object(theme, "FONT_FAMILY", family),
+                   mock.patch.object(theme, "FONT_SIZE", 10),
+                   mock.patch.object(theme, "BUTTON_FAMILY", None),
+                   mock.patch.object(theme, "HEAD_CHOICES", ("DejaVu Serif", "Georgia"))]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
+        return 1.043
+
+    def test_buttons_linux_fonts(self):
+        """Linux fonts (on Windows: simulated, see linux_on_windows)."""
         if os.name == "nt":
-            self.root.tk.call("tk", "scaling", self.base_scaling * 1.2)
+            self.root.tk.call("tk", "scaling", self.base_scaling * self.linux_on_windows())
+        self.run_checks()
+
+    def test_buttons_linux_fonts_150(self):
+        """Linux fonts at 150 % (the CI's 150 % is 1.56)."""
+        factor = self.linux_on_windows() * 1.5 if os.name == "nt" else 1.5
+        self.root.tk.call("tk", "scaling", self.base_scaling * factor)
         self.run_checks()
 
     # ---------- the scrolling list ----------

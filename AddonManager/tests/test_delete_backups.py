@@ -395,7 +395,7 @@ class WindowTests(Setup, unittest.TestCase):
         self.pump_until(lambda: not app.busy)
         hub = app.open_backup_window(show=False)
         self.assertFalse(hub.old_button.winfo_manager())
-        self.pump_until(lambda: hub.old_button.winfo_manager() == "pack")
+        self.pump_until(lambda: hub.old_button.winfo_manager() == "grid")
         self.assertFalse(hub.open_button.winfo_manager())   # no backup of its own yet
         hub.handle(("backup_last", hub._looking, None, False))
         self.assertFalse(hub.old_button.winfo_manager())
