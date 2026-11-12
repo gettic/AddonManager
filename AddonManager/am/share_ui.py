@@ -1,7 +1,7 @@
 """The two Send-with-a-code windows (Settings > Backup, and Use a code... in Backups found):
 Send to another PC (pick or make a backup, show the code) and Receive (type the code, then
 the normal Restore window). The work runs in threads (am\\share.py); results come back
-through the App's queue as ("share_found"/"share_made"/"share_code"/"share_progress"/
+through the App's queue as ("share_found"/"share_game"/"share_made"/"share_code"/"share_progress"/
 "share_matched"/"share_sent"/"share_received"/"share_error", ...). Closing a window while
 it waits or sends stops the transfer (the relay deletes the mailbox)."""
 
@@ -96,24 +96,40 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.ends_at = None
         self.started = False     # the other PC joined (progress began)
         self.left_out = False    # Spoken addons left out of the new backup
-        ttk.Label(self.frame, text=errors.SEND_WHAT, style="Muted.TLabel").pack(
+        self.made = None         # the backup made for a send that failed (a retry sends it)
+        # What to send: folded into one line (what_line) once a send starts, so the window
+        # stays inside small screens (Steam Deck, 150 % on 1080p); back after an error.
+        box = self.what_box = ttk.Frame(self.frame)
+        box.pack(fill="x")
+        ttk.Label(box, text=errors.SEND_WHAT, style="Muted.TLabel").pack(
             anchor="w", pady=(6, 0))
+        self.what_line = ttk.Label(self.frame, style="Muted.TLabel", wraplength=theme.px(WRAP),
+                                   justify="left")
         self.choice = tk.StringVar(value="new")
-        self.new_radio = ttk.Radiobutton(self.frame, text=errors.SEND_NEW, value="new",
-                                         variable=self.choice)
+        settings = config.load_settings()
+        self.new_radio = ttk.Radiobutton(box, value="new", variable=self.choice,
+                                         text=errors.send_new(
+                                             settings.get("backup_addons", True) is not False,
+                                             settings.get("backup_settings", True) is not False))
         self.new_radio.pack(anchor="w", pady=(4, 0))
-        self.newest_radio = ttk.Radiobutton(self.frame, text=errors.SEND_NEWEST + "...",
+        self.newest_radio = ttk.Radiobutton(box, text=errors.SEND_NEWEST + "...",
                                             value="newest", variable=self.choice)
         self.newest_radio.state(["disabled"])
         self.newest_radio.pack(anchor="w", pady=(2, 0))
-        self.other_radio = ttk.Radiobutton(self.frame, text=errors.SEND_CHOSEN, value="other",
+        self.other_radio = ttk.Radiobutton(box, text=errors.SEND_CHOSEN, value="other",
                                            variable=self.choice)
-        self.other_button = ttk.Button(self.frame, text=errors.SEND_OTHER, command=self.pick,
+        self.other_button = ttk.Button(box, text=errors.SEND_OTHER, command=self.pick,
                                        width=max(theme.button_chars(self.frame), theme.chars(
                                            self.frame, (errors.SEND_OTHER,))))
         self.other_button.pack(anchor="w", pady=(4, 0))
-        ttk.Label(self.frame, text=errors.SEND_PRIVATE, wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(10, 0))
+        # WoW open: a new backup still works; the strip (under the choices, only while
+        # "A new backup" is picked and the choices are open) says what it holds.
+        self.game_open = False
+        self.game_label = backup_ui.game_strip(self.frame, errors.SEND_GAME_OPEN)
+        self.private_label = ttk.Label(self.frame, text=errors.SEND_PRIVATE,
+                                       wraplength=theme.px(WRAP), justify="left")
+        self.private_label.pack(anchor="w", pady=(10, 0))
+        self.choice.trace_add("write", lambda *_a: self._game_state())
         ttk.Label(self.frame, text=errors.SEND_SAFE, style="Muted.TLabel", wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(4, 0))
         self._later_area()
@@ -130,12 +146,31 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                          args=(app.queue, self.tag, folder)).start()
         self._spoken_init()
         threading.Thread(target=_spoken_worker, daemon=True,
-                         args=(app.queue, self.tag, app.addons_dir)).start()
-        self._show(self.go_button)
+                         args=(app.queue, self.tag, app.addons_dir, app.check_game)).start()
+        self._show(self.go_button, extra=(errors.SEND_TRY_AGAIN, errors.SEND_GET_CODE))
+
+    def _game_state(self):
+        """The WoW-open strip shows while WoW is open, "A new backup" is picked and the
+        choices are open (folded while a send runs: the window stays short)."""
+        want = (self.game_open and self.choice.get() == "new" and not self.closed
+                and not self.what_line.winfo_manager())
+        try:
+            if want and not self.game_label.winfo_manager():
+                self.game_label.pack(fill="x", pady=(theme.px(6), 0), before=self.private_label)
+            elif not want and self.game_label.winfo_manager():
+                self.game_label.pack_forget()
+        except tk.TclError:
+            pass   # the window is closing
+
+    def show_game(self, running):
+        if running and not self.game_open:
+            self.game_open = True
+            self._game_state()
 
     def _later_area(self):
-        """Send later (opt-in, off by default, remembered): the tick, file.kiwi's terms and
-        privacy links, how long the code works, and what file.kiwi sees."""
+        """Send later (opt-in, off by default, remembered): the tick, Upload right away (not
+        remembered), file.kiwi's terms and privacy links, how long the code works, and what
+        file.kiwi sees."""
         settings = config.load_settings()
         self.later_mode = False      # uploading for later (or done)
         self.later_done = False
@@ -156,8 +191,20 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                               justify="left")
         tick_text.grid(row=0, column=1, sticky="w")
         tick_text.bind("<Button-1>", lambda _e: self.toggle_later())
-        rest = ttk.Frame(area)
+        # Upload right away, the hours, the links and the note: shown only while the tick
+        # is on (the window stays short enough for small screens), see _later_state.
+        rest = self.later_rest = ttk.Frame(area)
         rest.grid(row=1, column=1, sticky="w")
+        # Upload right away (no 5-min wait for the other PC): off each time, never saved.
+        self.now_var = tk.BooleanVar(value=False)
+        now = ttk.Frame(rest)
+        now.pack(anchor="w", pady=(4, 0))
+        self.now_check = ttk.Checkbutton(now, variable=self.now_var)
+        self.now_check.grid(row=0, column=0, sticky="nw")
+        self.now_label = ttk.Label(now, text=errors.LATER_NOW_TICK,
+                                   wraplength=theme.px(WRAP - 60), justify="left")
+        self.now_label.grid(row=0, column=1, sticky="w")
+        self.now_label.bind("<Button-1>", lambda _e: self.toggle_now())
         keep = ttk.Frame(rest)
         keep.pack(anchor="w", pady=(4, 0))
         ttk.Label(keep, text=errors.LATER_KEEP).pack(side="left")
@@ -189,9 +236,27 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.later_var.set(not self.later_var.get())
         self.save_later()
 
+    def toggle_now(self):
+        if self.active or self.closed or not self.later_var.get():
+            return
+        self.now_var.set(not self.now_var.get())
+
     def _later_state(self):
-        on = self.later_var.get() and not self.active
-        self.hours_button.state(["!disabled"] if on else ["disabled"])
+        """The hours menu and Upload right away work only with the file.kiwi tick on and
+        nothing running (also after an error, see _after_error). With the tick off they
+        are hidden, and Upload right away is unticked (it never comes back ticked)."""
+        ticked = bool(self.later_var.get())
+        if not ticked:
+            self.now_var.set(False)
+        show = ticked and not self.active   # folded away while a send runs (_fold)
+        if show and not self.later_rest.winfo_manager():
+            self.later_rest.grid(row=1, column=1, sticky="w")
+        elif not show and self.later_rest.winfo_manager():
+            self.later_rest.grid_remove()
+        on = ticked and not self.active
+        for w in (self.hours_button, self.now_check):
+            w.state(["!disabled"] if on else ["disabled"])
+        self.now_label.configure(style="TLabel" if on else "Muted.TLabel")
 
     def save_later(self):
         """Remember the tick and the hours (the next Send window starts the same)."""
@@ -209,7 +274,8 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             return None
         return {"hours": int(self.hours_var.get()),
                 "api": getattr(self.app, "later_api", None) or share_later.API_URL,
-                "allow_local": self.app.allow_local}
+                "allow_local": self.app.allow_local,
+                "now": bool(self.now_var.get())}
 
     def pick(self):
         if self.active or self.closed:
@@ -236,6 +302,10 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         if self.active or self.closed or self.app.busy or not self.app.addons_dir:
             return False
         path = self.chosen_path()
+        fresh = path is None
+        if fresh and self.made and os.path.isfile(self.made):
+            path = self.made     # a retry: send the backup made for the failed try again
+        self.made = None
         settings = config.load_settings()
         flags = dict(addons=settings.get("backup_addons", True) is not False,
                      settings=settings.get("backup_settings", True) is not False)
@@ -244,15 +314,15 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 return True
             flags["leave_out"] = self.leave_out()
             flags["others"] = backup_ui.other_record(self.app)   # Other addons record
-            self.spoken_once = None
+            # spoken_once stays: a retry in this window uses the same answer (no 2nd ask).
+        self._reset_try()
         for w in (self.new_radio, self.newest_radio, self.other_radio, self.other_button,
                   self.go_button, self.later_check):
             w.state(["disabled"])
         self.later = self.later_choice()
         self.active = True
         self._later_state()
-        self.tag = object()
-        self.speed = Speed()
+        self._fold(True)
         if path is None:
             self.running = True          # making the backup (Cancel stops it, see close)
             self.left_out = bool(flags.get("leave_out"))
@@ -270,8 +340,68 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                          args=(self.app.queue, self.tag, self.app.check_game,
                                self.app.addons_dir, backup_ui.backup_folder(settings), flags, path,
                                self.app.share_url, self.app.allow_local,
-                               self.cancel_event, self.later)).start()
+                               self.cancel_event, self.later, fresh)).start()
         return True
+
+    def _reset_try(self):
+        """A clean start for every try: nothing of a failed try is left (its late messages
+        are ignored by the new tag; a new cancel flag, so an old Stop doesn't stop this)."""
+        self.tag = object()
+        self.speed = Speed()
+        self.cancel_event = threading.Event()
+        self._clear_code()
+        self.started = False
+        self.later_mode = False
+        self.later_done = False
+        self.progress.stop()
+        self.progress.configure(mode="determinate", value=0)
+        self.progress.pack_forget()
+        self.set_status("")
+        self.cancel_button.configure(text=errors.CANCEL)   # it said Close after the error
+
+    def _clear_code(self):
+        """The code, Copy and countdown go (a failed try's code can't be used)."""
+        self.code = None
+        self.ends_at = None
+        self._stop_tick()
+        for w in self.code_area.winfo_children():
+            w.destroy()
+        self.code_area.configure(height=1)   # the emptied frame shrinks back
+
+    def _fold(self, folded):
+        """While a send runs, "What to send" is one line (the choice made) and the
+        file.kiwi details are hidden: the window stays short (Steam Deck: 800 px)."""
+        try:
+            if folded:
+                radio = {"newest": self.newest_radio, "other": self.other_radio}.get(
+                    self.choice.get(), self.new_radio)
+                self.what_line.configure(text=errors.SEND_WHAT + " " + " ".join(
+                    str(radio.cget("text")).split()))
+                if not self.what_line.winfo_manager():
+                    self.what_line.pack(anchor="w", pady=(6, 0), before=self.what_box)
+                self.what_box.pack_forget()
+                self._later_state()   # active: the file.kiwi details fold away too
+                self._game_state()
+            else:
+                if not self.what_box.winfo_manager():
+                    self.what_box.pack(fill="x", before=self.what_line)
+                self.what_line.pack_forget()
+                self._later_state()   # the file.kiwi details back while ticked
+                self._game_state()
+        except tk.TclError:
+            pass   # the window is closing
+
+    def _after_error(self, retry):
+        """The window works again: the choices as they were, and Try again (or Get code when
+        the same try can't work, e.g. a picked file that isn't a backup). Click-only."""
+        self._fold(False)
+        for w in (self.new_radio, self.other_radio, self.other_button, self.go_button,
+                  self.later_check):
+            w.state(["!disabled"])
+        if self.newest is not None:
+            self.newest_radio.state(["!disabled"])
+        self._later_state()
+        self.go_button.configure(text=errors.SEND_TRY_AGAIN if retry else errors.SEND_GET_CODE)
 
     def _determinate(self):
         if str(self.progress.cget("mode")) != "determinate":
@@ -279,6 +409,8 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             self.progress.configure(mode="determinate", value=0)
 
     def _ends_text(self, seconds):
+        if self.later and self.later.get("now"):
+            return ""   # no countdown: it goes up at once, the code works for the hours
         return errors.later_in(seconds) if self.later else errors.code_ends(seconds)
 
     def show_code(self, code, seconds):
@@ -297,8 +429,11 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                                       width=theme.button_chars(line))
         self.copy_button.pack(side="left")
         self.ends_var = tk.StringVar(value=self._ends_text(seconds))
-        ttk.Label(line, textvariable=self.ends_var, style="Muted.TLabel").pack(
-            side="left", padx=(8, 0))
+        # Wraps beside Copy (the "uploaded for later" countdown is two lines).
+        room = max(theme.px(120), theme.px(WRAP) - self.copy_button.winfo_reqwidth()
+                   - theme.px(8))
+        ttk.Label(line, textvariable=self.ends_var, style="Muted.TLabel", wraplength=room,
+                  justify="left").pack(side="left", padx=(theme.px(8), 0))
         self.set_status(errors.SEND_WAITING)
         self._tick()
 
@@ -308,14 +443,31 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             self.set_status(errors.SEND_COPIED + " " + errors.SEND_WAITING
                             if not self.started else self.status_var.get())
 
+    tick_job = None
+
     def _tick(self):
+        self.tick_job = None
         if self.closed or self.started or self.ends_at is None:
             return
         self.ends_var.set(self._ends_text(self.ends_at - time.monotonic()))
         try:
-            self.win.after(TICK_MS, self._tick)
+            self.tick_job = self.win.after(TICK_MS, self._tick)
         except tk.TclError:
             pass
+
+    def _stop_tick(self):
+        """No countdown left waiting (a new code starts its own; closing leaves none)."""
+        if self.tick_job is not None:
+            try:
+                self.win.after_cancel(self.tick_job)
+            except tk.TclError:
+                pass
+            self.tick_job = None
+
+    def close(self):
+        if not self.running:
+            self._stop_tick()
+        super().close()
 
     def handle(self, msg):
         kind = msg[0]
@@ -324,6 +476,10 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         if kind == "share_spoken":
             if not self.active:
                 self.spoken_ready(msg[2], msg[3])
+            self.show_game(len(msg) > 4 and msg[4])
+            return
+        if kind == "share_game":   # WoW open when the new backup is made: it goes on
+            self.show_game(msg[2])
             return
         if kind == "share_found":
             f = msg[2]
@@ -373,6 +529,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 self.later_mode = True
                 self.speed = Speed()
                 self.set_status(errors.LATER_UPLOADING_BIG if msg[3] == "big"
+                                else errors.LATER_UPLOADING_NOW if msg[3] == "now"
                                 else errors.LATER_UPLOADING)
             elif msg[2] == "kiwi_down":   # file.kiwi isn't answering: it tries again by itself
                 until = time.strftime("%H:%M", time.localtime(time.time() + (msg[3] or 0)))
@@ -393,9 +550,13 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 self.running = False
                 self.app.busy = False
                 self.app.render()
+            self.progress.stop()
             self.progress.pack_forget()
+            self._clear_code()       # that code can't be used any more
+            self.made = msg[4] if len(msg) > 4 else None
             self.set_status(msg[2])
             self.cancel_button.configure(text=errors.CLOSE)
+            self._after_error(msg[3] if len(msg) > 3 else True)
 
 
 class ReceiveDialog(_ShareDialog):
@@ -409,6 +570,11 @@ class ReceiveDialog(_ShareDialog):
                                font=code_font())
         self.entry.pack(anchor="w", fill="x", pady=(4, 0))
         self.entry.bind("<Return>", lambda _e: self.start())
+        code = clipboard_code(getattr(app, "read_clipboard", None))
+        if code:   # a copied code: filled in and selected (typing replaces it)
+            self.code_var.set(code)
+            self.entry.select_range(0, "end")
+            self.entry.icursor("end")
         ttk.Label(self.frame, text=errors.RECEIVE_EXAMPLE, style="Muted.TLabel").pack(
             anchor="w", pady=(2, 0))
         ttk.Label(self.frame, text=errors.RECEIVE_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP),
@@ -550,6 +716,26 @@ class ReceiveDialog(_ShareDialog):
                                self.cancel_event)).start()
 
 
+MAX_CLIPBOARD = 80   # characters: anything longer is not a code
+
+
+def clipboard_code(read):
+    """A valid code from the clipboard (read() -> text), written the normal way, or "".
+    Read once, only when the Receive window opens; anything that isn't a valid code is
+    ignored. The text is never sent anywhere or logged."""
+    try:
+        text = read() if read else ""
+    except Exception:
+        return ""
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_CLIPBOARD:
+        return ""
+    try:
+        channel, words = share.parse_code(text)
+    except share.ShareError:
+        return ""
+    return share.format_code(channel, words)
+
+
 def _file_key(path):
     """A downloaded file as (path, size, mtime): a new download of the same name differs."""
     try:
@@ -587,22 +773,49 @@ def newest_own(found):
     return None
 
 
-def _spoken_worker(q, tag, addons_dir):
-    """The Spoken addons a new backup would hold, and all addon folders' bytes."""
+def _spoken_worker(q, tag, addons_dir, check_game=None):
+    """The Spoken addons a new backup would hold, all addon folders' bytes, and whether
+    WoW is open (process names only, see gamecheck)."""
     q.put(("share_spoken", tag, backup.spoken_folders(addons_dir) if addons_dir else [],
-           backup.addons_size(addons_dir) if addons_dir else 0))
+           backup.addons_size(addons_dir) if addons_dir else 0,
+           backup_ui._game_open(check_game) if check_game else False))
+
+
+_NO_RETRY_BACKUP = ("nothing", "newer_format", "unsafe", "inside_game", "not_backup", "bad_zip")
+
+
+def check_failed(exc):
+    """The backup to send didn't pass the send check (backup.read refused it)."""
+    return (isinstance(exc, share.ShareError) and getattr(exc, "kind", "") == "not_backup"
+            and str(getattr(exc, "detail", "")).startswith(share.CHECK_PREFIX))
+
+
+def retry_helps(exc, fresh=False):
+    """Can the same try work when the player clicks Try again? Not for a picked file that
+    isn't a backup, a backup that's too big, a backup that can't be made here, or a new
+    backup that failed the send check (a new one would fail the same way)."""
+    kind = getattr(exc, "kind", "")
+    if isinstance(exc, share.ShareError):
+        if kind == "too_big":
+            return False
+        if kind == "not_backup":   # a picked file stays bad; so does a new one that failed
+            return getattr(exc, "detail", "") == "file changed" or (
+                fresh and not check_failed(exc))
+    return kind not in _NO_RETRY_BACKUP
 
 
 def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow_local, cancel,
-                 later=None):
-    fresh = path is None   # a new backup is made for this send
+                 later=None, fresh=None):
+    """fresh: the backup is made for this send (None = when no path is given). A retry
+    passes the backup made for the failed try with fresh=True.
+    ("share_error", tag, text, retry, made): made = the new backup a retry can send again."""
+    fresh = path is None if fresh is None else fresh
+    made = None
     try:
         relay = share.Relay(url, allow_local=allow_local)
         if path is None:
-            if backup_ui._game_open(check_game):
-                q.put(("share_made", tag, None))
-                q.put(("share_error", tag, errors.GAME_OPEN))
-                return
+            if backup_ui._game_open(check_game):   # WoW open: made anyway, the strip says so
+                q.put(("share_game", tag, True))
             if flags.get("addons"):   # too big to send, or no room: say so before zipping
                 share.precheck(backup.addons_size(addons_dir, flags.get("leave_out", ())),
                                bool(later), folder)
@@ -612,6 +825,9 @@ def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow
                         lambda d, t: q.put(("share_making", tag, d, t))), **flags)
             finally:
                 q.put(("share_made", tag, path))
+            made = path
+        elif fresh:
+            made = path
         share.send(path, relay, lambda code, ttl: q.put(("share_code", tag, code, ttl)),
                    progress=lambda d, t: q.put(("share_progress", tag, d, t)), cancel=cancel,
                    later=later, on_later=lambda s, v: q.put(("share_later", tag, s, v)))
@@ -621,7 +837,11 @@ def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow
                     getattr(e, "detail", ""))
         msg = (errors.share_message(e, fresh=fresh) if isinstance(e, share.ShareError)
                else errors.backup_message(e))
-        q.put(("share_error", tag, msg))
+        bad = isinstance(e, share.ShareError) and getattr(e, "kind", "") == "not_backup"
+        # A new backup that failed the send check is kept as `made` too: Get code then
+        # tries that same file (no new zip on every click) and says so again.
+        keep = made if (not bad or (fresh and check_failed(e))) else None
+        q.put(("share_error", tag, msg, retry_helps(e, fresh), keep))
 
 
 def _receive_worker(q, tag, url, allow_local, code, folder, cancel):

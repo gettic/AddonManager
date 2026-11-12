@@ -23,6 +23,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 import zipfile
 import zlib
 
@@ -57,7 +58,9 @@ ADDONS, SETTINGS, BINDINGS = "addons", "settings", "bindings"
 class BackupError(Exception):
     """kind: bad_folder, nothing, inside_game, not_backup, newer_format, unsafe, bad_zip,
     no_account, same_account, locked, permission, disk_full, cancelled (the player stopped
-    making a backup), other."""
+    making a backup), changed (a file kept changing while it was read: WoW writing it),
+    read_denied (a game file couldn't be read: access denied),
+    other."""
 
     def __init__(self, kind, detail="", need=None):
         super().__init__(f"{kind}: {detail}")
@@ -852,35 +855,240 @@ def _stopped(cancel, path):
         raise BackupError("cancelled", path)
 
 
-def _write_entry(zf, src, arc, base, size, total, progress, cancel, path):
-    """One file into the zip in WRITE_CHUNK pieces (same entry as zf.write: deflate at
-    the zip's level, the file's date). Checks cancel before each piece; progress gets
-    base + bytes read (never past this file's listed size, so totals stay exact)."""
-    _stopped(cancel, path)
-    zinfo = zipfile.ZipInfo.from_file(src, arc, strict_timestamps=zf._strict_timestamps)
+# WoW may be open while a backup is made (it writes SavedVariables at /reload or logout).
+# A file up to STABLE_MAX is read into memory and kept only when its size and date are
+# the same before and after the read; else (or when it vanished or was locked for a
+# moment) it is read once more after STABLE_WAIT seconds. Still busy: a backup leaves it
+# out (an addon whose .toc stays busy is left out whole); a safety copy stops ("locked" /
+# "changed"). Bigger files are streamed and checked after: a change then stops the
+# backup ("changed"), a zip entry can't be undone.
+STABLE_MAX = 64 * 1024 * 1024
+STABLE_WAIT = 0.5
+BUSY_WINERRORS = (32, 33)   # Windows sharing violation / lock violation
+MAX_SKIPPED = 200           # names kept in backup.json
+
+
+class _StillBusy(Exception):
+    """A file stayed busy after the second try. error: the last OSError (None = it kept
+    changing)."""
+
+    def __init__(self, error=None):
+        super().__init__(str(error or "changing"))
+        self.error = error
+
+
+def _busy(e):
+    """A file WoW is writing right now: gone for a moment (written as a new file) or
+    locked (Windows). Access denied and disk errors are not "busy"."""
+    return isinstance(e, FileNotFoundError) or getattr(e, "winerror", None) in BUSY_WINERRORS
+
+
+def _windows_open_error(path):
+    """Windows: the error code of opening path for reading with full sharing (0 = it
+    opens; None = can't tell). Only opens and closes it; reads nothing."""
+    try:
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel32.CreateFileW
+        create.restype = wintypes.HANDLE
+        create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        h = create(path, 0x80000000, 0x7, None, 3, 0, None)   # GENERIC_READ, share all
+        if h is None or h == wintypes.HANDLE(-1).value:
+            return ctypes.get_last_error()
+        kernel32.CloseHandle(h)
+        return 0
+    except Exception:
+        return None
+
+
+def _open_read(src):
+    """open(src, "rb"). Windows: Python gives a sharing violation (another program holds
+    the file without read sharing) as a plain errno 13, like access denied; the file is
+    then opened once with full sharing to tell them apart: a sharing/lock violation (or
+    it opens now: it was busy a moment ago) gets that winerror, so it counts as busy.
+    A real access denied stays a permission error."""
+    try:
+        return open(src, "rb")
+    except PermissionError as e:
+        if os.name == "nt" and getattr(e, "winerror", None) is None:
+            code = _windows_open_error(src)
+            if code == 0 or code in BUSY_WINERRORS:
+                e.winerror = code or BUSY_WINERRORS[0]
+        raise
+
+
+def _source_error(e, what):
+    """An OSError while reading the game folder (not while writing the zip)."""
+    if _busy(e):
+        return BackupError("locked", what)
+    if isinstance(e, PermissionError) or getattr(e, "winerror", None) == 5:
+        return BackupError("read_denied", what)
+    return _os_error(e, f"reading {what}")
+
+
+def _zip_info(zf, arc, st):
+    """The entry zf.write would make for a file with this stat (deflate at the zip's
+    level, the file's date clamped to what a zip can hold, its mode)."""
+    date_time = time.localtime(st.st_mtime)[:6]
+    if date_time[0] < 1980:
+        date_time = (1980, 1, 1, 0, 0, 0)
+    elif date_time[0] > 2107:
+        date_time = (2107, 12, 31, 23, 59, 59)
+    zinfo = zipfile.ZipInfo(arc, date_time)
+    zinfo.external_attr = (st.st_mode & 0xFFFF) << 16
+    zinfo.file_size = st.st_size
     zinfo.compress_type = zf.compression
     zinfo.compress_level = zf.compresslevel
-    read = 0
-    with open(src, "rb") as f, zf.open(zinfo, "w") as dst:
+    return zinfo
+
+
+def _same(a, b):
+    return a.st_size == b.st_size and a.st_mtime_ns == b.st_mtime_ns
+
+
+def _read_chunk(f):
+    """f.read(WRITE_CHUNK). Windows: a byte-range lock (another program holding part of
+    the file) only shows up here, as a plain errno 13 after open worked; it gets the
+    lock-violation winerror so it counts as busy."""
+    try:
+        return f.read(WRITE_CHUNK)
+    except PermissionError as e:
+        if os.name == "nt" and getattr(e, "winerror", None) is None:
+            e.winerror = 33
+        raise
+
+
+def _read_all(src, cancel, path, on_read):
+    chunks, read = [], 0
+    with _open_read(src) as f:
         while True:
             _stopped(cancel, path)
-            chunk = f.read(WRITE_CHUNK)
+            chunk = _read_chunk(f)
             if not chunk:
-                break
-            dst.write(chunk)
+                return b"".join(chunks)
+            chunks.append(chunk)
             read += len(chunk)
-            if progress and read < size:
-                progress(base + read, total)
+            on_read(read)
+
+
+def _stable_read(src, arc, cancel, path, on_read, stat_fn=None, sleep=None):
+    """(bytes, stat) of a file that didn't change while it was read (two tries, see
+    STABLE_WAIT); None = bigger than STABLE_MAX (stream it). Still busy: _StillBusy.
+    Other read errors: BackupError (_source_error)."""
+    stat_fn = stat_fn or os.stat
+    sleep = sleep or time.sleep
+    error = None
+    for attempt in (1, 2):
+        _stopped(cancel, path)
+        error = None
+        try:
+            before = stat_fn(src)
+            if before.st_size > STABLE_MAX:
+                return None
+            data = _read_all(src, cancel, path, on_read)
+            after = stat_fn(src)
+            if len(data) == after.st_size and _same(before, after):
+                return data, after
+            log.info("File changed while read: %s (try %d)", arc, attempt)
+        except OSError as e:
+            if not _busy(e):
+                raise _source_error(e, arc) from e
+            error = e
+            log.info("File busy: %s (try %d): %s", arc, attempt, e)
+        if attempt == 1:
+            sleep(STABLE_WAIT)
+    raise _StillBusy(error)
+
+
+def _stream_entry(zf, src, arc, cancel, path, on_read, stat_fn=None):
+    """A big file straight into the zip; BackupError("changed") when it changed meanwhile.
+    Busy when opened: _StillBusy (nothing written yet)."""
+    stat_fn = stat_fn or os.stat
+    try:
+        st = stat_fn(src)
+        f = _open_read(src)   # opened first: a busy file fails before the entry starts
+    except OSError as e:
+        if _busy(e):
+            raise _StillBusy(e) from e
+        raise _source_error(e, arc) from e
+    with f:
+        read = 0
+        with zf.open(_zip_info(zf, arc, st), "w") as dst:
+            while True:
+                _stopped(cancel, path)
+                try:
+                    chunk = _read_chunk(f)
+                except OSError as e:
+                    raise (BackupError("changed", arc) if _busy(e)
+                           else _source_error(e, arc)) from e
+                if not chunk:
+                    break
+                dst.write(chunk)
+                read += len(chunk)
+                on_read(read)
+        try:
+            after = stat_fn(src)
+        except OSError as e:
+            raise BackupError("changed", arc) from e
+    if read != st.st_size or not _same(st, after):
+        raise BackupError("changed", arc)
+
+
+def _write_entry(zf, src, arc, base, size, total, progress, cancel, path, skip_busy=False,
+                 stat_fn=None, sleep=None, got=None):
+    """One file into the zip (same entry as zf.write). Checks cancel before each
+    WRITE_CHUNK; progress gets base + bytes read (never past this file's listed size, so
+    totals stay exact). got: (bytes, stat) already read (an addon's .toc, see _write_zip).
+    Still busy after two tries: skip_busy -> False (left out, nothing written); else
+    BackupError "locked" (in use) or "changed". Read errors: BackupError
+    (_source_error). True = written."""
+    def on_read(n):
+        if progress and n < size:
+            progress(base + n, total)
+
+    try:
+        if got is None:
+            got = _stable_read(src, arc, cancel, path, on_read, stat_fn, sleep)
+        if got is None:
+            _stream_entry(zf, src, arc, cancel, path, on_read, stat_fn)
+            return True
+    except _StillBusy as e:
+        if skip_busy:
+            log.warning("Left out (busy or changing): %s", arc)
+            return False
+        raise BackupError("locked" if e.error is not None else "changed", arc) from e
+    data, st = got
+    with zf.open(_zip_info(zf, arc, st), "w") as dst:
+        dst.write(data)
+    return True
+
+
+def _addon_tocs(files):
+    """{addon folder: [(arcname, source)] of its own .toc files} (AddOns/<folder>/x.toc)."""
+    tocs = {}
+    for arc, src in files:
+        parts = arc.split("/")
+        if len(parts) == 3 and parts[0] == "AddOns" and parts[2].lower().endswith(".toc"):
+            tocs.setdefault(parts[1], []).append((arc, src))
+    return tocs
 
 
 def _write_zip(path, files, kind, parts, progress=None, left_out=(), others=None,
-               cancel=None, sizes=None):
+               cancel=None, sizes=None, report=None):
     """Write files [(arcname, source)] + backup.json into path (via path.part).
     left_out: addon folders the player chose to leave out (listed in backup.json).
     others: the "Other addons" record (already cleaned) for folders in this zip.
     progress(done, total): bytes read so far / all bytes. cancel: a threading.Event;
     when set, BackupError("cancelled") and the .part is removed (nothing is kept).
-    sizes: the files' sizes when already known (one stat per file)."""
+    sizes: the files' sizes when already known (one stat per file).
+    report: a dict (backups) = files WoW was writing (busy/changing) are left out:
+    report["skipped"] gets their arcnames, and "AddOns/<folder>" for an addon left out
+    whole because one of its .toc files stayed busy (its tocs are read before any of its
+    files, so a restore never gets an addon without its .toc); report["gone"] = those
+    folders, report["written"] = files in the zip. Skipped ones are listed in backup.json.
+    None (safety copies) = such a file stops the zip. backup.json is written last
+    (read() finds it by name)."""
     part = path + ".part"
     if sizes is None:
         sizes = _file_sizes(files)
@@ -891,17 +1099,41 @@ def _write_zip(path, files, kind, parts, progress=None, left_out=(), others=None
             "parts": sorted(parts)}
     if left_out:
         info["left_out"] = sorted(left_out, key=str.lower)
-    if others:   # an extra key: older app versions ignore it (FORMAT stays 1)
-        info[OTHERS_KEY] = {f: others[f] for f in sorted(others, key=str.lower)}
+    skipped, written = [], 0
+    tocs = _addon_tocs(files) if report is not None else {}
+    early, gone = {}, set()   # .toc bytes read before their addon; addons left out whole
     try:
         with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED, compresslevel=6,
                              strict_timestamps=False) as zf:
-            zf.writestr(INFO_NAME, json.dumps(info, indent=2))
             for (arc, src), size in zip(files, sizes):
-                _write_entry(zf, src, arc, done, size, total, progress, cancel, path)
+                folder = arc.split("/")[1] if arc.startswith("AddOns/") else None
+                if folder in tocs:   # the addon's first file: read its .toc files first
+                    for toc_arc, toc_src in tocs.pop(folder):
+                        try:
+                            got = _stable_read(toc_src, toc_arc, cancel, path, lambda n: None)
+                        except _StillBusy:
+                            log.warning("Left out (its .toc busy): %s", folder)
+                            gone.add(folder)
+                            skipped.append(f"AddOns/{folder}")
+                            break
+                        if got is not None:
+                            early[toc_arc] = got
+                if folder is not None and folder in gone:
+                    pass   # the whole addon is left out
+                elif _write_entry(zf, src, arc, done, size, total, progress, cancel, path,
+                                  skip_busy=report is not None, got=early.pop(arc, None)):
+                    written += 1
+                else:
+                    skipped.append(arc)
                 done += size
                 if progress:
                     progress(done, total)
+            kept = {f: v for f, v in (others or {}).items() if f not in gone}
+            if kept:   # an extra key: older app versions ignore it (FORMAT stays 1)
+                info[OTHERS_KEY] = {f: kept[f] for f in sorted(kept, key=str.lower)}
+            if skipped:   # an extra key too
+                info["skipped"] = skipped[:MAX_SKIPPED]
+            zf.writestr(INFO_NAME, json.dumps(info, indent=2))
         os.replace(part, path)
     except OSError as e:
         _discard(part)
@@ -909,6 +1141,8 @@ def _write_zip(path, files, kind, parts, progress=None, left_out=(), others=None
     except BaseException:
         _discard(part)
         raise
+    if report is not None:
+        report.update(skipped=skipped, written=written, gone=sorted(gone, key=str.lower))
     return path
 
 
@@ -970,7 +1204,9 @@ def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress
     settings: everything restorable below WTF\\Account (incl. key bindings and macros).
     leave_out: addon folders not to save (the Spoken ones, when the player said so).
     others: the app's "Other addons" record (settings file_addons); the entries for
-    folders in this backup go into backup.json so a restore can list them again."""
+    folders in this backup go into backup.json so a restore can list them again.
+    WoW may be open: a file it is writing right then is left out (counts["skipped"]:
+    arcnames, "AddOns/<folder>" for an addon left out whole; see _write_zip)."""
     p = places(addons_dir)
     dest_folder = os.path.abspath(dest_folder)
     if in_game_folder(dest_folder, p.addons):
@@ -982,7 +1218,7 @@ def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress
         files = _addon_files(p, folders) if addons else []
         wtf_files = _settings_files(p) if settings else []
     except OSError as e:
-        raise _os_error(e, "reading the game folder") from e
+        raise _source_error(e, "the game folder") from e
     if not files and not wtf_files:
         raise BackupError("nothing", addons_dir)
     try:
@@ -991,9 +1227,16 @@ def make(addons_dir, dest_folder, addons=True, settings=True, now=None, progress
         raise _os_error(e, f"making {dest_folder}") from e
     parts = ([ADDONS] if files else []) + ([SETTINGS] if wtf_files else [])
     record = _clean_others(others, folders) if files else {}
+    report = {}   # files WoW was writing right then (left out, see _write_zip)
     path = _write_zip(backup_path(dest_folder, now), files + wtf_files, "backup", parts, progress,
-                      left, record, cancel=cancel)
-    counts = {"addons": len(folders), "settings_files": len(wtf_files)}
+                      left, record, cancel=cancel, report=report)
+    if not report["written"]:
+        _discard(path)   # nothing but backup.json in it
+        raise BackupError("changed", "every file")
+    skipped = report["skipped"]
+    counts = {"addons": len(folders) - len(report["gone"]),
+              "settings_files": len(wtf_files) - sum(a.startswith("WTF/") for a in skipped),
+              "skipped": skipped}
     log.info("Backup made: %s (%s)", path, counts)
     return path, os.path.getsize(path), counts
 

@@ -148,15 +148,30 @@ class ShareTests(unittest.TestCase):
                 share.send(self.path, self.receiver(), lambda c, t: None)
             self.assertEqual((cm.exception.kind, cm.exception.detail),
                              ("not_backup", share.CHECK_PREFIX + "unsafe"))
+            # (the 4th item: Try again can't help here; the 5th: the new backup, kept so
+            # Get code tries that same file again instead of making a new zip each click)
+            fresh_dir = os.path.join(self.base, "fresh")
             for given, text in ((None, errors.NEW_BACKUP_CHECK),
                                 (self.path, errors.share_message(ShareError("not_backup")))):
                 q = queue.Queue()
-                share_ui._send_worker(q, "t", lambda: False, self.addons,
-                                      os.path.join(self.base, "fresh"), {}, given,
-                                      self.relay.url, True, None)
+                share_ui._send_worker(q, "t", lambda: False, self.addons, fresh_dir, {},
+                                      given, self.relay.url, True, None)
                 msgs = [m for m in list(q.queue) if m[0] == "share_error"]
-                self.assertEqual(msgs, [("share_error", "t", text)])
+                self.assertEqual(len(msgs), 1)
+                self.assertEqual(msgs[0][:4], ("share_error", "t", text, False))
+                if given is not None:
+                    self.assertIsNone(msgs[0][4])
+                    continue
+                made = msgs[0][4]
+                self.assertTrue(made and os.path.isfile(made))
+                q = queue.Queue()   # Get code again: the same zip, no second one
+                share_ui._send_worker(q, "t", lambda: False, self.addons, fresh_dir, {},
+                                      made, self.relay.url, True, None, None, True)
+                msgs = [m for m in list(q.queue) if m[0] == "share_error"]
+                self.assertEqual(msgs, [("share_error", "t", text, False, made)])
+                self.assertEqual(os.listdir(fresh_dir), [os.path.basename(made)])
         self.assertIn("Couldn't check the new backup", errors.NEW_BACKUP_CHECK)
+        self.assertNotIn("Nothing was changed", errors.NEW_BACKUP_CHECK)   # the zip stays
         self.assertIn("isn't a backup", errors.share_message(cm.exception))   # not fresh
         self.assertEqual(self.relay.calls, [])   # refused before going online
 
@@ -693,6 +708,55 @@ class LaterTests(unittest.TestCase):
             ticket = share.receive(code, self.receiver(), self.inbox)
         path = share.open_later(ticket, self.browser_download(ticket), self.inbox)
         self.assertTrue(same_entries(path, self.path))
+
+    def send_now(self):
+        """Upload right away ticked: a small backup goes up without the live wait."""
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url)
+        s._later["now"] = True
+        return s, s.code()
+
+    def test_upload_right_away_skips_the_wait(self):
+        with mock.patch.object(share_later, "LATER_AFTER", 3600):   # would wait an hour
+            t0 = time.monotonic()
+            s, code = self.send_now()
+            self.assertEqual(s.wait_state("uploading", timeout=10), "now")
+            s.wait_state("ready")
+            s.join()
+            self.assertLess(time.monotonic() - t0, 20)
+            self.assertIsNone(s.error)
+            ch = share.parse_code(code)[0]
+            self.assertNotIn(("PUT", f"/v1/{ch}/msg/pakeA"), self.relay.calls)   # never live
+            self.assertFalse(any("pakeB" in c[1] for c in self.relay.calls))     # no waiting
+            ticket = share.receive(code, self.receiver(), self.inbox)
+        self.assertIsInstance(ticket, share.LaterTicket)
+        path = share.open_later(ticket, self.browser_download(ticket), self.inbox)
+        self.assertTrue(same_entries(path, self.path))
+
+    def test_upload_right_away_receiver_while_uploading(self):
+        self.kiwi.delay = 0.3
+        with mock.patch.object(share_later, "LATER_AFTER", 3600):
+            s, code = self.send_now()
+            s.wait_state("uploading", timeout=10)
+            seen = []
+            ticket = share.receive(code, self.receiver(), self.inbox,
+                                   on_later=lambda state, p: seen.append((state, p)))
+            s.join()
+        self.assertIsNone(s.error)
+        self.assertIsInstance(ticket, share.LaterTicket)          # no live send
+        self.assertTrue(seen and all(state == "uploading" for state, _p in seen))
+        path = share.open_later(ticket, self.browser_download(ticket), self.inbox)
+        self.assertTrue(same_entries(path, self.path))
+
+    def test_upload_right_away_off_still_waits(self):
+        share_later.LATER_AFTER = 20   # (patched back by setUp's cleanup)
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url)
+        s._later["now"] = False
+        code = s.code()
+        path = share.receive(code, self.receiver(), self.inbox)   # live, as before
+        s.join()
+        self.assertIsNone(s.error)
+        self.assertTrue(same_entries(path, self.path))
+        self.assertEqual(self.kiwi.calls, [])
 
     def test_retry_cap(self):
         self.kiwi.fail_puts = [503] * 100
@@ -1245,6 +1309,32 @@ class ReceivedFileTests(unittest.TestCase):
         self.assertEqual(backup.addon_versions(info), {"TaxiTime": "2.0.1", "Other": None})
 
 
+class RetryTests(unittest.TestCase):
+    def test_retry_helps(self):
+        """Try again only where the same try can work; else Get code (pick another)."""
+        from am import share_ui
+        yes = [ShareError(k) for k in ("offline", "timeout", "busy", "server", "ended",
+                                       "expired", "not_found", "used", "wrong_code", "broken",
+                                       "later_failed", "cancelled", "disk_full")]
+        yes += [ShareError("not_backup", "file changed")]
+        yes += [backup.BackupError(k) for k in ("cancelled", "game", "locked", "permission",
+                                                "disk_full")]
+        yes += [OSError("x"), ValueError("x")]
+        for e in yes:
+            self.assertTrue(share_ui.retry_helps(e, fresh=False), e)
+        # a new backup that failed the send check: a new one fails the same way (tester)
+        self.assertFalse(share_ui.retry_helps(ShareError("not_backup", "check unsafe"), True))
+        no = [ShareError("too_big"), ShareError("too_big", "later_off"),
+              ShareError("not_backup", "check unsafe"),
+              ShareError("not_backup", "BadZipFile"), ShareError("not_backup", "safety copy")]
+        no += [backup.BackupError(k) for k in ("nothing", "newer_format", "unsafe",
+                                               "inside_game", "not_backup", "bad_zip")]
+        for e in no:
+            self.assertFalse(share_ui.retry_helps(e, fresh=False), e)
+        self.assertFalse(share_ui.retry_helps(ShareError("too_big"), fresh=True))
+        self.assertTrue(share_ui.retry_helps(ShareError("not_backup", "BadZipFile"), fresh=True))
+
+
 class WindowShareTests(unittest.TestCase):
     """The hidden window (never shown): Send and Receive windows against the fake relay."""
 
@@ -1458,6 +1548,232 @@ class WindowShareTests(unittest.TestCase):
         dlg.close()
         self.assertTrue(dlg.closed)
 
+    # ---------- Try again after an error ----------
+    def dead_url(self):
+        """A local address nobody answers on (the send service can't be reached)."""
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return f"http://127.0.0.1:{port}"
+
+    def backups_in(self, folder):
+        return sorted(n for n in os.listdir(folder) if n.endswith(".zip")) \
+            if os.path.isdir(folder) else []
+
+    def assert_works_again(self, dlg, button_text):
+        from am import errors
+        self.assertFalse(dlg.active)
+        self.assertEqual(str(dlg.go_button.cget("text")), button_text)
+        for w in (dlg.go_button, dlg.new_radio, dlg.other_button, dlg.later_check):
+            self.assertFalse(w.instate(["disabled"]), w)
+        self.assertEqual(str(dlg.cancel_button.cget("text")), errors.CLOSE)
+
+    def test_send_try_again_after_network_error(self):
+        """Can't reach the service: Try again (enabled, choices too); the retry sends the
+        backup made for the failed try (no second zip) and works once the service is back."""
+        from am import errors
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        app.share_url = self.dead_url()
+        first_tag = dlg.tag
+        self.assertTrue(dlg.start())
+        self.pump_until(app, lambda: not dlg.active)
+        self.assertEqual(dlg.status_var.get(), errors.share_message(ShareError("offline")))
+        self.assert_works_again(dlg, errors.SEND_TRY_AGAIN)
+        folder = backup.default_folder()
+        made = self.backups_in(folder)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(os.path.basename(dlg.made), made[0])
+        self.assertFalse(app.busy)
+        app.share_url = self.relay.url                       # the internet is back
+        old_cancel = dlg.cancel_event
+        self.assertTrue(dlg.start())                         # the click on Try again
+        self.assertIsNot(dlg.cancel_event, old_cancel)
+        self.assertIsNot(dlg.tag, first_tag)
+        self.assertFalse(dlg.running)                        # no new backup is made
+        self.assertEqual(dlg.status_var.get(), errors.SEND_CONNECTING)
+        self.assertTrue(dlg.go_button.instate(["disabled"]))
+        self.assertEqual(str(dlg.cancel_button.cget("text")), errors.CANCEL)
+        self.pump_until(app, lambda: dlg.code is not None)
+        inbox = os.path.join(self.work, "inbox")
+        out = {}
+        t = threading.Thread(target=lambda: out.setdefault("path", share.receive(
+            dlg.code, share.Relay(self.relay.url, allow_local=True), inbox)))
+        t.start()
+        self.pump_until(app, lambda: not dlg.active)
+        t.join(20)
+        self.assertEqual(dlg.status_var.get(), errors.SEND_SENT)
+        self.assertEqual(self.backups_in(folder), made)      # still the one backup
+        dlg.close()
+
+    def test_send_try_again_makes_a_new_backup_if_the_old_one_is_gone(self):
+        from am import errors
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        app.share_url = self.dead_url()
+        dlg.start()
+        self.pump_until(app, lambda: not dlg.active)
+        os.remove(dlg.made)                                  # the player deleted it
+        self.assertTrue(dlg.start())
+        self.assertTrue(dlg.running)                         # a fresh backup is made
+        self.pump_until(app, lambda: not dlg.active)
+        self.assert_works_again(dlg, errors.SEND_TRY_AGAIN)
+        self.assertEqual(len(self.backups_in(backup.default_folder())), 1)
+        dlg.close()
+
+    def test_send_try_again_after_the_code_was_shown(self):
+        """An error once the code is on screen (e.g. the other PC stopped): the dead code
+        and its countdown go; the retry shows a new code; the old try's messages are
+        ignored."""
+        from am import errors
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        dlg.start()
+        self.pump_until(app, lambda: dlg.code is not None)
+        old_code, old_tag, old_cancel = dlg.code, dlg.tag, dlg.cancel_event
+        text = errors.share_message(ShareError("ended"))
+        dlg.handle(("share_error", dlg.tag, text, True, dlg.made))
+        self.assertIsNone(dlg.code)
+        self.assertIsNone(dlg.ends_at)                       # the countdown stopped
+        self.assertNotIn(old_code, self.texts(dlg.win))
+        self.assertEqual(dlg.code_area.winfo_children(), [])
+        self.assertEqual(dlg.status_var.get(), text)
+        self.assert_works_again(dlg, errors.SEND_TRY_AGAIN)
+        self.assertTrue(dlg.start())
+        old_cancel.set()                                     # the old try ends now
+        self.pump_until(app, lambda: dlg.code is not None)
+        self.assertNotEqual(dlg.code, old_code)
+        self.assertEqual(self.texts(dlg.code_area).count(dlg.code), 1)
+        import time
+        end = time.time() + 1.5
+        while time.time() < end:                             # the old worker's error comes
+            self.root.update()
+            time.sleep(0.02)
+        self.assertTrue(dlg.active)                          # ...and is ignored
+        self.assertIsNot(dlg.tag, old_tag)
+        self.assertEqual(dlg.status_var.get(), errors.SEND_WAITING)
+        dlg.close()
+
+    def test_send_stop_while_making_then_try_again(self):
+        """Stopped: Try again makes the backup with a new cancel flag (the old Stop
+        doesn't stop it) and gets a code."""
+        from am import errors
+        real = backup.make
+        calls = []
+
+        def held(*args, cancel=None, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                cancel.wait(10)
+            return real(*args, cancel=cancel, **kw)
+        p = mock.patch.object(backup, "make", held)
+        p.start()
+        self.addCleanup(p.stop)
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        dlg.start()
+        dlg.close()                                          # Cancel while making
+        self.pump_until(app, lambda: not dlg.active)
+        self.assertEqual(dlg.status_var.get(), errors.BACKUP_STOPPED)
+        self.assert_works_again(dlg, errors.SEND_TRY_AGAIN)
+        self.assertIsNone(dlg.made)
+        self.assertTrue(dlg.start())
+        self.assertFalse(dlg.cancel_event.is_set())
+        self.pump_until(app, lambda: dlg.code is not None)
+        self.assertEqual(len(calls), 2)
+        dlg.close()
+
+    def test_send_picked_file_not_a_backup_offers_get_code(self):
+        """A picked file that isn't a backup: trying it again can't help, so the button
+        says Get code (enabled) and the player picks something else."""
+        from am import errors
+        junk = os.path.join(self.work, "AddonManager backup 2026-11-10.zip")
+        with open(junk, "wb") as f:
+            f.write(b"not a zip")
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        dlg.other = junk
+        dlg.choice.set("other")
+        dlg.start()
+        self.pump_until(app, lambda: not dlg.active)
+        self.assertEqual(dlg.status_var.get(), errors.share_message(ShareError("not_backup")))
+        self.assert_works_again(dlg, errors.SEND_GET_CODE)
+        self.assertEqual(dlg.choice.get(), "other")          # the choice stays
+        self.assertIsNone(dlg.made)
+        self.assertEqual(self.relay.calls, [])
+
+    def test_send_try_again_keeps_the_spoken_answer(self):
+        """The Spoken question isn't asked again on a retry: the answer given in this
+        window (here: Esc = keep them this time) is used again."""
+        from am import errors
+        fixtures.make_addon_folder(self.addons, "Spoken", "1.0")
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        self.pump_until(app, lambda: dlg.spoken is not None)
+        app.share_url = self.dead_url()                      # offline: the first try fails
+        self.assertTrue(dlg.start())
+        self.assertIsNotNone(dlg.spoken_ask)                 # the question, once
+        dlg.spoken_ask.answer(None)                          # Esc: keep them this time
+        self.pump_until(app, lambda: not dlg.active and dlg.status_var.get())
+        self.assertEqual(dlg.status_var.get(), errors.share_message(ShareError("offline")))
+        self.assert_works_again(dlg, errors.SEND_TRY_AGAIN)
+        asked = dlg.spoken_ask
+        os.remove(dlg.made)            # the failed try's backup is gone: a new one is made
+        app.share_url = self.relay.url
+        self.assertTrue(dlg.start())
+        self.assertIs(dlg.spoken_ask, asked)                 # not asked again
+        self.assertTrue(dlg.running)
+        self.assertFalse(dlg.left_out)
+        self.pump_until(app, lambda: dlg.code is not None)
+        dlg.close()
+
+    def test_send_new_backup_with_game_open(self):
+        """WoW open: Send > A new backup still works (the backup is made, the code shows);
+        the WoW-open strip shows while "A new backup" is picked and the choices are open, and
+        goes when a found backup is picked or while the send runs."""
+        from am import errors
+        app = self.make_app()
+        app.check_game = lambda: True
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        self.pump_until(app, lambda: dlg.game_open)
+        self.assertEqual(dlg.game_label.winfo_manager(), "pack")
+        self.assertEqual(str(dlg.game_label.cget("text")), errors.SEND_GAME_OPEN)
+        dlg.choice.set("newest")
+        self.assertFalse(dlg.game_label.winfo_manager())
+        dlg.choice.set("new")
+        self.assertEqual(dlg.game_label.winfo_manager(), "pack")
+        self.assertTrue(dlg.start())
+        self.assertFalse(dlg.game_label.winfo_manager())     # folded while it runs
+        self.pump_until(app, lambda: dlg.code is not None)
+        self.assertEqual(len(self.backups_in(backup.default_folder())), 1)
+        self.assertNotEqual(dlg.status_var.get(), errors.GAME_OPEN)
+        dlg.close()
+
+    def test_send_game_started_after_the_window_opened(self):
+        """The check at Get code time shows the strip once the choices are open again."""
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        self.pump_until(app, lambda: dlg.spoken is not None)
+        self.assertFalse(dlg.game_open)
+        app.check_game = lambda: True
+        app.share_url = self.dead_url()
+        self.assertTrue(dlg.start())
+        self.pump_until(app, lambda: not dlg.active)
+        self.assertTrue(dlg.game_open)
+        self.assertEqual(dlg.game_label.winfo_manager(), "pack")
+        self.assertTrue(dlg.made and os.path.isfile(dlg.made))   # made with WoW open
+        dlg.close()
+
     def test_send_asks_about_spoken(self):
         from am import config, errors
         for name in ("Spoken", "SpokenQuests"):
@@ -1467,7 +1783,7 @@ class WindowShareTests(unittest.TestCase):
         dlg = app.open_send(show=False)
         self.assertTrue(dlg.start())
         self.pump_until(app, lambda: dlg.spoken_ask is not None)
-        self.assertIn("Spoken (AI voice-over addon)", " ".join(self.texts(dlg.spoken_ask.win)))
+        self.assertIn("Spoken, the AI voice-over addon", " ".join(self.texts(dlg.spoken_ask.win)))
         self.assertFalse(dlg.active)                     # nothing made before the answer
         dlg.spoken_ask.answer("skip")
         self.assertEqual(config.load_settings()["backup_spoken"], "skip")
@@ -1600,7 +1916,7 @@ class WindowShareTests(unittest.TestCase):
         self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
         self.assertTrue(dlg.start())
         self.pump_until(app, lambda: dlg.code is not None)
-        self.assertTrue(dlg.ends_var.get().startswith("Works once. Not here in "))
+        self.assertTrue(dlg.ends_var.get().startswith("Works once. If the other PC hasn't joined in "))
         self.pump_until(app, lambda: dlg.later_done, timeout=60)
         self.assertTrue(dlg.status_var.get().startswith("Uploaded."))
         code = dlg.code
@@ -1628,6 +1944,80 @@ class WindowShareTests(unittest.TestCase):
         self.pump_until(app, lambda: type(app.backup_dialog).__name__ == "RestoreDialog",
                         timeout=60)
         self.assertTrue(app.backup_dialog.info.received)
+
+    def test_send_upload_right_away_window(self):
+        """Upload right away: greyed until the file.kiwi tick is on, never saved, no
+        countdown, a plain "uploading now" status; back on after an error (Try again)."""
+        from am import config, errors
+        kiwi = FakeKiwi()
+        kiwi.delay = 0.5   # slow enough to see "uploading" before "ready"
+        self.addCleanup(kiwi.stop)
+        for mod, name, value in ((share_later, "LATER_AFTER", 3600), (share, "PING_EVERY", 1)):
+            p = mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        backup.make(self.addons, backup.default_folder())
+        app = self.make_app()
+        app.later_api = kiwi.url
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        texts = self.texts(dlg.win)
+        self.assertIn(errors.LATER_NOW_TICK, texts)
+        self.assertIn(errors.LATER_NOTE, texts)                    # shown once ticked (tos)
+        self.assertFalse(dlg.now_var.get())
+        self.assertIn("disabled", dlg.now_check.state())           # file.kiwi tick off
+        self.assertFalse(dlg.later_rest.winfo_manager())           # details hidden while off
+        dlg.toggle_now()
+        self.assertFalse(dlg.now_var.get())
+        dlg.toggle_later()
+        self.assertTrue(dlg.later_rest.winfo_manager())            # hours, links, note shown
+        self.assertNotIn("disabled", dlg.now_check.state())
+        dlg.toggle_now()                                           # the label click
+        self.assertTrue(dlg.now_var.get())
+        dlg.toggle_later()          # file.kiwi off: Upload right away is unticked too (tester)
+        self.assertFalse(dlg.now_var.get())
+        self.assertFalse(dlg.later_rest.winfo_manager())
+        dlg.toggle_later()          # ...and doesn't come back ticked
+        self.assertFalse(dlg.now_var.get())
+        dlg.toggle_now()
+        self.assertTrue(dlg.now_var.get())
+        self.assertNotIn("send_later_now", config.load_settings())
+        self.assertTrue(dlg.later_choice()["now"])
+        dlg.win.update_idletasks()
+        self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
+        said, ends = [], []
+        real_status = dlg.set_status
+
+        def set_status(text):
+            said.append(text)
+            if dlg.code:
+                ends.append(dlg.ends_var.get())
+            real_status(text)
+        dlg.set_status = set_status
+        self.assertTrue(dlg.start())
+        self.assertIn("disabled", dlg.now_check.state())           # not while sending
+        # folded while sending: one "What to send" line, no file.kiwi details
+        self.assertFalse(dlg.what_box.winfo_manager())
+        self.assertTrue(str(dlg.what_line.cget("text")).startswith(errors.SEND_WHAT + " "))
+        self.assertFalse(dlg.later_rest.winfo_manager())
+        self.pump_until(app, lambda: dlg.later_done, timeout=60)
+        self.assertIn(errors.LATER_UPLOADING_NOW, said)
+        self.assertIn("file.kiwi now", errors.LATER_UPLOADING_NOW)
+        self.assertTrue(all(t.startswith("Uploading to file.kiwi for later: ")
+                            for t in said[said.index(errors.LATER_UPLOADING_NOW) + 1:-1]))
+        self.assertEqual(set(ends), {""})                          # no "hasn't joined in 5:00" countdown
+        self.assertTrue(dlg.status_var.get().startswith("Uploaded."))
+        self.pump_until(app, lambda: not dlg.active)
+        dlg._after_error(True)                                     # as after a failed try
+        self.assertNotIn("disabled", dlg.now_check.state())
+        self.assertTrue(dlg.what_box.winfo_manager())              # unfolded again
+        self.assertFalse(dlg.what_line.winfo_manager())
+        self.assertTrue(dlg.later_rest.winfo_manager())
+        dlg.close()
+        again = app.open_send(show=False)                          # off each time
+        self.assertTrue(again.later_var.get())
+        self.assertFalse(again.now_var.get())
+        again.close()
 
     def test_send_cancel(self):
         app = self.make_app()

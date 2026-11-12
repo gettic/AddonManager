@@ -24,7 +24,7 @@ STATUS_TEXT = {
     versions.UPDATE: "Update available",
     versions.NOT_INSTALLED: "Not installed",
     versions.UNKNOWN: "Installed (version unknown)",
-    versions.NEWER: "Newer than the list",
+    versions.NEWER: "Newer than the guild's",
     versions.NO_LATEST: "-",
 }
 BUTTON_TEXT = {
@@ -34,6 +34,8 @@ BUTTON_TEXT = {
 }
 ALL_STATUSES = (versions.UPDATE, versions.NOT_INSTALLED)
 NOT_CHOSEN = "(not chosen)"
+CHOOSE_FOLDER = "Choose folder..."   # the folder button while no WoW folder is known
+NO_CLIPBOARD_ENV = "ADDONMANAGER_NO_CLIPBOARD"   # set by the tests: never read the clipboard
 VERSION_SAMPLE = "v10.10.10-beta.10"   # sets the Installed/Latest column widths
 # Linux fonts (Noto Sans / DejaVu 10) are wider: a slightly shorter sample and less space
 # between columns keep every row inside the 680 px window there.
@@ -188,6 +190,8 @@ class App:
         self.manifest_note = ""
         self.folder_note = ""   # folder warning/notice kept in the message line
         self.clipboard = self._set_clipboard   # tests swap this; never the real clipboard
+        # Read only when the Receive window opens (a code to pre-fill); tests swap it too.
+        self.read_clipboard = self._get_clipboard
         # Backup and restore (Settings window): the open Make/Restore window, and the
         # file/folder pickers + "Open folder" (tests swap these; no dialog opens there).
         self.backup_dialog = None
@@ -263,6 +267,9 @@ class App:
         self.folder_entry = ttk.Entry(folder, textvariable=self.folder_var, state="readonly",
                                       style="Muted.Path.TEntry", takefocus=0)
         self.folder_entry.grid(row=0, column=0, sticky="ew")
+        # A long path shows its end (...\World of Warcraft\_forever_), the useful part.
+        self.folder_var.trace_add("write", lambda *_a: self._folder_to_end())
+        self.folder_entry.bind("<Configure>", lambda _e: self._folder_to_end(), add="+")
         self.folder_menu = tk.Menu(self.root, tearoff=0, **theme.menu_options())
         self.folder_menu.add_command(label=COPY_MENU, command=self.copy_folder)
         self.folder_menu.add_command(label=OPEN_ADDONS_MENU, command=self.open_addons_folder)
@@ -270,7 +277,7 @@ class App:
         touch.bind_menu(self.folder_entry, self._folder_menu_popup)
         # Right-click on an addon row: Remove <name>... (see _row_menu_popup).
         self.row_menu = tk.Menu(self.root, tearoff=0, **theme.menu_options())
-        self.row_menu.add_command(label="Remove...")
+        self.row_menu.add_command(label="Uninstall...")
         self.folder_entry.bind("<Control-c>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_entry.bind("<Control-C>", lambda _e: (self.copy_folder(), "break")[1])
         self.folder_button = ttk.Button(folder, text="Change...", command=self.choose_folder,
@@ -282,8 +289,11 @@ class App:
         self.banner = tk.Label(outer, textvariable=self.banner_var, background=theme.BANNER_BG,
                                foreground=theme.BANNER_TEXT, highlightthickness=1,
                                highlightbackground=theme.ACCENT, anchor="w", justify="left",
-                               wraplength=theme.px(620), padx=P, pady=theme.px(4),
+                               wraplength=theme.px(400), padx=P, pady=theme.px(4),
                                font=theme.font())
+        # Wraps at the width the banner really gets (never cut at the right).
+        backup_ui.fit_wrap(self.banner, inset=2 * (
+            P + 1 + int(float(str(self.banner.cget("borderwidth"))))))
 
         # The app's own update: one line, shown only when there is something to say.
         self.update_bar = tk.Frame(outer, background=theme.UPDATE_BG, highlightthickness=1,
@@ -330,6 +340,7 @@ class App:
         self.check_button = ttk.Button(buttons, text="Check again", command=self.check_again,
                                        style=slim + "TButton", width=width)
         self.check_button.pack(side="left")
+        self.check_tip = Tooltip(self.check_button, errors.CHECK_TIP)
         # Install all / Update all (see render): one fixed width for both texts, so the
         # row doesn't move when the text changes.
         self.all_button = ttk.Button(buttons, text=errors.ALL_INSTALL, command=self.update_all,
@@ -369,8 +380,9 @@ class App:
         # Both ends indented by `clear`: the bottom knots never cover the text.
         self.version_label.pack(side="right", anchor="se", padx=(theme.px(8), clear))
         self.message_label = ttk.Label(status_line, textvariable=self.message_var,
-                                       wraplength=theme.px(540), justify="left")
+                                       wraplength=theme.px(400), justify="left")
         self.message_label.pack(side="left", fill="x", expand=True, padx=(clear, 0))
+        backup_ui.fit_wrap(self.message_label)   # wraps at its real width
         self.list_box.pack(fill="both", expand=True, pady=(theme.px(4), theme.px(8)))
 
     def _build_banner(self, outer, clear):
@@ -1019,6 +1031,12 @@ class App:
     def set_message(self, text):
         self.message_var.set(text)
 
+    def _folder_to_end(self):
+        try:
+            self.folder_entry.xview_moveto(1.0)
+        except tk.TclError:
+            pass   # the window is closing
+
     def set_banner(self, text):
         self.banner_var.set(text)
         if text:
@@ -1033,7 +1051,7 @@ class App:
         client = os.path.dirname(os.path.dirname(addons_dir))
         self.folder_var.set(client)
         self.folder_entry.configure(style="Path.TEntry")
-        self.folder_button.configure(text="Change...")
+        self.folder_button.configure(text="Change...", width=self._row_chars())
         if os.path.isdir(addons_dir):
             # A restore that was cut off is undone first (it owns its backup folders).
             if ("undone", "restore") in backup.recover_restore(addons_dir):
@@ -1052,7 +1070,9 @@ class App:
         self.addons_dir = None
         self.folder_var.set(NOT_CHOSEN)
         self.folder_entry.configure(style="Muted.Path.TEntry")
-        self.folder_button.configure(text="Choose folder")
+        # Wider than the row buttons while it says this (nothing to line up with then).
+        self.folder_button.configure(text=CHOOSE_FOLDER, width=max(
+            self._row_chars(), theme.chars(self.root, (CHOOSE_FOLDER,))))
         self.folder_note = message
         self.set_message(message)
 
@@ -1105,6 +1125,16 @@ class App:
     def _set_clipboard(self, text):
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
+
+    def _get_clipboard(self):
+        """The clipboard's text, or "" (nothing, not text, or a test run). Never logged."""
+        if os.environ.get(NO_CLIPBOARD_ENV):
+            return ""
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            return ""
+        return text if isinstance(text, str) else ""
 
     def copy_folder(self):
         """Copy the selected part of the folder path, or all of it. Returns the text."""
@@ -1808,7 +1838,7 @@ class App:
                     self.set_message(self.message_var.get())
                 else:
                     self.set_message("Installed: " + ", ".join(msg[1])
-                                     + ". Restart WoW or type /reload to use them.")
+                                     + ". " + errors.RELOAD + " to use them.")
             self.render()
             self.files.after_load()
 

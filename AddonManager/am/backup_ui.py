@@ -1,6 +1,6 @@
 """The Backup window (main window's Backup button) and the small windows it opens: Make
 a backup and Restore a backup. The work runs in a thread (am\\backup.py); results come
-back through the App's queue as ("backup_size"/"backup_clouds"/"backup_progress"/
+back through the App's queue as ("backup_size"/"backup_game"/"backup_clouds"/"backup_progress"/
 "backup_done"/"backup_error"/"backup_last"/"restore_progress"/"restore_done"/
 "restore_error", ...)."""
 
@@ -32,13 +32,25 @@ MENU_CHARS = 12 if LINUX else 16       # Restore's account pick: fixed width, lo
 ACCOUNT_WRAP = 160 if LINUX else 210   # the "Settings of account ... go to:" text beside it
 
 
-def fit_wrap(label):
-    """The label's text wraps at the width it really gets (the window may be wider than
-    the WRAP it started with)."""
+def fit_wrap(label, inset=0):
+    """The label's text wraps at the width it really gets (the window may be wider or
+    narrower than the wrap it started with). inset: the label's own padding + border."""
     def resized(event):
-        if event.width > 1 and abs(int(str(label.cget("wraplength")) or 0) - event.width) > 2:
-            label.configure(wraplength=event.width)
+        want = event.width - inset
+        if event.width > 1 and want > 20 and abs(
+                int(float(str(label.cget("wraplength")) or 0)) - want) > 2:
+            label.configure(wraplength=want)
     label.bind("<Configure>", resized, add="+")
+
+
+def game_strip(parent, text=None):
+    """The "WoW is open" strip (banner colours) of Make a backup / Send (not packed here)."""
+    pad = theme.px(6)
+    label = tk.Label(parent, text=text or errors.BACKUP_GAME_OPEN, background=theme.BANNER_BG,
+                     foreground=theme.BANNER_TEXT, anchor="w", justify="left",
+                     wraplength=theme.px(WRAP), padx=pad, pady=theme.px(3), font=theme.font())
+    fit_wrap(label, inset=2 * (pad + int(float(str(label.cget("borderwidth"))))))
+    return label
 
 
 def open_folder(path):
@@ -111,12 +123,14 @@ class BackupWindow:
         # once something is found (Open folder: an own backup; Old backups...: any file,
         # safety copies too). Old backups... opens am\backup_delete_ui.py's window.
         self.found_row = ttk.Frame(frame)
-        self.open_button = self._pair_button(self.found_row, errors.BACKUP_OPEN_FOLDER,
+        self.open_button = self._pair_button(self.found_row, errors.BACKUP_OPEN_BACKUPS,
                                              self.open_result, False)
         self.old_button = self._pair_button(self.found_row, errors.DELETE_OPEN,
                                             self.open_old, False)
         from am import ui   # imported here: ui imports this module
-        ui.Tooltip(self.old_button, errors.DELETE_OPEN_TIP)
+        # Tooltips: why a button is greyed (render); Old backups... says what it does.
+        self.tips = {b: ui.Tooltip(b, "") for b in self.buttons()}
+        self.tips[self.old_button] = ui.Tooltip(self.old_button, errors.DELETE_OPEN_TIP)
         # The status line takes room only while it has text (no empty gap).
         self.status_var = tk.StringVar()
         self.status = ttk.Label(frame, textvariable=self.status_var,
@@ -212,8 +226,13 @@ class BackupWindow:
     def render(self):
         """Actions only while nothing else runs and the WoW folder is known."""
         ok = not self.app.busy and bool(self.app.addons_dir)
+        why = (errors.BUSY_TIP if self.app.busy else
+               errors.BACKUP_NO_FOLDER_TIP if not self.app.addons_dir else "")
         for b in (*self.buttons(), self.old_button):
             b.state(["!disabled"] if ok else ["disabled"])
+            tip = self.tips.get(b)
+            if tip is not None:
+                tip.text = why or (errors.DELETE_OPEN_TIP if b is self.old_button else "")
 
     def refresh(self):
         """Look for the newest own backup again (in a thread)."""
@@ -471,9 +490,10 @@ class _Dialog:
         except tk.TclError:
             pass   # the window is closing
 
-    def _show(self, focus):
+    def _show(self, focus, extra=()):
         # The button row: one width (>= a row button), measured in the real font.
-        theme.even_buttons(self.buttons, (errors.CLOSE, errors.CANCEL))
+        # extra: texts a button gets later (the width never changes then).
+        theme.even_buttons(self.buttons, (errors.CLOSE, errors.CANCEL) + tuple(extra))
         if not self.shown:
             return
         win = self.win
@@ -621,9 +641,14 @@ class BackupDialog(_SpokenCheck, _Dialog):
         self._spoken_init()
         self.spoken_var = tk.BooleanVar(value=spoken_answer() != "keep")
         self.spoken_check = None    # shown only when Spoken addons are there
+        self.game_open = False      # WoW was open at the last check (strip shown)
+        self.made_with_game = False   # this run: WoW open when the backup was made
 
-        where = ttk.Frame(self.frame)
+        where = self.where = ttk.Frame(self.frame)
         where.pack(fill="x", pady=(theme.px(10), 0))
+        # WoW open: the backup still works; the strip says what it holds (shown by the
+        # game check when the window opens, or at Make time).
+        self.game_label = game_strip(self.frame)
         ttk.Label(where, text=errors.SAVED_TO).pack(side="left", anchor="s")
         self.change_button = ttk.Button(where, text=errors.BACKUP_CHANGE,
                                         command=self.change_folder,
@@ -651,8 +676,15 @@ class BackupDialog(_SpokenCheck, _Dialog):
         self.open_button = ttk.Button(self.buttons, text=errors.BACKUP_OPEN_FOLDER,
                                       command=self.open_result)
         threading.Thread(target=_size_worker, daemon=True,
-                         args=(app.queue, app.addons_dir)).start()
+                         args=(app.queue, app.addons_dir, app.check_game)).start()
         self._show(self.make_button)
+
+    def show_game(self, running):
+        """WoW open: the strip under the ticks (never hidden again while the window is
+        open: the backup made now still holds the settings of the last /reload)."""
+        if running and not self.game_open and not self.closed:
+            self.game_open = True
+            self.game_label.pack(fill="x", pady=(theme.px(6), 0), before=self.where)
 
     def _set_folder(self, folder):
         self.folder = folder
@@ -716,6 +748,7 @@ class BackupDialog(_SpokenCheck, _Dialog):
             w.state(["disabled"])
         self.cancel_button.state(["!disabled"])
         self.left_out = bool(leave_out)
+        self.made_with_game = False
         self.cancel_event = threading.Event()
         self._begin(errors.BACKUP_MAKING + (" " + errors.SPOKEN_LEFT_OUT if leave_out else ""))
         # Moving at once while the files are listed; filled by bytes written from the
@@ -788,6 +821,11 @@ class BackupDialog(_SpokenCheck, _Dialog):
             return
         if kind == "backup_size":
             self.spoken_ready(msg[2], msg[1])
+            self.show_game(len(msg) > 3 and msg[3])
+            return
+        if kind == "backup_game":   # WoW open at Make time: the backup goes on
+            self.made_with_game = bool(msg[1])
+            self.show_game(msg[1])
             return
         if kind == "backup_clouds":
             self.show_clouds(msg[1])
@@ -810,7 +848,9 @@ class BackupDialog(_SpokenCheck, _Dialog):
         if kind == "backup_done":
             self.path = msg[1]
             self.set_progress(1, 1)
-            self.set_status(errors.backup_saved(os.path.basename(msg[1]), msg[2]))
+            self.set_status(errors.backup_saved(os.path.basename(msg[1]), msg[2],
+                                                self.made_with_game,
+                                                msg[3] if len(msg) > 3 else ()))
             self.cancel_button.configure(text=errors.CLOSE)
             self.open_button.pack(side="left")
         else:
@@ -833,8 +873,11 @@ class BackupListDialog(_Dialog):
         self.rows = ttk.Frame(self.frame)
         self.rows.pack(fill="x", pady=(4, 0))
         self.safety_var = tk.BooleanVar(value=False)
+        # The tick's text wraps (wider Linux fonts would widen the window past 420 px).
+        ttk.Style(self.win).configure(SPOKEN_STYLE, wraplength=theme.px(WRAP - 30))
         self.safety_check = ttk.Checkbutton(self.frame, text=errors.FOUND_SAFETY,
-                                            variable=self.safety_var, command=self.render)
+                                            variable=self.safety_var, command=self.render,
+                                            style=SPOKEN_STYLE)
         self.safety_check.pack(anchor="w", pady=(8, 0))
         self.note = ttk.Label(self.frame, text=errors.FOUND_NOTE, style="Muted.TLabel",
                               wraplength=theme.px(WRAP), justify="left")
@@ -933,7 +976,7 @@ class BackupListDialog(_Dialog):
             app, show = self.app, self.shown
             self.opening = None
             self.close()
-            app.backup_dialog = RestoreDialog(app, msg[2], show=show)
+            app.backup_dialog = RestoreDialog(app, msg[2], show=show, back=True)
         elif kind == "restore_open_error" and msg[1] == self.opening:
             self.opening = None
             for w in (*self.row_buttons, self.browse_button, self.safety_check,
@@ -945,10 +988,12 @@ class BackupListDialog(_Dialog):
 class RestoreDialog(_Dialog):
     """Restore a backup: what it holds, which account gets the settings, what to restore."""
 
-    def __init__(self, app, info, show=True):
+    def __init__(self, app, info, show=True, back=False):
+        """back: opened from the Backups found list (Back / Esc go back there)."""
         super().__init__(app, errors.RESTORE_TITLE, show)
         self.info = info
         self.result = None
+        self.menu_buttons = []   # the account picks (greyed while restoring)
         ttk.Label(self.frame, text=errors.backup_from(info), wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(6, 0))
         self.local = backup.local_accounts(app.addons_dir)
@@ -974,6 +1019,7 @@ class RestoreDialog(_Dialog):
                     menu.add_radiobutton(label=name, value=name, variable=var)
                 button["menu"] = menu
                 button.pack(side="right")
+                self.menu_buttons.append(button)
                 self.account_vars[acc] = var
         can_settings = bool(self.local)
         self.addons_var = tk.BooleanVar(value=bool(info.addons) and not received)
@@ -1028,7 +1074,24 @@ class RestoreDialog(_Dialog):
         self.restore_button = ttk.Button(self.buttons, text=errors.RESTORE_OK,
                                          style="Accent.TButton", command=self.start)
         self.restore_button.pack(side="right", padx=(0, theme.px(6)))
+        self.back_button = None
+        if back:   # back to the Backups found list (Cancel closes everything)
+            self.back_button = ttk.Button(self.buttons, text=errors.BACK, command=self.back)
+            self.back_button.pack(side="left")
+            self.win.bind("<Escape>", lambda _e: self.back())
         self._show(self.restore_button)
+
+    def back(self):
+        """Close this window and show the Backups found list again (not while restoring,
+        and not after a restore: then Close/Esc just close)."""
+        if self.running or self.closed:
+            return None
+        if self.result is not None:
+            self.close()
+            return None
+        app, show = self.app, self.shown
+        self.close()
+        return app.open_restore(show=show)
 
     def chosen_map(self):
         out = dict(self.account_map)
@@ -1063,7 +1126,8 @@ class RestoreDialog(_Dialog):
         self.grab()
         if not ok:
             return False
-        for w in (self.restore_button, self.cancel_button, *self.checks.values()):
+        for w in (self.restore_button, self.cancel_button, *self.checks.values(),
+                  *self.menu_buttons, *([self.back_button] if self.back_button else [])):
             w.state(["disabled"])
         self._begin(errors.RESTORING)
         threading.Thread(target=_restore_worker, daemon=True,
@@ -1088,10 +1152,14 @@ class RestoreDialog(_Dialog):
             self.set_progress(1, 1)
             self.set_status(errors.restored_message(msg[1]))
             self.cancel_button.configure(text=errors.CLOSE)
+            if self.back_button is not None:   # done: nothing to go back to
+                self.back_button.pack_forget()
         else:
             self.progress.pack_forget()
             self.set_status(msg[1])
-            self.restore_button.state(["!disabled"])
+            for w in (self.restore_button, *self.menu_buttons,
+                      *([self.back_button] if self.back_button else [])):
+                w.state(["!disabled"])
             for key, c in self.checks.items():
                 if key == "addons" and self.info.addons:
                     c.state(["!disabled"])
@@ -1124,9 +1192,12 @@ def _game_open(check_game):
         return False
 
 
-def _size_worker(q, addons_dir):
+def _size_worker(q, addons_dir, check_game=None):
+    """("backup_size", bytes, spoken folders, WoW open). The game check matches process
+    names only (gamecheck)."""
     q.put(("backup_size", backup.addons_size(addons_dir) if addons_dir else 0,
-           backup.spoken_folders(addons_dir) if addons_dir else []))
+           backup.spoken_folders(addons_dir) if addons_dir else [],
+           _game_open(check_game) if check_game else False))
 
 
 def _cloud_worker(q):
@@ -1248,15 +1319,17 @@ def progress_poster(post):
 
 def _backup_worker(q, check_game, addons_dir, folder, addons, settings, leave_out=(),
                    others=None, cancel=None):
+    """WoW open: the backup is made anyway ("backup_game" first: the window shows the
+    strip and the saved line says the settings are from the last /reload).
+    ("backup_done", path, size, skipped arcnames)."""
     if _game_open(check_game):
-        q.put(("backup_error", errors.GAME_OPEN))
-        return
+        q.put(("backup_game", True))
     try:
-        path, size, _counts = backup.make(
+        path, size, counts = backup.make(
             addons_dir, folder, addons=addons, settings=settings, leave_out=leave_out,
             others=others, cancel=cancel,
             progress=progress_poster(lambda done, total: q.put(("backup_progress", done, total))))
-        q.put(("backup_done", path, size))
+        q.put(("backup_done", path, size, list(counts.get("skipped", ()))))
     except Exception as e:
         if getattr(e, "kind", "") == "cancelled":
             log.info("Backup stopped by the player")

@@ -225,6 +225,8 @@ def apply(root):
         s.map(name,
               background=[("active", BG)],
               foreground=[("disabled", DISABLED)],
+              # greyed: the tick greys with its text (a bright gold tick looked clickable)
+              indicatorforeground=[("disabled", DISABLED)],
               indicatorbackground=[("disabled", BG), ("pressed", BUTTON_HOVER)])
     # A pick-one button with a dark drop-down menu (Restore: which account; send later hours).
     s.configure("TMenubutton", background=BUTTON, foreground=BUTTON_TEXT, bordercolor=BORDER,

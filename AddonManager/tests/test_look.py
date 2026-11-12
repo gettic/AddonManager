@@ -15,7 +15,7 @@ from tkinter import ttk
 from unittest import mock
 
 import tests  # noqa: F401  (temp home + documents)
-from am import backup, config, errors, fileinstall, fileinstall_ui, theme, ui
+from am import backup, config, errors, fileinstall, fileinstall_ui, share, theme, ui
 from tests import fixtures
 
 
@@ -131,6 +131,9 @@ class ThemeTests(unittest.TestCase):
             self.assertEqual(s.lookup(style, "bordercolor", ["focus"]), theme.FOCUS, style)
         for style in ("TCheckbutton", "TRadiobutton"):
             self.assertEqual(s.lookup(style, "focuscolor"), theme.FOCUS)
+            # a greyed tick is grey too (not the bright gold of a clickable one)
+            self.assertEqual(s.lookup(style, "indicatorforeground", ["disabled"]),
+                             theme.DISABLED)
         self.assertEqual(theme.DISABLED, "#7a705e")
         # red buttons: a plain gold border at rest, so the bright focus colour stands out
         for style in ("Accent.TButton", "Accent.Item.TButton"):
@@ -255,6 +258,17 @@ class LookWindowTests(unittest.TestCase):
                 self.assertGreaterEqual(max(width(b), b.winfo_reqwidth()), least,
                                         f"{name}: {b.cget('text')!r} narrower than a row button")
 
+    # The tallest a window may be (its content, no title bar): a Steam Deck screen is 800 px
+    # (Linux stand-in at 100 %: 760), a 1080p laptop at 150 % about 1000 px. None = no check.
+    height_limit = 760
+
+    def check_height(self, win, name):
+        if self.height_limit is None:
+            return
+        win.update_idletasks()
+        self.assertLessEqual(win.winfo_reqheight(), self.height_limit,
+                             f"{name}: too tall for a small screen")
+
     def check_knots(self, win, art, name):
         art.draw()
         win.update_idletasks()
@@ -351,12 +365,80 @@ class LookWindowTests(unittest.TestCase):
                              (lambda: app.open_receive(show=False), "receive")):
             d = opener()
             self.check_dialog(d.win, name)
+            d.win.update_idletasks()
+            self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), f"{name} width")
+            if name in ("make backup", "send"):   # WoW open: the WoW-open strip fits too
+                d.show_game(True)
+                self.assertEqual(d.game_label.winfo_manager(), "pack")
+                self.check_dialog(d.win, f"{name} (WoW open)")
+                d.win.update_idletasks()
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), f"{name} WoW open")
+                lab = d.game_label
+                self.assertLessEqual(lab.winfo_reqwidth(), d.frame.winfo_reqwidth(),
+                                     f"{name}: WoW-open strip cut")
+                self.check_height(d.win, f"{name} (WoW open)")
+            if name == "make backup":   # saved: Open folder joins the row, still <= 420 px
+                d.made_with_game = True
+                d.handle(("backup_done", os.path.join(self.work, "AddonManager backup x.zip"),
+                          41 * 2 ** 20, ["WTF/Account/A/SavedVariables/WeakAuras.lua"]))
+                self.check_dialog(d.win, "make backup (saved)")
+                d.win.update_idletasks()
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "make backup saved")
+            if name == "restore list":   # the safety copies tick wraps
+                d.safety_var.set(True)
+                d.render()
+                d.win.update_idletasks()
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "restore list")
             if name == "restore list" and d.code_button is not None:
                 # a clear gap between Use a code... and Cancel; the note wraps to the window
                 pad = re.findall(r"\d+", str(d.cancel_button.pack_info()["padx"]))
                 self.assertGreaterEqual(int(pad[0]), theme.px(12))
                 self.assertEqual(d.code_button.pack_info()["side"], "left")
                 self.assertTrue(d.note.bind("<Configure>"))
+            if name == "send":
+                # after an error: Try again fits, same width as Get code, same row width
+                d.win.update_idletasks()
+                before = (width(d.go_button), d.go_button.winfo_reqwidth())
+                d.active = True          # a try that ends with an error
+                d.handle(("share_error", d.tag, errors.share_message(
+                    share.ShareError("offline")), True, None))
+                self.assertEqual(str(d.go_button.cget("text")), errors.SEND_TRY_AGAIN)
+                self.check_dialog(d.win, "send (try again)")
+                d.win.update_idletasks()
+                self.assertEqual((width(d.go_button), d.go_button.winfo_reqwidth()), before)
+                self.assertEqual(width(d.go_button), width(d.cancel_button))
+                # file.kiwi tick + Upload right away on, then the uploading-now status:
+                # the sub-tick's text fits, the window stays <= 420 px
+                d.later_var.set(True)
+                d.now_var.set(True)
+                d._later_state()
+                d.win.update_idletasks()
+                self.check_dialog(d.win, "send (upload right away)")
+                lab = d.now_label
+                self.assertLessEqual(x_in(lab, d.win) + lab.winfo_reqwidth(),
+                                     width(d.win), "upload right away text cut")
+                self.assertLessEqual(lab.winfo_reqwidth(), int(lab.cget("wraplength")) + 2)
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "send width")
+                self.check_height(d.win, "send (ticks on, after an error)")
+                d.active = True
+                d.later = d.later_choice()
+                d._fold(True)            # what start() does: the choices fold to one line
+                self.assertTrue(d.what_line.winfo_manager())
+                self.assertFalse(d.what_box.winfo_manager())
+                d.show_code(share.format_code(37, share.new_words()), 600)
+                d.handle(("share_later", d.tag, "uploading", "now"))
+                self.assertEqual(d.status_var.get(), errors.LATER_UPLOADING_NOW)
+                d.win.update_idletasks()
+                self.check_dialog(d.win, "send (uploading now)")
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "send width (now)")
+                self.check_height(d.win, "send (code shown, uploading now)")
+                # the normal countdown ("uploaded for later" if not joined) wraps beside Copy
+                d.later = {"hours": 12}
+                d.ends_var.set(d._ends_text(299))
+                d.win.update_idletasks()
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "send width (later)")
+                self.check_height(d.win, "send (code shown, countdown)")
+                d.active = False
             d.close()
         lic = app.open_licences(show=False)
         lic.win.update_idletasks()
@@ -368,9 +450,16 @@ class LookWindowTests(unittest.TestCase):
         d = app.open_restore(show=False, path=made)
         self.check_dialog(d.win, "restore")
         d.close()
+        from am import backup_ui
+        d = app.backup_dialog = backup_ui.RestoreDialog(app, backup.read(made), show=False,
+                                                        back=True)
+        self.check_dialog(d.win, "restore (with Back)")
+        d.win.update_idletasks()
+        self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "restore with Back")
+        d.close()
         app.close_backup_window()
         # the yes/no question
-        parts = app._confirm_parts("Remove Taxi Time?", "text", errors.REMOVE_OK,
+        parts = app._confirm_parts("Uninstall Taxi Time?", "text", errors.REMOVE_OK,
                                    errors.REMOVE_CANCEL, False, lambda ok: None)
         self.check_dialog(parts["win"], "confirm")
         parts["win"].destroy()
@@ -398,6 +487,7 @@ class LookWindowTests(unittest.TestCase):
 
     def test_buttons_150(self):
         self.root.tk.call("tk", "scaling", self.base_scaling * 1.5)
+        self.height_limit = 1000
         self.run_checks()
 
     def linux_on_windows(self):
@@ -405,15 +495,27 @@ class LookWindowTests(unittest.TestCase):
         (the metrics of DejaVu Sans, the font the Linux build's CI has) with a DejaVu-like
         serif, at the CI's display scaling (1.043). Measured: this gives the CI's widths
         to within 1-2 px (Segoe UI x 1.2 was 50+ px too narrow)."""
-        from am import backup_ui
+        from am import backup_ui, share_ui
         families = set(tkfont.families(self.root))
         family = "Verdana" if "Verdana" in families else theme.FONT_FAMILY
+        # Every import-time Linux value (the real Linux numbers), so the windows are
+        # measured as they are built there.
         patches = [mock.patch.object(ui, "LINUX_SLIM_BUTTONS", True),
                    mock.patch.object(ui, "SETTINGS_BUTTON", "Settings"),
                    mock.patch.object(ui, "BETA_MAIN_TEXT", "Betas"),
+                   mock.patch.object(ui, "COL_GAP", ui.LINUX_COL_GAP),
+                   mock.patch.object(ui, "VERSION_SAMPLE", ui.LINUX_VERSION_SAMPLE),
                    mock.patch.object(backup_ui, "LINUX", True),
                    mock.patch.object(backup_ui, "WRAP", 310),
+                   mock.patch.object(share_ui, "WRAP", 310),
                    mock.patch.object(backup_ui, "PLACE_MAX", 12),
+                   mock.patch.object(backup_ui, "MENU_CHARS", 12),
+                   mock.patch.object(backup_ui, "ACCOUNT_WRAP", 160),
+                   mock.patch.object(backup_ui, "NOTICES_CHARS", 40),
+                   mock.patch.object(fileinstall_ui, "LINUX", True),
+                   mock.patch.object(fileinstall_ui, "WRAP", 330),
+                   mock.patch.object(fileinstall_ui, "ROW_HEIGHT", 40),
+                   mock.patch.object(share_ui, "CODE_SIZE", 15),
                    mock.patch.object(theme, "FONT_FAMILY", family),
                    mock.patch.object(theme, "FONT_SIZE", 10),
                    mock.patch.object(theme, "BUTTON_FAMILY", None),
@@ -433,6 +535,7 @@ class LookWindowTests(unittest.TestCase):
         """Linux fonts at 150 % (the CI's 150 % is 1.56)."""
         factor = self.linux_on_windows() * 1.5 if os.name == "nt" else 1.5
         self.root.tk.call("tk", "scaling", self.base_scaling * factor)
+        self.height_limit = None   # no 150 % on the Steam Deck's own screen
         self.run_checks()
 
     # ---------- the scrolling list ----------

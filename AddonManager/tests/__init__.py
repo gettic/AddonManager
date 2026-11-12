@@ -19,6 +19,8 @@ atexit.register(shutil.rmtree, os.environ["ADDONMANAGER_HOME"], True)
 os.environ["ADDONMANAGER_DOCUMENTS"] = tempfile.mkdtemp(
     prefix="backup_restore_docs_", dir=os.environ.get("ADDONMANAGER_TEST_TMP"))
 atexit.register(shutil.rmtree, os.environ["ADDONMANAGER_DOCUMENTS"], True)
+# The player's clipboard is never read (Receive pre-fills a code; tests pass their own).
+os.environ["ADDONMANAGER_NO_CLIPBOARD"] = "1"
 
 # Tests never go online: no real addon list, and "GitHub" is a closed local port.
 from am import config  # noqa: E402

@@ -36,6 +36,35 @@ class TextsTests(unittest.TestCase):
         self.assertIn("Backup window", text)
         self.assertNotIn("Settings", text)
 
+    def test_review_wording(self):
+        """Whole-app review: one name per thing, where the log is, one reload wording."""
+        self.assertIn("Open log folder", errors.DETAILS)
+        self.assertEqual(errors.send_new(True, True), "A new backup now (addons + settings)")
+        self.assertEqual(errors.send_new(False, True), "A new backup now (settings only)")
+        self.assertEqual(errors.send_new(True, False), "A new backup now (addons only)")
+        self.assertEqual(errors.remove_title("X"), "Uninstall X?")
+        self.assertEqual(errors.REMOVE_OK, "Uninstall")
+        self.assertIn(errors.RELOAD, errors.success_message("X", "v1"))
+        self.assertIn(errors.RELOAD_LOWER, errors.GAME_RUNNING)
+        self.assertEqual(fileinstall_ui.RELOAD, errors.RELOAD)
+        self.assertNotIn("the guild officer", errors.manifest_message(Exception()))
+        self.assertIn("(beta)", errors.go_back_text("X", "v2.0", "v1.0"))
+        self.assertNotIn("(beta)", errors.go_back_text("X", "v2.0-beta.1", "v1.0"))
+
+    def test_clipboard_code(self):
+        """Receive pre-fills only a valid code; anything else is ignored."""
+        from am import share_ui
+        self.assertEqual(share_ui.clipboard_code(lambda: " 37 Amber lamp RIVER\n"),
+                         "37-amber-lamp-river")
+        for bad in ("", "hello world", "999-amber-lamp-river", "x" * 200, None, 5,
+                    "37-amber-lamp-river " * 5):
+            self.assertEqual(share_ui.clipboard_code(lambda b=bad: b), "", bad)
+
+        def broken():
+            raise tk.TclError("no selection")
+        self.assertEqual(share_ui.clipboard_code(broken), "")
+        self.assertEqual(share_ui.clipboard_code(None), "")
+
     def test_parse_geometry(self):
         self.assertEqual(ui._parse_geometry("700x500+10+20"), (700, 500, 10, 20))
         self.assertEqual(ui._parse_geometry("700x500+-1900+-5"), (700, 500, -1900, -5))
@@ -140,6 +169,82 @@ class WindowExtrasTests(unittest.TestCase):
         self.pump(app)
         self.assertEqual(app.backup_tip.text, errors.NO_FOLDER_TIP)
         self.assertEqual(app.all_tip.text, errors.NO_FOLDER_TIP)
+        # "Choose folder..." fits its button (wider than the row buttons only then)
+        self.assertEqual(app.folder_button.cget("text"), ui.CHOOSE_FOLDER)
+        self.assertGreaterEqual(int(app.folder_button.cget("width")),
+                                theme.chars(self.root, (ui.CHOOSE_FOLDER,)))
+
+    def test_review_fixes_main_window(self):
+        """Check again tooltip (F5); the banner and message line wrap at their real width;
+        the Backup window's greyed buttons say why."""
+        from am import backup_ui
+        app = self.make_app()
+        self.pump(app)
+        self.assertEqual(app.check_tip.text, errors.CHECK_TIP)
+        self.assertIn("F5", errors.CHECK_TIP)
+        for label in (app.message_label, app.banner):
+            self.assertTrue(label.bind("<Configure>"))
+        label = ttk.Label(self.root, text="x " * 200, wraplength=600)
+        backup_ui.fit_wrap(label, inset=10)
+        label.event_generate("<Configure>", width=300, height=20)
+        self.assertEqual(int(float(str(label.cget("wraplength")))), 290)
+        hub = app.open_backup_window(show=False)
+        self.assertEqual(hub.tips[hub.make_button].text, "")
+        self.assertEqual(hub.tips[hub.old_button].text, errors.DELETE_OPEN_TIP)
+        app.busy = True
+        hub.render()
+        for b in (*hub.buttons(), hub.old_button):
+            self.assertEqual(hub.tips[b].text, errors.BUSY_TIP)
+        app.busy = False
+        app.addons_dir = None
+        hub.render()
+        self.assertEqual(hub.tips[hub.restore_button].text, errors.BACKUP_NO_FOLDER_TIP)
+        app.addons_dir = self.addons
+        hub.render()
+        self.assertEqual(hub.tips[hub.old_button].text, errors.DELETE_OPEN_TIP)
+        app.close_backup_window()
+        app.closed = True
+
+    def test_receive_prefills_a_copied_code(self):
+        app = self.make_app(share_url="https://relay.invalid")
+        self.pump(app)
+        self.assertEqual(app.read_clipboard(), "")   # tests never read the real clipboard
+        app.read_clipboard = lambda: "37 Amber lamp river"
+        app.open_backup_window(show=False)
+        d = app.open_receive(show=False)
+        self.assertEqual(d.code_var.get(), "37-amber-lamp-river")
+        d.close()
+        app.read_clipboard = lambda: "not a code at all"
+        d = app.open_receive(show=False)
+        self.assertEqual(d.code_var.get(), "")
+        d.close()
+        app.close_backup_window()
+        app.closed = True
+
+    def test_restore_back_to_backups_found(self):
+        """Restore window opened from Backups found: Back (and Esc) go back to the list;
+        the account picks are greyed while restoring."""
+        from am import backup, backup_ui
+        app = self.make_app(confirm=lambda *a: False)
+        self.pump(app)
+        path = backup.make(self.addons, backup.default_folder())[0]
+        app.open_backup_window(show=False)
+        found = app.open_restore(show=False)
+        found.opening = path
+        found.handle(("restore_opened", path, backup.read(path)))
+        dlg = app.backup_dialog
+        self.assertIsInstance(dlg, backup_ui.RestoreDialog)
+        self.assertEqual(dlg.back_button.cget("text"), errors.BACK)
+        self.assertEqual(dlg.back_button.pack_info()["side"], "left")
+        back = dlg.back()
+        self.assertIsInstance(back, backup_ui.BackupListDialog)
+        self.assertIs(app.backup_dialog, back)
+        back.close()
+        plain = app.open_restore(show=False, path=path)   # Browse/received: no Back
+        self.assertIsNone(plain.back_button)
+        plain.close()
+        app.close_backup_window()
+        app.closed = True
 
     # ---------- keys ----------
     def test_enter_answers_only_safe_questions(self):
@@ -158,7 +263,7 @@ class WindowExtrasTests(unittest.TestCase):
 
     def confirm_parts(self, app, enter):
         got = []
-        parts = app._confirm_parts("Remove Taxi Time?", "Text", "Remove", "Cancel", enter,
+        parts = app._confirm_parts("Uninstall Taxi Time?", "Text", "Uninstall", "Cancel", enter,
                                    got.append)
         return parts, got
 

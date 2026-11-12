@@ -18,6 +18,7 @@ BUILTIN_LIST = {
         {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
         {"folder": "NotePad", "name": "Note Pad", "repo": "gettic/NotePad"},
         {"folder": "OnlyFriends", "name": "Only Friends", "repo": "gettic/OnlyFriends"},
+        {"folder": "MiniMap", "name": "Mini Map", "repo": "gettic/MiniMap"},
     ],
 }
 

@@ -2,6 +2,8 @@
 
 An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and updates the guild's addons for WoW Forever with one click. On Windows it is one file, `AddonManager.exe`. On Linux it is one file too, `AddonManager-x86_64.AppImage`. You don't need to install anything else. It opens in about a second. It has its own icon (the guild logo) on the file, in the window, on the taskbar and in Alt+Tab.
 
+![The main window with the guild's addons](docs/screenshots/main-window.png)
+
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
 Current version: v0.12.1
@@ -56,15 +58,15 @@ Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Pro
 3. Click **Install** or **Update** next to an addon, or the big button at the bottom to do every addon that needs it. It says **Update all** when an installed addon has an update, otherwise **Install all**. It is greyed out when there is nothing to do.
 4. If the status says "Installed (version unknown)", the button says **Reinstall**.
 5. To use a different WoW Forever folder, click **Change...**. The folder path at the top can be selected and copied (Ctrl+C, or right-click and Copy). Right-click it to also **Open AddOns folder** or **Open log folder** (handy when asking for help). On Steam Deck, press and hold instead of right-click (also on an addon's name).
-6. Click **Check again** (or press **F5** or Ctrl+R) to reload the list, for example after your internet came back.
+6. Click **Check again** (point at it to see the tooltip; or press **F5** or Ctrl+R) to reload the list, for example after your internet came back.
 
-When the app asks a question, **Enter** means Yes only if nothing is removed, deleted or overwritten. For Remove, Delete and Restore questions you have to click.
+When the app asks a question, **Enter** means Yes only if nothing is removed, deleted or overwritten. For Uninstall, Delete and Restore questions you have to click.
 
 If the app had saved the folder of another version (for example Retail), it switches to WoW Forever and tells you. If you pick another version's folder yourself, the app uses it but shows a warning.
 
 If WoW is running, the app warns you. You can still install. Afterwards type `/reload` in the game, or restart it, to use the new versions.
 
-If something fails, the app tells you in plain words and nothing is half-installed: your old version stays.
+If something fails, the app tells you in plain words and nothing is half-installed: your old version stays. Error messages say where the details are: right-click the folder path and choose **Open log folder**.
 
 ## Updating the app itself
 
@@ -86,25 +88,29 @@ A beta is a test version of an addon. It may have bugs. The checkbox **Show beta
 - If an addon has no normal version yet, the row just says "Beta installed".
 - The Addon Manager's own updates always use normal versions.
 
-## Removing an addon
+## Uninstalling an addon
 
-Each row has one button. When the addon is installed and up to date, it says **Uninstall**. Click it. If the row shows **Update** (or another button), right-click the row and choose **Remove <name>...**. After you say yes:
+Each row has one button. When the addon is installed and up to date, it says **Uninstall**. Click it. If the row shows **Update** (or another button), right-click the row and choose **Uninstall <name>...**. After you say yes:
 
 - The addon's folder goes to the Recycle Bin (on Linux: the Trash). You can put it back from there.
 - If the drive has no Recycle Bin or Trash, the question says the folder will be deleted for good.
 - Your settings for it in the game (the `WTF` folder) are kept.
-- The row then says **Removed**. **Install all** and **Update all** skip it. Its own **Install** button brings it back.
+- The row then says **Uninstalled**. **Install all** and **Update all** skip it. Its own **Install** button brings it back.
 - If WoW is open and a file is in use, nothing is removed and a message tells you.
 - If a delete for good can only be done partly, the app says so and finishes it the next time it starts. WoW won't load what is left.
 - If another addon needs it, the question tells you.
 
-Only the guild's addons and the ones you added from a file can be removed, never other addons.
+Only the guild's addons and the ones you added from a file can be uninstalled, never other addons.
 
 ## Backup and restore
 
-Click **Backup** (bottom row, left of **Settings**). Close WoW first.
+Click **Backup** (bottom row, left of **Settings**).
 
-The **Backup** window has **Make a backup...** and **Restore a backup...** (This PC), and **Send to another PC...** and **Receive...** (Another PC). It also shows "Last backup: <date> (<place>)", and once a backup is found, an **Open folder** button and an **Old backups...** button.
+![The Backup window](docs/screenshots/backup-window.png)
+
+The **Backup** window has **Make a backup...** and **Restore a backup...** (This PC), and **Send to another PC...** and **Receive...** (Another PC). It also shows "Last backup: <date> (<place>)", and once a backup is found, an **Open backup folder** button and an **Old backups...** button. A greyed button says why in a tooltip.
+
+You can make a backup (and send a new one) while WoW is open. Your settings are the ones from your last `/reload` or logout, so type `/reload` in WoW first to include today's changes. A settings file WoW is writing at that very moment is left out, and the "Backup saved" line names it. **Restore a backup...** still needs WoW closed.
 
 A progress bar with a percentage shows while a backup is made (also when **Send to another PC...** makes a new one) and while restoring. **Cancel** stops a backup being made; nothing is saved. A restore can't be stopped half-way.
 
@@ -124,7 +130,7 @@ A progress bar with a percentage shows while a backup is made (also when **Send 
 - `Config.wtf` and the saved chat history (also of chat addons like Elephant or WIM) are never included.
 - A backup folder can't be inside the WoW folder. The app asks for another one.
 
-**Restore a backup...** (for example on a new PC): a list of **Backups found** opens (Documents, your backup folder and the cloud folders), newest first with date, size and place. Click one. Safety copies show under their own heading when ticked. A cloud file marked (online) is only downloaded when you click it. **Browse...** picks any other file. Then choose what to restore (addons, addon settings, key bindings and macros).
+**Restore a backup...** (for example on a new PC): a list of **Backups found** opens (Documents, your backup folder and the cloud folders), newest first with date, size and place. Click one. Safety copies (made before a restore or before installing from a file) show under their own heading when you tick "Show safety copies (made before a restore or install)". After you pick one, **Back** (or Esc) returns to the list. The account picks are greyed while it restores. A cloud file marked (online) is only downloaded when you click it. **Browse...** picks any other file. Then choose what to restore (addons, addon settings, key bindings and macros).
 
 - If the account name here is different, you pick which account gets the settings. With two accounts in the backup and one here, you choose which one goes there.
 - It merges: addons and settings that aren't in the backup stay. Nothing is removed.
@@ -146,8 +152,11 @@ Click **Old backups...** in the **Backup** window. Tick the backups you don't ne
 
 ### Send a backup to another PC
 
-In the **Backup** window, click **Send to another PC...**. Choose a new backup, your newest one, or another file. The app shows a short code like `37-amber-lamp-river` (a number and three words). On the other PC click **Receive...** (or **Use a code...** in the Restore list) and type the code. Spaces work too. The window shows "about N min left" while it sends.
+![Send to another PC with a code](docs/screenshots/send-to-another-pc.png)
 
+In the **Backup** window, click **Send to another PC...**. Choose a new backup (the button says it holds addons and settings), your newest one, or another file. The app shows a short code like `37-amber-lamp-river` (a number and three words). On the other PC click **Receive...** in the **Backup** window (or **Use a code...** in the Restore list) and type the code. Spaces work too. If you copied a valid code, **Receive** fills it in by itself. The clipboard is read only when the window opens, and is never sent or saved. The window shows "about N min left" while it sends. Once a send starts, "What to send" folds to one line, so the window fits a Steam Deck screen.
+
+- If something goes wrong, the **Get code** button turns into **Try again**. You don't have to close the window. A backup already made for the failed send is sent again, not made twice. If the file you picked isn't a backup (or is too big), the button stays **Get code** so you can pick another file.
 - The code works once. Both PCs must be online together: the code lasts 10 minutes, and a backup up to 500 MB goes straight across.
 - Before the code appears, the app warns you: the file has your account and character names and data your addons saved about other players. Only give the code to yourself or someone you trust.
 - The file is encrypted from end to end, so nobody in the middle can open it.
@@ -157,9 +166,10 @@ In the **Backup** window, click **Send to another PC...**. Choose a new backup, 
 
 ### If the other PC isn't ready (send later)
 
-This is optional and **off by default**. It uses file.kiwi, a file host run by another company, not by the app's maker. Tick "Upload to file.kiwi (a third-party host) when the other PC isn't ready in 5 min, or right away if the backup is over 500 MB, so it can get it later". The window links to file.kiwi's terms and privacy pages. The app remembers your choice.
+This is optional and **off by default**. It uses file.kiwi, a file host run by another company, not by the app's maker. Tick "Upload to file.kiwi (a third-party host) when the other PC isn't ready in 5 min, or right away if the backup is over 500 MB, so it can get it later". The window links to file.kiwi's terms and privacy pages. The app remembers your choice. The hours, links and note for file.kiwi show only while the tick is on. Unticking it also unticks "Upload right away".
 
 - **Not ready in 5 minutes:** with the tick on, the backup is uploaded to file.kiwi. Keep the window open until it says "Uploaded". Then you can close the PC.
+- **Upload right away:** with the file.kiwi tick on, a second tick, "Upload right away (don't wait 5 min)", appears. Tick it when you know the other PC will pick the backup up later. The backup is uploaded at once, and the status says "Uploading to file.kiwi for later". It starts unticked every time and is not remembered.
 - **Over 500 MB (up to 5 GB):** this only works with the tick on. The backup is uploaded to file.kiwi right away, with no 5-minute wait. With the tick off, the app says the backup is too big and suggests you make a backup and copy it yourself, for example with a USB stick or a cloud folder.
 - **Code time:** "The code works for" 1, 2, 4, 8, 12 or 24 hours (12 by default). The other PC can type the code any time in that time. The code works once.
 - **On the other PC:** click **Receive...**, type the code and click **Download**. Your browser gets the file from file.kiwi. The Addon Manager finds it in your Downloads folder by itself (or click **Open the download...**), checks it and opens the usual Restore window.
@@ -180,7 +190,7 @@ A file received this way is handled with extra care:
 For an addon that isn't in the guild's list (from CurseForge, Wago or a friend), click **Add file...** (at the bottom of the addon list box, always in view, even when the list scrolls) or press **Ctrl+O**, and pick a `.zip`, `.rar` or `.7z` file. Other ways:
 
 - Drop the file on the app's window, or on the program's icon. If the app is already open, the open window gets it.
-- Right-click **Add file...** and choose **Install from folder...** for an addon you already unpacked.
+- Right-click **Add file...** and choose **Install from a file...** or **Install from a folder...** (for an addon you already unpacked).
 
 A window lists the addons found, each with a tick. Nothing is installed until you click Install.
 
@@ -188,7 +198,7 @@ A window lists the addons found, each with a tick. Nothing is installed until yo
 - Guild addons in a file are never replaced. They come from the guild's list.
 - If an addon is already there, the app first saves it as `Before install <date>.zip` in your backup folder. **Restore a backup...** can put it back.
 - These addons show under **Other addons** with their version and **Uninstall**. They are not updated automatically and are not counted in the anonymous usage data.
-- `.rar` and `.7z` need Windows 11. On Linux they need `bsdtar` installed. Otherwise unpack the file first and use **Install from folder...**.
+- `.rar` and `.7z` need Windows 11. On Linux they need `bsdtar` installed. Otherwise unpack the file first and use **Install from a folder...**.
 - On Linux, drag and drop may not work everywhere. **Add file...** always works.
 
 ## Where the addons come from
@@ -212,6 +222,8 @@ Both are in `%APPDATA%\AddonManager` on Windows (paste it into the Windows Explo
 ## Anonymous usage data
 
 The app's maker counts how many people use each guild addon and whether they are up to date. It is on by default. To turn it off, click **Settings** (bottom right) and untick **Share anonymous counts**. Nothing is sent while it is off.
+
+![The Settings window](docs/screenshots/settings.png)
 
 While it is on, the app sends this once a day, after the update check:
 

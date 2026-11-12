@@ -394,7 +394,7 @@ class WindowTests(unittest.TestCase):
             title, text, ok, cancel = asked[0]
             self.assertEqual((title, ok, cancel),
                              ("Go back to the normal version?", "Go back", "Cancel"))
-            self.assertIn("v1.4.0-beta.1 (beta) will be replaced by the normal version v1.3.0",
+            self.assertIn("v1.4.0-beta.1 will be replaced by the normal version v1.3.0",
                           text)
             self.assertIn("settings are kept", text)
             self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.4.0-beta.1"))
@@ -457,7 +457,7 @@ class WindowTests(unittest.TestCase):
             # A hand-installed normal version newer than the list keeps its old status.
             fixtures.make_addon_folder(self.addons, "GuildHub", "9.0")
             app.render()
-            self.assertEqual(self.status(app, "GuildHub"), ("Newer than the list", "Uninstall"))
+            self.assertEqual(self.status(app, "GuildHub"), ("Newer than the guild's", "Uninstall"))
 
     def test_beta_switch_no_flicker(self):
         with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
@@ -599,7 +599,7 @@ class WindowTests(unittest.TestCase):
                      check_game=lambda: False, detect=lambda: [])
         self.pump(app)
         self.assertIn("couldn't find WoW Forever", app.message_var.get())
-        self.assertEqual(app.folder_button.cget("text"), "Choose folder")
+        self.assertEqual(app.folder_button.cget("text"), ui.CHOOSE_FOLDER)
 
     def test_choose_folder_saved(self):
         app = ui.App(self.root, os.path.join(self.site, "manifest.json"), True, None,

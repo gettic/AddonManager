@@ -152,7 +152,8 @@ class Basics(unittest.TestCase):
         self.assertEqual(strip(doc), strip(config.BUILTIN_LIST))
         m = manifest.parse(json.dumps(doc), "https://example.invalid/addons.json")
         self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
-                                                   "gettic/NotePad", "gettic/OnlyFriends"])
+                                                   "gettic/NotePad", "gettic/OnlyFriends",
+                                                   "gettic/MiniMap"])
 
     def test_repo_entries(self):
         m = manifest.parse(json.dumps({"addons": [
@@ -464,14 +465,16 @@ class WithServer(unittest.TestCase):
         with mock.patch.object(config, "DEFAULT_MANIFEST_URL", url):
             m = github.load_list(url, allow_local=True)
         self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
-                                                   "gettic/NotePad", "gettic/OnlyFriends"])
+                                                   "gettic/NotePad", "gettic/OnlyFriends",
+                                                   "gettic/MiniMap"])
         self.assertEqual(github.load_list(url, allow_local=True).addons, [])  # other lists: as is
 
     def test_fallback_to_builtin_list(self):
         with mock.patch.object(config, "DEFAULT_MANIFEST_URL", "https://127.0.0.1:9/addons.json"):
             m = github.load_list(config.DEFAULT_MANIFEST_URL)
             self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
-                                                   "gettic/NotePad", "gettic/OnlyFriends"])
+                                                   "gettic/NotePad", "gettic/OnlyFriends",
+                                                   "gettic/MiniMap"])
             with self.assertRaises(manifest.ManifestError):   # other lists don't fall back
                 github.load_list("https://127.0.0.1:9/other.json")
 

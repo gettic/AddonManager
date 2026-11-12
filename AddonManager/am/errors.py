@@ -6,13 +6,17 @@ from am.download import DownloadError
 from am.installer import InstallError
 from am.manifest import ManifestError
 
-DETAILS = " (Details were saved to the log.)"
+# Where the details are: the folder path's right-click menu has Open log folder.
+DETAILS = " (Details are in the log: right-click the folder path > Open log folder.)"
 SYSTEM = "Windows" if os.name == "nt" else "Your system"
+THIS_PC = "this PC" if os.name == "nt" else "this computer"
+YOUR_PC = "your PC" if os.name == "nt" else "your computer"
 
 NOT_FOUND = ("I couldn't find WoW Forever on this PC. Click Choose folder and pick "
              "the folder where WoW Forever is installed.")
 if os.name != "nt":
-    NOT_FOUND = ("I couldn't find WoW Forever. Click Choose folder and pick the Battle.net "
+    NOT_FOUND = ("I couldn't find WoW Forever on this computer. Click Choose folder and pick "
+                 "the Battle.net "
                  "Proton folder (in Steam: .local/share/Steam/steamapps/compatdata/<number>) "
                  "or the World of Warcraft folder inside it.")
 NOT_WOW = ("That folder doesn't look like WoW Forever. Pick the folder that contains "
@@ -25,7 +29,7 @@ FOLDER_GONE = "WoW Forever isn't where it was last time. Please choose its folde
 def only_other_clients(others):
     """WoW was found, but only other game versions (beta, PTR, Classic, Retail...)."""
     shown = ", ".join(others[:3]) + (", ..." if len(others) > 3 else "")
-    return (f"I found WoW on this PC ({shown}) but no WoW Forever. Click Choose folder "
+    return (f"I found WoW on {THIS_PC} ({shown}) but no WoW Forever. Click Choose folder "
             "and pick your WoW Forever folder.")
 
 
@@ -40,8 +44,11 @@ def switched_folder(old, new):
             "which is a different WoW version).")
 
 
-GAME_RUNNING = ("WoW Forever is running. You can still install: afterwards type /reload "
-                "in the game or restart it to use the new versions.")
+# One wording for every "WoW must load it" hint (installs, uninstalls, Add file...).
+RELOAD = "Type /reload in WoW (or restart it)"
+RELOAD_LOWER = "type /reload in WoW (or restart it)"
+GAME_RUNNING = (f"WoW Forever is running. You can still install, then {RELOAD_LOWER} "
+                "to use the new versions.")
 
 
 def manifest_message(exc):
@@ -56,7 +63,7 @@ def manifest_message(exc):
         return ("This Addon Manager is too old for the guild's addon list. "
                 "Please download the newest one.")
     return ("The guild's addon list can't be read right now. Try again later, "
-            "or tell the guild officer." + DETAILS)
+            "or tell a guild officer." + DETAILS)
 
 
 def release_message(exc, name):
@@ -64,7 +71,8 @@ def release_message(exc, name):
     kind = getattr(exc, "kind", "")
     if kind == "rate_limited":
         minutes = max(1, (int(getattr(exc, "wait", 0) or 0) + 59) // 60)
-        return ("Can't check now", "GitHub is limiting update checks from this PC. Try again "
+        return ("Can't check now", f"GitHub is limiting update checks from {THIS_PC}. "
+                "Try again "
                 f"in {minutes} minute{'s' if minutes != 1 else ''}.")
     if kind == "offline":
         return ("Can't check now",
@@ -75,9 +83,9 @@ def release_message(exc, name):
         return ("No release yet", f"{name} has no release to download yet.")
     if kind == "no_asset":
         return ("No download yet", f"{name}'s newest release has no download yet. "
-                "Try again later, or tell the guild officer.")
+                "Try again later, or tell a guild officer.")
     return ("Can't check now", f"{name}'s newest release can't be read right now. Try again "
-            "later, or tell the guild officer." + DETAILS)
+            "later, or tell a guild officer." + DETAILS)
 
 
 def install_message(exc, name):
@@ -93,7 +101,7 @@ def install_message(exc, name):
         if kind in ("checksum", "too_big"):
             return _damaged(name)
         return (f"The download for {name} isn't available right now. Try again later, "
-                "or tell the guild officer." + DETAILS)
+                "or tell a guild officer." + DETAILS)
     if isinstance(exc, InstallError):
         if kind in ("unsafe", "bad_zip", "mismatch"):
             return _damaged(name)
@@ -121,7 +129,7 @@ def install_message(exc, name):
 
 def _damaged(name):
     return (f"The download for {name} was damaged or doesn't match. Nothing was changed. "
-            "Try again; if it keeps happening, tell the guild officer.")
+            "Try again; if it keeps happening, tell a guild officer.")
 
 
 # ---------- the Addon Manager's own update (bar text: no game or company names) ----------
@@ -149,7 +157,7 @@ def app_update_message(exc):
     if kind == "timeout":
         return "The download server isn't answering. Try again in a few minutes."
     if kind == "rate_limited":
-        return "GitHub is limiting downloads from this PC. Try again in a few minutes."
+        return f"GitHub is limiting downloads from {THIS_PC}. Try again in a few minutes."
     if kind == "damaged":
         return ("The update download was damaged or doesn't match, so nothing was changed. "
                 "Try again later.")
@@ -179,27 +187,29 @@ def go_back_button(normal_text):
 
 
 def go_back_text(name, beta_text, normal_text):
-    return (f"{name} {beta_text} (beta) will be replaced by the normal version "
+    # "v1.4.0-beta.2" already says beta: no second "(beta)" after it.
+    mark = "" if "beta" in str(beta_text).lower() else " (beta)"
+    return (f"{name} {beta_text}{mark} will be replaced by the normal version "
             f"{normal_text}. Your {name} settings are kept.")
 
 
-# Removing an addon (the row's Uninstall button / right-click Remove).
+# Uninstalling an addon (the row's Uninstall button / right-click Uninstall): one name.
 BIN_NAME = "Recycle Bin" if os.name == "nt" else "Trash"
-REMOVE_TIP = "Remove this addon"
-REMOVE_RIGHT_CLICK = "Right-click the row to remove."
-REMOVED = "Removed"
-REMOVING = "Removing..."
-REMOVE_OK = "Remove"
+REMOVE_TIP = "Uninstall this addon."
+REMOVE_RIGHT_CLICK = "Right-click the row to uninstall."
+REMOVED = "Uninstalled"
+REMOVING = "Uninstalling..."
+REMOVE_OK = "Uninstall"
 DELETE_OK = "Delete"
 REMOVE_CANCEL = "Cancel"
 
 
 def remove_menu_label(name):
-    return f"Remove {name}..."
+    return f"Uninstall {name}..."
 
 
 def remove_title(name):
-    return f"Remove {name}?"
+    return f"Uninstall {name}?"
 
 
 # The main window's "all" button: Update all when at least one installed addon has an
@@ -209,8 +219,11 @@ ALL_INSTALL = "Install all"
 ALL_UPDATE = "Update all"
 # Tooltips on the main window's buttons while they are greyed out: why.
 NOTHING_TO_DO_TIP = "Nothing to install or update."
-BUSY_TIP = "Please wait until the check or install is finished."
-NO_FOLDER_TIP = "Choose your WoW Forever folder first (Change...)."
+BUSY_TIP = "Please wait until the current job is finished."
+NO_FOLDER_TIP = "Choose your WoW Forever folder first (Choose folder above)."
+BACKUP_NO_FOLDER_TIP = ("Choose your WoW Forever folder first (Choose folder in the main "
+                        "window).")
+CHECK_TIP = "Look for addon updates again (F5)."
 
 
 def list_summary(updates, missing):
@@ -243,41 +256,41 @@ def remove_text(name, where, needed_by=()):
 
 def removed_message(name, where):
     place = f" (it's in the {BIN_NAME})" if where else ""
-    return (f"{name} was removed{place}. If WoW is running, type /reload or restart it.")
+    return (f"{name} was uninstalled{place}. If WoW is running, {RELOAD_LOWER}.")
 
 
 def remove_message(exc, name):
-    """Message when removing the addon called `name` didn't work (nothing was changed)."""
+    """Message when uninstalling the addon called `name` didn't work (nothing was changed)."""
     kind = getattr(exc, "kind", "")
     if kind == "locked":
-        return (f"Some files of {name} are in use, so nothing was removed. Close WoW (or "
+        return (f"Some files of {name} are in use, so nothing was uninstalled. Close WoW (or "
                 "the program using them) and try again.")
     if kind == "permission":
         return (f"{SYSTEM} didn't give me permission to change the {name} folder, so nothing "
-                "was removed. Check that folder's permissions (or whether it's protected), "
-                "then try again.")
+                f"was uninstalled. Close WoW and try again; if it still fails, restart "
+                f"{YOUR_PC}.")
     if kind == "partly":
         return (f"{name} was only partly deleted: some of its files couldn't be deleted. "
                 "WoW won't load what's left, and I'll try to delete the rest the next time "
-                "the Addon Manager starts.")
+                "I start.")
     if kind == "link":
         return (f"The {name} folder is a link to somewhere else (a developer setup), "
                 "so I left it alone.")
     if kind == "not_guild":
-        return f"I only remove the guild's addons, so I left {name} alone."
+        return f"I only uninstall the guild's addons, so I left {name} alone."
     if kind == "missing":
         return f"{name} isn't installed any more."
     if kind == "bad_folder":
         return FOLDER_GONE
     if kind == "no_trash":
-        return (f"{name} couldn't be moved to the {BIN_NAME}, so nothing was removed. "
+        return (f"{name} couldn't be moved to the {BIN_NAME}, so nothing was uninstalled. "
                 "Try again.")
-    return (f"{name} couldn't be removed, so nothing was changed. Try again; if it keeps "
+    return (f"{name} couldn't be uninstalled, so nothing was changed. Try again; if it keeps "
             "happening, close WoW first." + DETAILS)
 
 
 def success_message(name, version_text):
-    return f"{name} {version_text} installed. Restart WoW or type /reload to use it."
+    return f"{name} {version_text} installed. {RELOAD} to use it."
 
 
 def installed_list(names):
@@ -289,8 +302,8 @@ def installed_list(names):
 BACKUP_HEADING = "Backup"          # the main window's button and the Backup window's title
 BACKUP_BUTTON = "Make a backup..."
 RESTORE_BUTTON = "Restore a backup..."
-BACKUP_NOTE = ("Your addons and their settings in one file, to use on another PC. "
-               "Close WoW first.")
+BACKUP_NOTE = ("Your addons and their settings in one file: to keep safe or to use on "
+               "another PC. Close WoW first.")
 BACKUP_THIS_PC = "This PC"
 BACKUP_OTHER_PC = "Another PC"
 BACKUP_LAST_LOOKING = "Last backup: looking..."
@@ -304,11 +317,11 @@ def backup_last(when, place):
 
 BACKUP_TITLE = "Make a backup"
 BACKUP_SETTINGS = "Addon settings (key bindings and macros too)"
-BACKUP_ADDONS = "Addons themselves"
+BACKUP_ADDONS = "The addons themselves"
 BACKUP_PRIVATE = ("This file contains your account and character names and addon data. "
                   "Don't share it.")
 BACKUP_CLOUD = "To keep a copy online, save it in a folder your cloud app syncs:"
-BACKUP_PICK_ONE = "Tick at least one of the two."
+BACKUP_PICK_ONE = "Tick addon settings, the addons themselves, or both."
 BACKUP_MAKE = "Make backup"
 BACKUP_MAKING = "Making the backup..."
 
@@ -319,18 +332,26 @@ BACKUP_STOPPED = "Backup stopped. Nothing was saved."
 
 def backup_making(percent, left_out=False):
     """left_out: the Spoken addons were left out (the note stays with the %)."""
-    return f"Making the backup... {percent} %" + (" " + SPOKEN_LEFT_OUT if left_out else "")
+    return f"Making the backup... {percent} %." + (" " + SPOKEN_LEFT_OUT if left_out else "")
 
 
 def restoring(percent):
     return f"Restoring... {percent} %"
 
 
-BACKUP_OPEN_FOLDER = "Open folder"
+BACKUP_OPEN_FOLDER = "Open folder"           # Make a backup, after saving (its own folder)
+BACKUP_OPEN_BACKUPS = "Open backup folder"    # the Backup window, beside Old backups...
 BACKUP_CHANGE = "Change..."
 CLOSE = "Close"
 CANCEL = "Cancel"
-GAME_OPEN = "Close WoW first, then try again."
+BACK = "Back"   # Restore window: back to the Backups found list
+GAME_OPEN = "Close WoW first, then try again."   # Restore only (a backup works with WoW open)
+# Make a backup / Send a new backup while WoW is open (a strip in the window).
+BACKUP_GAME_OPEN = ("WoW is open: settings are from your last /reload or logout. "
+                    "Type /reload first to include your latest changes.")
+# Send (a shorter one: the Send window must fit a Steam Deck screen with file.kiwi ticked).
+SEND_GAME_OPEN = "WoW is open: type /reload first so the new backup has your latest settings."
+BACKUP_GAME_SAVED = "Settings are from your last /reload or logout."
 RESTORE_TITLE = "Restore a backup"
 RESTORE_ADDONS = "Addons"
 RESTORE_SETTINGS = "Addon settings"
@@ -346,13 +367,14 @@ RESTORE_UNDONE = ("A restore was cut off last time, so it was undone: your addon
 FOUND_HEADING = "Backups found (newest first):"
 FOUND_LOOKING = "Looking for backups..."
 FOUND_NONE = "No backups found in your backup folders. Use Browse... to pick one."
-FOUND_SAFETY = "Show safety copies (made before a restore)"
-FOUND_NOTE = "Click a backup to restore it. Files marked online download first."
+FOUND_SAFETY = "Show safety copies (made before a restore or install)"
+FOUND_NOTE = ("Click a backup to restore it. Backups marked (online) are downloaded from "
+              "your cloud first.")
 FOUND_BROWSE = "Browse..."
 FOUND_OPENING = "Opening the backup..."
 FOUND_DOWNLOADING = "Downloading the backup from your cloud first..."
 FOUND_MORE = "Older backups: use Browse..."
-FOUND_SAFETY_HEADING = "Safety copies (made before a restore):"
+FOUND_SAFETY_HEADING = "Safety copies (made before a restore or install):"
 PLACE_DOCUMENTS = "Documents"
 ONLINE_MARK = "online"
 NO_ACCOUNT = ("No account folder on this PC yet: log in to the game once, close it, then "
@@ -369,6 +391,16 @@ SEND_TITLE = "Send to another PC"
 RECEIVE_TITLE = "Receive from another PC"
 SEND_WHAT = "What to send:"
 SEND_NEW = "A new backup now"
+
+
+def send_new(addons=True, settings=True):
+    """The "new backup" choice, with what the Make a backup ticks put in it."""
+    what = ("addons + settings" if addons and settings else "addons only" if addons
+            else "settings only" if settings else "")
+    return f"{SEND_NEW} ({what})" if what else SEND_NEW
+
+
+
 SEND_NEWEST = "Newest backup: "
 SEND_OTHER = "Other file..."
 SEND_CHOSEN = "File: "
@@ -376,23 +408,24 @@ SEND_PRIVATE = ("This file has your account and character names and data your ad
                 "about other players. Only give the code to yourself or someone you trust.")
 SEND_SAFE = "It is sent encrypted. The code works once, for 10 minutes."
 SEND_GET_CODE = "Get code"
+SEND_TRY_AGAIN = "Try again"   # the Get code button after an error a new try can fix
 SEND_MAKING = "Making the backup..."
 SEND_CONNECTING = "Getting a code..."
-SEND_CODE_HEAD = "On the other PC: Settings, Receive..., then type:"
+SEND_CODE_HEAD = "On the other PC: Backup, Receive..., then type:"
 SEND_COPY = "Copy"
 SEND_COPIED = "Copied."
 SEND_WAITING = "Waiting for the other PC..."
 SEND_SENT = "Sent. The other PC can restore it now."
 RECEIVE_TYPE = "Type the code the other PC shows:"
 RECEIVE_EXAMPLE = "Like 37-amber-lamp-river. Spaces work too."
-RECEIVE_NOTE = ("Only use a code from yourself or someone you trust. Nothing changes yet: you'll "
-                "see what's inside and pick what to restore. A safety copy is made first.")
+RECEIVE_NOTE = ("Only use a code from yourself or someone you trust. You'll see what's inside "
+                "and pick what to restore. A safety copy is made first.")
 RECEIVE_OK = "Receive"
 RECEIVE_CONNECTING = "Connecting..."
 RECEIVE_CHECKING = "Checking the file..."
 USE_CODE = "Use a code..."
 RESTORE_CHOOSE = "Choose..."
-RESTORE_CHOOSE_FIRST = "Choose which of your accounts gets these settings (or skip)."
+RESTORE_CHOOSE_FIRST = "Choose which of your accounts gets these settings, or choose (skip)."
 RECEIVED_ADDONS_NOTE = ("Addons from another PC are off. Get the guild's addons with Install / "
                         "Update in the main window; tick Addons only if you trust the sender.")
 MAX_NAMES = 4   # names shown in a list line; the rest as "and N more"
@@ -432,9 +465,12 @@ LATER_UPLOADING = ("The other PC isn't here, so it's being uploaded to file.kiwi
 LATER_UPLOADING_BIG = ("This backup is over 500 MB, so it's being uploaded to file.kiwi. The "
                        "other PC can type the code any time. Keep this window open until "
                        "it's done.")
-LATER_GOT = ("The other PC uploaded it to file.kiwi for later. Click Download: your browser "
-             "gets it from there. Then it's found in your Downloads folder by itself, or "
-             "click Open the download...")
+LATER_NOW_TICK = "Upload right away (don't wait 5 min)"
+LATER_UPLOADING_NOW = ("Uploading to file.kiwi now. The other PC can type the code in "
+                       "Receive... any time. Keep this window open until it's done.")
+LATER_GOT = ("The other PC uploaded it to file.kiwi. Click Download to get it in your "
+             "browser. I then find it in your Downloads by myself; if I don't, click Open "
+             "the download... and pick it.")
 LATER_KEEP_OPEN = "Keep this window open until it's restored: the code works only once."
 LATER_DOWNLOAD = "Download"
 LATER_OPEN = "Open the download..."
@@ -448,12 +484,13 @@ def later_hours(hours):
 
 def later_in(seconds):
     seconds = max(0, int(seconds))
-    return (f"Works once. Not here in {seconds // 60}:{seconds % 60:02d}? Then it's "
-            "uploaded for later.")
+    return (f"Works once. If the other PC hasn't joined in {seconds // 60}:{seconds % 60:02d}, "
+            "it's uploaded for later.")
 
 
 def later_uploading(done, total, left=None):
-    return _with_left(f"Uploading for later: {size_text(done)} of {size_text(total)}...", left)
+    return _with_left(f"Uploading to file.kiwi for later: {size_text(done)} of "
+                      f"{size_text(total)}...", left)
 
 
 def later_ready(until_text, hours):
@@ -471,9 +508,8 @@ def later_waiting(permille):
 
 
 def later_kiwi_down(until_text):
-    return (f"file.kiwi isn't answering right now. The Addon Manager tries again by itself "
-            f"every 5 minutes until {until_text}. Keep this window open; the code stays the "
-            "same.")
+    return (f"file.kiwi isn't answering right now. I'll try again by myself every 5 minutes "
+            f"until {until_text}. Keep this window open; the code stays the same.")
 
 
 def time_left(seconds):
@@ -513,7 +549,7 @@ SPOKEN_LEFT_OUT = "Spoken addons left out."
 
 
 def spoken_found(names, size):
-    return f"Found Spoken (AI voice-over addon): {_names(names)} (about {limit_text(size)})."
+    return f"Found Spoken, the AI voice-over addon: {_names(names)} (about {limit_text(size)})."
 
 
 def spoken_sizes(without, with_them):
@@ -522,7 +558,7 @@ def spoken_sizes(without, with_them):
 
 
 def spoken_tick(size):
-    return f"Leave out Spoken (AI voice-over addon) (about {limit_text(size)})"
+    return f"Leave out Spoken, the AI voice-over addon (about {limit_text(size)})"
 
 
 def restore_left_out(names):
@@ -532,7 +568,8 @@ def restore_left_out(names):
 
 def restore_others(names):
     """Restore window: the Other addons (from Add file...) a backup's record brings back."""
-    return f"With Addons ticked, these are listed under Other addons too: {_names(names)}."
+    return ("With Addons ticked, these come back too and show under Other addons: "
+            f"{_names(names)}.")
 
 
 def limit_text(size):
@@ -545,11 +582,13 @@ def limit_text(size):
 
 def code_ends(seconds):
     seconds = max(0, int(seconds))
-    return f"Works once. Ends in {seconds // 60}:{seconds % 60:02d}"
+    return f"Works once. Ends in {seconds // 60}:{seconds % 60:02d}."
 
 
-NEW_BACKUP_CHECK = ("Couldn't check the new backup, so it wasn't sent. Nothing was "
-                    "changed." + DETAILS)
+# A backup made just now for a send didn't pass the send check: trying again can't help,
+# and the zip stays in the backup folder (so never "nothing was changed").
+NEW_BACKUP_CHECK = ("Couldn't check the new backup, so it wasn't sent. It's kept in your "
+                    "backup folder." + DETAILS)
 
 
 def share_message(exc, fresh=False):
@@ -561,7 +600,7 @@ def share_message(exc, fresh=False):
         return NEW_BACKUP_CHECK
     kind = getattr(exc, "kind", "")
     if kind == "bad_format":
-        return "That code isn't right. It looks like 37-amber-lamp-river."
+        return "That doesn't look like a code. Codes look like 37-amber-lamp-river."
     if kind == "wrong_code":
         return ("The code didn't match, so it can't be used any more. Make a new code on "
                 "the other PC and try again.")
@@ -582,9 +621,9 @@ def share_message(exc, fresh=False):
         limit = getattr(exc, "limit", None) or 500 * 1024 * 1024
         if getattr(exc, "detail", "") == "later_off":
             return (f"That backup is over {limit_text(limit)}, too big to send through the "
-                    "Addon Manager's own service. The file.kiwi tick (a third-party host) "
-                    "can carry it, or make a backup and copy it yourself with a USB stick or "
-                    "cloud folder.")
+                    "Addon Manager's own service. The file.kiwi option below (a third-party "
+                    "host) can send it, or make a backup and copy it yourself with a USB stick "
+                    "or cloud folder.")
         return (f"That backup is too big to send ({limit_text(limit)} at most). Use a cloud "
                 "folder or USB stick.")
     if kind == "later_failed":
@@ -629,8 +668,34 @@ def saved_to(folder):
     return f"Saved to: {folder}"
 
 
-def backup_saved(name, size):
-    return f"Backup saved: {name} ({size_text(size)})."
+def backup_saved(name, size, game_open=False, skipped=()):
+    """game_open: WoW was open while it was made. skipped: arcnames of files WoW was
+    writing right then (left out)."""
+    text = f"Backup saved: {name} ({size_text(size)})."
+    if game_open:
+        text += " " + BACKUP_GAME_SAVED
+    if skipped:
+        text += " " + backup_busy(skipped)
+    return text
+
+
+def backup_busy(skipped):
+    """'1 settings file was busy and left out: Foo.lua.' (2 names at most). An entry
+    "AddOns/<folder>" is an addon left out whole (its .toc was busy): 'Busy and left
+    out: the Foo addon and Bar.lua.'"""
+    parts = [a.replace("\\", "/").split("/") for a in skipped]
+    whole = [p[1] for p in parts if len(p) == 2 and p[0] == "AddOns"]
+    names = [f"the {f} addon" for f in whole] + [
+        p[-1] for p in parts if not (len(p) == 2 and p[0] == "AddOns")]
+    n = len(names)
+    if whole:
+        head = "Busy and left out: "
+    else:
+        what = "settings file" if all(a.startswith("WTF/") for a in skipped) else "file"
+        head = f"{n} {what}{'s were' if n != 1 else ' was'} busy and left out: "
+    if n <= 2:
+        return head + " and ".join(names) + "."
+    return head + f"{names[0]}, {names[1]} and {n - 2} more."
 
 
 def backup_from(info):
@@ -657,7 +722,7 @@ def found_row(when, size, place, online=False):
 # Delete old backups (Backup window > Old backups...; am\backup_delete_ui.py).
 DELETE_TITLE = "Delete old backups"
 DELETE_OPEN = "Old backups..."
-DELETE_OPEN_TIP = "Delete backups you don't need any more"
+DELETE_OPEN_TIP = "Delete backups you don't need any more."
 DELETE_NOTE = "Tick the backups you don't need any more."
 DELETE_LOOKING = "Looking for backups..."
 DELETE_NONE = "No backups found in your backup folders."
@@ -675,7 +740,7 @@ DELETE_TO_BIN = f"Moved to the {BIN_NAME} (you can get them back from there):"
 DELETE_FOR_GOOD = f"No {BIN_NAME} on that drive, so these are deleted for good:"
 DELETE_CLOUD = ("Backups in {clouds} are deleted on your other PCs too (the cloud keeps "
                 "them in its own bin for a while).")
-DELETE_SAFETY_LINE = "Safety copies let you undo a restore or an Add from file."
+DELETE_SAFETY_LINE = "Safety copies let you undo a restore or an install from a file."
 # Why a ticked backup was left (keys = am\backup_delete.py result kinds).
 DELETE_REASONS = {
     "in_use": "in use: close anything that has it open, then try again",
@@ -711,8 +776,9 @@ def restored_message(result):
     if n:
         text += f" {n} other addon{'s' if n != 1 else ''} added to Other addons."
     if result.safety:
-        text += f" Safety copy: {result.safety}"
-    return text + " Restart WoW to use them."
+        text += f" Safety copy saved as {result.safety}."
+    # A restore needs WoW closed (it checks first), so WoW is started, not reloaded.
+    return text + " Start WoW to use them."
 
 
 def backup_message(exc):
@@ -729,6 +795,9 @@ def backup_message(exc):
                 "Nothing was changed." + DETAILS)
     if kind == "cancelled":
         return BACKUP_STOPPED
+    if kind == "changed":
+        return ("Files changed while they were saved (WoW was writing them), so nothing was "
+                "saved. Type /reload in WoW, then try again.")
     if kind == "nothing":
         return "There was nothing to back up or restore."
     if kind == "inside_game":
@@ -737,7 +806,7 @@ def backup_message(exc):
         return NO_ACCOUNT
     if kind == "same_account":
         return ("Two accounts from the backup would go to the same account here. Pick a "
-                "different account for each, or (skip) one of them.")
+                "different account for each, or choose (skip) for one of them.")
     if kind == "bad_folder":
         return FOLDER_GONE
     if kind == "locked":
@@ -746,6 +815,9 @@ def backup_message(exc):
     if kind == "permission":
         return (f"{SYSTEM} won't let me write there, so nothing was changed. Pick another "
                 "folder or close WoW and try again.")
+    if kind == "read_denied":   # reading the game's own files (backup or safety copy)
+        return (f"{SYSTEM} won't let me read some files in the WoW Forever folder, so "
+                "nothing was changed. Close WoW and try again." + DETAILS)
     if kind == "disk_full":
         need = getattr(exc, "need", None)
         if need:

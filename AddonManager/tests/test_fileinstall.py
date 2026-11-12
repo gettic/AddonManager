@@ -455,7 +455,7 @@ class ReplaceTests(Base):
         self.assertEqual(tracked["T"]["version"], "1.0")
         plan = self.scan(self.zip(af.addon_files("T", "1.2"), "t2.zip"), tracked=tracked)
         self.assertEqual(plan.addons[0].state, fileinstall.UPDATE)
-        self.assertIn("Update v1.0 -> v1.2", fileinstall_ui.note_for(plan.addons[0]))
+        self.assertIn("Update v1.0 to v1.2", fileinstall_ui.note_for(plan.addons[0]))
         plan = self.scan(self.zip(af.addon_files("T", "1.0"), "t3.zip"), tracked=tracked)
         self.assertEqual(plan.addons[0].state, fileinstall.SAME)
 

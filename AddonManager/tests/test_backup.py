@@ -2,6 +2,7 @@
 Documents folder and fake cloud folders in temp folders only: the real WoW folder,
 WTF, Documents and %APPDATA% are never used."""
 
+import contextlib
 import datetime
 import gc
 import json
@@ -120,7 +121,7 @@ class BackupCoreTests(unittest.TestCase):
         path, size, counts = backup.make(self.addons, self.out, now=NOW)
         self.assertEqual(os.path.basename(path), "AddonManager backup 2026-11-10.zip")
         self.assertEqual(size, os.path.getsize(path))
-        self.assertEqual(counts, {"addons": 2, "settings_files": 6})
+        self.assertEqual(counts, {"addons": 2, "settings_files": 6, "skipped": []})
         got = names(path)
         self.assertIn("backup.json", got)
         self.assertIn("AddOns/TaxiTime/TaxiTime_Forever.toc", got)
@@ -313,7 +314,7 @@ class BackupCoreTests(unittest.TestCase):
         self.assertEqual(errors.received_addons(six, []),
                          "Not on the guild list: A, B, C, D and 2 more.")
         self.assertEqual(errors.restore_others(["X"]),
-                         "With Addons ticked, these are listed under Other addons too: X.")
+                         "With Addons ticked, these come back too and show under Other addons: X.")
 
     def test_backup_json_size_cap(self):
         """A huge backup.json is refused before it is read into memory."""
@@ -927,6 +928,270 @@ class SpaceTests(unittest.TestCase):
         self.assertEqual(cm.exception.kind, "unsafe")
 
 
+def busy_reader(target, times=99, error=None):
+    """backup._read_all that acts like WoW writing `target` during the first `times`
+    reads: error None = the file grows while read (else that OSError is raised)."""
+    real = backup._read_all
+    calls = {"n": 0}
+
+    def read_all(src, cancel, path, on_read):
+        hit = os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(target))
+        if hit and calls["n"] < times and error is not None:
+            calls["n"] += 1
+            raise error
+        data = real(src, cancel, path, on_read)
+        if hit and calls["n"] < times:
+            calls["n"] += 1
+            with open(src, "a", encoding="utf-8", newline="") as f:
+                f.write("-- written by WoW meanwhile\n")
+        return data
+    read_all.calls = calls
+    return read_all
+
+
+@contextlib.contextmanager
+def no_share_handle(path):
+    """Windows: hold path open for read + write with no sharing at all (CreateFileW share
+    0), like a program that locks the file; closed again on exit."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.HANDLE)
+    h = kernel32.CreateFileW(path, 0x80000000 | 0x40000000, 0, None, 3, 0, None)
+    if h is None or h == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), "could not hold the file", path)
+    try:
+        yield
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def sharing_violation():
+    e = PermissionError(13, "The process cannot access the file (test)")
+    e.winerror = 32
+    return e
+
+
+class BusyFileTests(unittest.TestCase):
+    """WoW open while a backup is made: a file it writes right then (changing, gone for a
+    moment, locked) is read once more, then left out with a note; access denied still
+    fails; a safety copy never leaves a file out. Fake WoW folder only."""
+
+    def setUp(self):
+        self.base = fixtures.temp_dir("backup_wow_open_")
+        self.root, self.addons, self.client = make_pc(os.path.join(self.base, "pc"))
+        self.out = os.path.join(self.base, "out")
+        self.sv = os.path.join(self.client, "WTF", "Account", "ACCOUNT1", "SavedVariables",
+                               "TaxiTime.lua")
+        self.arc = "WTF/Account/ACCOUNT1/SavedVariables/TaxiTime.lua"
+        p = mock.patch.object(backup, "STABLE_WAIT", 0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def tearDown(self):
+        fixtures.remove(self.base)
+
+    def make(self, reader):
+        with mock.patch.object(backup, "_read_all", reader):
+            return backup.make(self.addons, self.out, now=NOW)
+
+    def info(self, path):
+        with zipfile.ZipFile(path) as z:
+            return json.loads(z.read("backup.json"))
+
+    def test_changed_once_is_read_again(self):
+        path, _size, counts = self.make(busy_reader(self.sv, times=1))
+        self.assertEqual(counts["skipped"], [])
+        with zipfile.ZipFile(path) as z:
+            self.assertEqual(z.read(self.arc).decode().replace("\r\n", "\n"),
+                             "TaxiTimeDB = 'old'\n-- written by WoW meanwhile\n")
+        self.assertNotIn("skipped", self.info(path))
+
+    def test_keeps_changing_is_left_out(self):
+        path, _size, counts = self.make(busy_reader(self.sv))
+        self.assertEqual(counts["skipped"], [self.arc])
+        got = names(path)
+        self.assertNotIn(self.arc, got)
+        self.assertIn("WTF/Account/ACCOUNT1/bindings-cache.wtf", got)
+        self.assertIn("AddOns/TaxiTime/TaxiTime_Forever.toc", got)
+        self.assertEqual(self.info(path)["skipped"], [self.arc])
+        backup.read(path)                              # still a good backup
+        self.assertEqual(os.listdir(self.out), [os.path.basename(path)])   # no .part
+
+    def test_gone_for_a_moment(self):
+        gone = FileNotFoundError(2, "No such file (test)")
+        _p, _s, counts = self.make(busy_reader(self.sv, times=1, error=gone))
+        self.assertEqual(counts["skipped"], [])
+        _p, _s, counts = self.make(busy_reader(self.sv, error=gone))
+        self.assertEqual(counts["skipped"], [self.arc])
+
+    def test_locked_is_left_out(self):
+        _p, _s, counts = self.make(busy_reader(self.sv, error=sharing_violation()))
+        self.assertEqual(counts["skipped"], [self.arc])
+
+    @unittest.skipUnless(os.name == "nt", "a real byte lock (Windows)")
+    def test_really_locked_file_windows(self):
+        import msvcrt
+        size = os.path.getsize(self.sv)
+        with open(self.sv, "r+b") as f:
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, size)
+            try:
+                path, _s, counts = backup.make(self.addons, self.out, now=NOW)
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, size)
+        self.assertEqual(counts["skipped"], [self.arc])
+        self.assertNotIn(self.arc, names(path))
+
+    def test_access_denied_still_fails(self):
+        denied = PermissionError(13, "Access is denied (test)")
+        with self.assertRaises(BackupError) as c:
+            self.make(busy_reader(self.sv, error=denied))
+        self.assertEqual(c.exception.kind, "read_denied")
+        self.assertFalse(os.path.isdir(self.out) and os.listdir(self.out))
+        text = errors.backup_message(c.exception)
+        self.assertIn("read some files in the WoW Forever folder", text)
+        self.assertNotIn("Pick another folder", text)   # another folder wouldn't help
+
+    @unittest.skipUnless(os.name == "nt", "a real no-share handle (Windows)")
+    def test_really_held_open_file_windows(self):
+        """Another program holds the file open without sharing (CreateFileW share 0):
+        Python's open() says errno 13 like access denied; it still counts as busy, so
+        the backup leaves it out with the note (and a safety copy says "in use")."""
+        with no_share_handle(self.sv):
+            path, _s, counts = backup.make(self.addons, self.out, now=NOW)
+            self.assertEqual(counts["skipped"], [self.arc])
+            self.assertNotIn(self.arc, names(path))
+            self.assertIn("TaxiTime.lua", errors.backup_saved("x.zip", 1, True, counts["skipped"]))
+            dest = os.path.join(self.base, "safety.zip")
+            with self.assertRaises(BackupError) as c:
+                backup._write_zip(dest, [(self.arc, self.sv)], "safety", [backup.SETTINGS])
+            self.assertEqual(c.exception.kind, "locked")
+            text = errors.backup_message(c.exception)
+            self.assertIn("in use", text)
+            self.assertNotIn("Pick another folder", text)
+            self.assertFalse(os.path.exists(dest) or os.path.exists(dest + ".part"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows open() errors")
+    def test_open_access_denied_vs_sharing_windows(self):
+        """open() errno 13 without winerror: a second open with full sharing tells a
+        sharing violation (busy) from a real access denied (read_denied)."""
+        def bad_open(*a, **k):
+            raise PermissionError(13, "Permission denied (test)")
+        for code, kind in ((5, "read_denied"), (32, None), (0, None)):
+            out = os.path.join(self.base, f"out{code}")
+            with mock.patch.object(backup, "open", bad_open, create=True), \
+                    mock.patch.object(backup, "_windows_open_error", lambda p, c=code: c):
+                if kind:
+                    with self.assertRaises(BackupError) as c:
+                        backup.make(self.addons, out, now=NOW)
+                    self.assertEqual(c.exception.kind, kind)
+                else:   # every file busy: nothing left to save
+                    with self.assertRaises(BackupError) as c:
+                        backup.make(self.addons, out, now=NOW)
+                    self.assertEqual(c.exception.kind, "changed")
+
+    def test_busy_toc_leaves_the_whole_addon_out(self):
+        """A .toc that stays busy: the whole addon is left out (a restore would skip an
+        addon without its .toc), named in the note; the other addons are saved."""
+        toc = os.path.join(self.addons, "TaxiTime", "TaxiTime_Forever.toc")
+        with mock.patch.object(backup, "_read_all", busy_reader(toc)):
+            path, _s, counts = backup.make(self.addons, self.out, now=NOW, others={
+                "TaxiTime": {"file": "a.zip"}, "OtherAddon": {"file": "b.zip"}})
+        got = names(path)
+        self.assertFalse([n for n in got if n.startswith("AddOns/TaxiTime/")], got)
+        self.assertIn("AddOns/OtherAddon/OtherAddon.toc", got)
+        self.assertIn(self.arc, got)
+        self.assertEqual(counts["skipped"], ["AddOns/TaxiTime"])
+        self.assertEqual(counts["addons"], 1)
+        info = self.info(path)
+        self.assertEqual(info["skipped"], ["AddOns/TaxiTime"])
+        self.assertNotIn("TaxiTime", info.get("other_addons", {}))
+        self.assertEqual(backup.read(path).addons, ["OtherAddon"])
+        self.assertEqual(errors.backup_busy(counts["skipped"]),
+                         "Busy and left out: the TaxiTime addon.")
+
+    def test_toc_busy_once_is_kept(self):
+        toc = os.path.join(self.addons, "TaxiTime", "TaxiTime_Forever.toc")
+        with mock.patch.object(backup, "_read_all", busy_reader(toc, times=1)):
+            path, _s, counts = backup.make(self.addons, self.out, now=NOW)
+        self.assertEqual(counts["skipped"], [])
+        self.assertIn("AddOns/TaxiTime/TaxiTime_Forever.toc", names(path))
+
+    def test_every_file_busy(self):
+        def reader(src, cancel, path, on_read):
+            raise sharing_violation()
+        with self.assertRaises(BackupError) as c:
+            self.make(reader)
+        self.assertEqual(c.exception.kind, "changed")
+        self.assertEqual(os.listdir(self.out), [])
+        self.assertIn("/reload", errors.backup_message(c.exception))
+
+    def test_big_file_changing_stops_the_backup(self):
+        """Over STABLE_MAX a file is streamed; a change meanwhile can't be taken back, so
+        the backup stops (no .part left)."""
+        real = backup._zip_info
+
+        def zip_info(zf, arc, st):
+            if arc == self.arc:
+                with open(self.sv, "a", encoding="utf-8", newline="") as f:
+                    f.write("-- written by WoW meanwhile\n")
+            return real(zf, arc, st)
+        with mock.patch.object(backup, "STABLE_MAX", 4), \
+                mock.patch.object(backup, "_zip_info", zip_info):
+            with self.assertRaises(BackupError) as c:
+                backup.make(self.addons, self.out, now=NOW)
+        self.assertEqual(c.exception.kind, "changed")
+        self.assertEqual(os.listdir(self.out), [])
+
+    def test_big_files_still_streamed_whole(self):
+        with mock.patch.object(backup, "STABLE_MAX", 4):
+            path = backup.make(self.addons, self.out, now=NOW)[0]
+        with zipfile.ZipFile(path) as z:
+            self.assertEqual(z.read(self.arc).decode().replace("\r\n", "\n"),
+                             "TaxiTimeDB = 'old'\n")
+        other = backup.make(self.addons, os.path.join(self.base, "out2"), now=NOW)[0]
+        self.assertEqual(names(path), names(other))
+
+    def test_safety_copy_never_leaves_a_file_out(self):
+        files = [(self.arc, self.sv)]
+        dest = os.path.join(self.base, "safety.zip")
+        with mock.patch.object(backup, "_read_all", busy_reader(self.sv)):
+            with self.assertRaises(BackupError) as c:
+                backup._write_zip(dest, files, "safety", [backup.SETTINGS])
+        self.assertEqual(c.exception.kind, "changed")
+        with mock.patch.object(backup, "_read_all",
+                               busy_reader(self.sv, error=sharing_violation())):
+            with self.assertRaises(BackupError) as c:
+                backup._write_zip(dest, files, "safety", [backup.SETTINGS])
+        self.assertEqual(c.exception.kind, "locked")
+        self.assertFalse(os.path.exists(dest) or os.path.exists(dest + ".part"))
+
+    def test_cancel_during_a_read(self):
+        cancel = threading.Event()
+        real = backup._read_all
+
+        def reader(src, c, path, on_read):
+            cancel.set()
+            return real(src, c, path, on_read)
+        with mock.patch.object(backup, "_read_all", reader):
+            with self.assertRaises(BackupError) as c:
+                backup.make(self.addons, self.out, now=NOW, cancel=cancel)
+        self.assertEqual(c.exception.kind, "cancelled")
+        self.assertEqual(os.listdir(self.out), [])
+
+    def test_busy_text(self):
+        self.assertEqual(errors.backup_busy(["WTF/Account/A/SavedVariables/X.lua"]),
+                         "1 settings file was busy and left out: X.lua.")
+        self.assertEqual(errors.backup_busy(["WTF/a/X.lua", "AddOns/Y/Y.lua"]),
+                         "2 files were busy and left out: X.lua and Y.lua.")
+        self.assertEqual(errors.backup_busy([f"WTF/a/{i}.lua" for i in range(5)]),
+                         "5 settings files were busy and left out: 0.lua, 1.lua and 3 more.")
+
+
 class WindowBackupTests(unittest.TestCase):
     """The hidden window: the Backup window, Make a backup and Restore windows."""
 
@@ -1477,7 +1742,7 @@ class WindowBackupTests(unittest.TestCase):
             time.sleep(0.02)
         ask = dlg.spoken_ask
         texts = " ".join(self.texts(ask.win))
-        for want in ("Spoken (AI voice-over addon)", "Spoken, SpokenQuests",
+        for want in ("Spoken, the AI voice-over addon", "Spoken, SpokenQuests",
                      errors.SPOKEN_SKIP, errors.SPOKEN_KEEP, "settings are still saved"):
             self.assertIn(want, texts)
         self.assertFalse(dlg.running)
@@ -1506,7 +1771,7 @@ class WindowBackupTests(unittest.TestCase):
         self.pump(app)
         self.assertIsNotNone(again.spoken_check)
         self.assertTrue(again.spoken_var.get())
-        self.assertIn("Spoken (AI voice-over addon)", again.spoken_label.cget("text"))
+        self.assertIn("Spoken, the AI voice-over addon", again.spoken_label.cget("text"))
         # One tick whose text wraps (lines up with the ticks above).
         self.assertIs(again.spoken_label, again.spoken_check)
         style = again.spoken_check.cget("style")
@@ -1526,15 +1791,62 @@ class WindowBackupTests(unittest.TestCase):
                       self.texts(rest.win))
         rest.close()
 
-    def test_game_running_blocks(self):
-        app = self.make_app()
+    def pump_until(self, app, done, timeout=20):
+        end = time.time() + timeout
+        while not done() and time.time() < end:
+            self.root.update()
+            time.sleep(0.02)
+        self.assertTrue(done(), "timed out")
+
+    def test_game_running_backup_made_with_the_strip(self):
+        """WoW open: the backup is made anyway; the WoW-open strip says the settings are from
+        the last /reload or logout (shown as soon as the window opens), and so does the
+        saved line. Restore stays blocked (test_restore_refuses_bad_file_and_game)."""
         self.game = True
+        app = self.make_app()
         dlg = app.open_backup(show=False)
-        dlg.start()
+        self.pump_until(app, lambda: dlg.game_open)
+        self.assertEqual(dlg.game_label.winfo_manager(), "pack")
+        self.assertEqual(str(dlg.game_label.cget("text")), errors.BACKUP_GAME_OPEN)
+        self.assertTrue(dlg.start())
         self.pump(app)
-        self.assertEqual(dlg.status_var.get(), errors.GAME_OPEN)
-        self.assertFalse(os.path.exists(backup.default_folder())
-                         and os.listdir(backup.default_folder()))
+        self.assertTrue(dlg.path and os.path.isfile(dlg.path))
+        self.assertEqual(dlg.status_var.get(), errors.backup_saved(
+            os.path.basename(dlg.path), os.path.getsize(dlg.path), True))
+        self.assertIn(errors.BACKUP_GAME_SAVED, dlg.status_var.get())
+        self.assertIn("WTF/Account/ACCOUNT1/SavedVariables/TaxiTime.lua", names(dlg.path))
+
+    def test_game_started_after_the_window_opened(self):
+        app = self.make_app()
+        dlg = app.open_backup(show=False)
+        self.pump_until(app, lambda: dlg.spoken is not None)
+        self.assertFalse(dlg.game_label.winfo_manager())       # WoW closed: no strip
+        self.assertTrue(dlg.start())
+        self.pump(app)
+        self.assertNotIn(errors.BACKUP_GAME_SAVED, dlg.status_var.get())
+        self.game = True                                        # WoW started meanwhile
+        self.assertTrue(dlg.start())
+        self.pump(app)
+        self.assertEqual(dlg.game_label.winfo_manager(), "pack")
+        self.assertIn(errors.BACKUP_GAME_SAVED, dlg.status_var.get())
+
+    def test_busy_file_left_out_says_so(self):
+        """A settings file WoW is writing right then: left out, the saved line names it."""
+        self.game = True
+        target = os.path.join(self.client, "WTF", "Account", "ACCOUNT1", "SavedVariables",
+                              "TaxiTime.lua")
+        app = self.make_app()
+        dlg = app.open_backup(show=False)
+        with mock.patch.object(backup, "STABLE_WAIT", 0), \
+                mock.patch.object(backup, "_read_all", busy_reader(target)):
+            self.assertTrue(dlg.start())
+            self.pump(app)
+        self.assertTrue(dlg.path and os.path.isfile(dlg.path))
+        arc = "WTF/Account/ACCOUNT1/SavedVariables/TaxiTime.lua"
+        self.assertNotIn(arc, names(dlg.path))
+        self.assertIn(errors.backup_busy([arc]), dlg.status_var.get())
+        self.assertIn("1 settings file was busy and left out: TaxiTime.lua.",
+                      dlg.status_var.get())
 
     def test_restore_window(self):
         path = backup.make(self.addons, os.path.join(self.work, "b"), now=NOW)[0]
@@ -1564,7 +1876,7 @@ class WindowBackupTests(unittest.TestCase):
         self.assertEqual(read_text(os.path.join(self.client, "WTF", "Account", "ACCOUNT2",
                                                 "SavedVariables", "TaxiTime.lua")),
                          "TaxiTimeDB = 'old'\n")
-        self.assertTrue(dlg.status_var.get().startswith("Restored. Safety copy: "))
+        self.assertTrue(dlg.status_var.get().startswith("Restored. Safety copy saved as "))
         self.assertTrue(os.path.isfile(dlg.result.safety))
         self.assertTrue(app.message_var.get().startswith("Restored."))
         self.assertFalse(app.busy)

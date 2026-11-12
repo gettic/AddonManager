@@ -196,7 +196,7 @@ class RemoveTests(unittest.TestCase):
         self.assertEqual(cm.exception.kind, "partly")
         text = errors.remove_message(cm.exception, "Taxi Time")
         self.assertIn("only partly deleted", text)
-        self.assertNotIn("nothing was removed", text)
+        self.assertNotIn("nothing was uninstalled", text)
         self.assertFalse(os.path.exists(self.taxi()))   # not put back half-deleted
         self.assertEqual(os.listdir(self.addons).count(installer.DELETING_PREFIX + "TaxiTime"), 1)
         self.assertEqual(installer.recover(self.addons),
@@ -437,9 +437,9 @@ class WindowRemoveTests(unittest.TestCase):
         app.remove_widgets["TaxiTime"].invoke()
         self.pump(app)
         self.assertEqual(len(self.asked), 1)
-        self.assertEqual(self.asked[0][0], "Remove Taxi Time?")
+        self.assertEqual(self.asked[0][0], "Uninstall Taxi Time?")
         self.assertIn(errors.BIN_NAME, self.asked[0][1])
-        self.assertEqual(self.asked[0][2], "Remove")
+        self.assertEqual(self.asked[0][2], "Uninstall")
         self.assertTrue(os.path.isdir(os.path.join(self.addons, "TaxiTime")))
         self.assertEqual(self.trash.sent, [])
 
@@ -449,9 +449,9 @@ class WindowRemoveTests(unittest.TestCase):
         self.pump(app)
         self.assertEqual(self.trash.sent, ["TaxiTime"])
         self.assertFalse(os.path.exists(os.path.join(self.addons, "TaxiTime")))
-        self.assertEqual(self.status(app, "TaxiTime"), ("Removed", "Install"))
+        self.assertEqual(self.status(app, "TaxiTime"), ("Uninstalled", "Install"))
         self.assertIsNone(app.remove_widgets["TaxiTime"])
-        self.assertIn("Taxi Time was removed", app.message_var.get())
+        self.assertIn("Taxi Time was uninstalled", app.message_var.get())
         self.assertEqual(config.load_settings().get("removed_addons"), ["TaxiTime"])
         self.assertTrue(os.path.isdir(os.path.join(self.addons, "OtherAddon")))
         # Install all (a removed addon never counts): only GuildHub, TaxiTime stays removed.
@@ -466,7 +466,7 @@ class WindowRemoveTests(unittest.TestCase):
         self.root = tk.Tk()
         self.root.withdraw()
         app = self.make_app()
-        self.assertEqual(self.status(app, "TaxiTime"), ("Removed", "Install"))
+        self.assertEqual(self.status(app, "TaxiTime"), ("Uninstalled", "Install"))
         # Its own Install button brings it back and clears the mark.
         app.row_widgets["TaxiTime"][1].invoke()
         self.pump(app)
@@ -490,7 +490,7 @@ class WindowRemoveTests(unittest.TestCase):
             app.remove_widgets["TaxiTime"].invoke()
             self.pump(app)
         self.assertTrue(os.path.isdir(os.path.join(self.addons, "TaxiTime")))
-        self.assertIn("nothing was removed", app.message_var.get())
+        self.assertIn("nothing was uninstalled", app.message_var.get())
         self.assertNotIn("removed_addons", config.load_settings())
         self.assertEqual(self.status(app, "TaxiTime"), ("Up to date", "Uninstall"))
 
@@ -513,7 +513,7 @@ class WindowRemoveTests(unittest.TestCase):
             app._row_menu_popup(mock.Mock(x_root=0, y_root=0), 0)
             idx = [r.folder for r in app.rows].index("TaxiTime")
             app._row_menu_popup(mock.Mock(x_root=0, y_root=0), idx)
-            self.assertEqual(app.row_menu.entrycget(0, "label"), "Remove Taxi Time...")
+            self.assertEqual(app.row_menu.entrycget(0, "label"), "Uninstall Taxi Time...")
             self.assertEqual(app.row_menu.entrycget(0, "state"), "normal")
             app.row_menu.invoke(0)
         self.pump(app)

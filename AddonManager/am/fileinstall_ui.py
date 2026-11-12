@@ -27,17 +27,17 @@ ADD_WIDTH = 10   # characters: the same size as the list's Install/Update/Uninst
 # The button sits in the list box's footer (under the scrolling rows, always in view),
 # lined up under the row buttons, with ADD_HINT at the left of the footer.
 ADD_HINT = "From a .zip, .rar or .7z file:"
-ADD_HINT_EMPTY = "Drop a file here or use Add file:"   # no other addons yet (drag and drop)
+ADD_HINT_EMPTY = "Drop a .zip, .rar or .7z here, or click:"   # no other addons yet (drop works)
 ADD_TIP = ("Install an addon from a .zip, .rar or .7z file (from CurseForge, Wago or a "
            "friend). Shortcut: Ctrl+O.")
 ADD_KEYS = ("<Control-o>", "<Control-O>")
 FOLDER_TIP = "Right-click: install from an unpacked folder. You can also drop a file on the window."
-FILE_MENU = "Install from file..."
-FOLDER_MENU = "Install from folder..."
+FILE_MENU = "Install from a file..."
+FOLDER_MENU = "Install from a folder..."
 FOLDER_DIALOG_TITLE = "Choose the unpacked addon folder"
 STATUS_NOT_FOREVER = "Not for WoW Forever"
 UNINSTALL = "Uninstall"
-TITLE = "Install from file"
+TITLE = "Install from a file"
 FILE_TYPES = [("Addon files", "*.zip *.rar *.7z"), ("All files", "*.*")]
 READING = "Reading {name}..."
 INSTALLING = "Installing..."
@@ -47,21 +47,24 @@ NOTE_SAME = "Same version (installs again)"
 NOTE_HAND = "Replaces a copy that was put there by hand"
 NOTE_GUILD = "Guild addon: kept. It comes from the guild list."
 NOTE_NOT_FOREVER = "Not made for WoW Forever: WoW won't load it"
-NOTE_OTHER_VERSION = "Made for another WoW version: WoW may call it out of date"
+NOTE_OTHER_VERSION = ("Made for another WoW version: WoW may list it as out of date (tick "
+                      "Load out of date AddOns in the game)")
 SKIP_BLIZZARD = "{name}: a game folder, never installed"
 SKIP_BAD_NAME = "{name}: a name WoW can't use, not installed"
 SAFETY_NOTE = ("Addons that are already there are saved first in your backups folder "
-               "(Backup > Restore can put them back).")
+               "(to put them back: Backup > Restore a backup..., tick Show safety copies).")
+SYSTEM = "Windows" if sys.platform == "win32" else "Your system"
+RELOAD = "Type /reload in WoW (or restart it)"   # = errors.RELOAD (one wording everywhere)
 TRUST_NOTE = "Only install addons from people you trust."
 NOTHING_CHOSEN = "Tick at least one addon."
-NOTHING_TO_INSTALL = "There is nothing in this file the Addon Manager may install."
+NOTHING_TO_INSTALL = "There's nothing in this file I can install."
 INSTALL = "Install"
 CANCEL = "Cancel"
 CLOSE = "Close"
 DROP_HERE = "Drop a .zip, .rar or .7z file here to install it."
 ONE_FILE = "Drop one file at a time."
 OTHER_ADDONS = "Other addons"
-OTHER_NOTE = "installed from a file: no update check"
+OTHER_NOTE = "(installed from a file, not checked for updates)"
 FROM_FILE = "From file"
 
 
@@ -95,7 +98,7 @@ def note_for(a):
         return NOTE_GUILD
     if a.state == fileinstall.UPDATE:
         parts = [f"Update {versions.display(a.installed_version) if a.installed_version else '?'}"
-                 f" -> {versions.display(a.version) if a.version else '?'}"]
+                 f" to {versions.display(a.version) if a.version else '?'}"]
     else:
         parts = [{fileinstall.NEW: NOTE_NEW, fileinstall.SAME: NOTE_SAME,
                   fileinstall.HAND: NOTE_HAND}[a.state]]
@@ -137,10 +140,10 @@ def message(exc, name=""):
                    "Nothing was installed.",
         "no_tar": ("This PC can't open .rar or .7z files (that needs Windows 11). Unpack it "
                    "first (with 7-Zip, for example), then right-click Add file... > "
-                   "Install from folder..., or ask for a .zip."
+                   "Install from a folder..., or ask for a .zip."
                    if sys.platform == "win32" else
                    "This system can't open .rar or .7z files (bsdtar is missing). Unpack it "
-                   "first, then right-click Add file... > Install from folder..., or ask for "
+                   "first, then right-click Add file... > Install from a folder..., or ask for "
                    "a .zip."),
         "timeout": "Reading this file took too long. Nothing was installed.",
         "empty": "No WoW addon was found in this file.",
@@ -150,12 +153,12 @@ def message(exc, name=""):
         "not_allowed": f"{detail} can't be installed from a file. Nothing was installed.",
         "safety": "The safety copy of the addons already there couldn't be saved, so "
                   "nothing was installed. Check your backups folder in the Backup window.",
-        "locked": "A file is in use (is WoW open?). Close WoW and try again.",
-        "permission": "Windows didn't allow the change. Nothing was changed for that addon."
-                      if sys.platform == "win32" else
-                      "No permission to change the AddOns folder.",
-        "disk_full": "The disk is full.",
-        "link": "The addon's folder is a link; the Addon Manager leaves it alone.",
+        "locked": "A file is in use. Close WoW and try again.",
+        "permission": SYSTEM + " didn't allow the change, so nothing was changed for that "
+                      "addon.",
+        "disk_full": "The disk is full. Free some space and try again.",
+        "link": ("The addon's folder is a link to somewhere else (a developer setup), so I "
+                 "left it alone."),
     }
     return texts.get(kind, "Something went wrong reading this file. Nothing was installed.")
 
@@ -164,7 +167,8 @@ def done_message(result, source_name):
     """The line for the main window after an install."""
     n = len(result.installed)
     word = "addon" if n == 1 else "addons"
-    text = f"Installed {n} {word} from {source_name}. Type /reload in WoW (or restart it)."
+    text = (f"Installed {n} {word} from {source_name}. {RELOAD} to use "
+            f"{'it' if n == 1 else 'them'}.")
     if result.failed:
         folder, exc = result.failed
         stop = f"{folder} wasn't installed: {message(exc)}"

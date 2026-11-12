@@ -444,9 +444,10 @@ def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic,
          on_later=None):
     """Send a backup file. on_code(code, seconds) is called once the code is ready (show
     it); progress(done, total) while sending. Returns the size sent. Raises ShareError.
-    later = {"hours", "api", "allow_local"} when the player ticked send later: if nobody
-    joined after share_later.LATER_AFTER seconds, it goes to file.kiwi instead (a file
-    over MAX_SIZE goes there at once, before the code is shown);
+    later = {"hours", "api", "allow_local", "now"} when the player ticked send later: if
+    nobody joined after share_later.LATER_AFTER seconds, it goes to file.kiwi instead (a file
+    over MAX_SIZE, or any file with "now", goes there at once, before the code is shown;
+    on_later("uploading", "big"/"now"));
     on_later("uploading", None) / on_later("ready", seconds the code works); while
     file.kiwi is down on_later("kiwi_down", seconds it keeps trying), then "uploading" again."""
     from spake2 import SPAKE2_A
@@ -455,6 +456,8 @@ def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic,
     except OSError as e:
         raise ShareError("not_backup", type(e).__name__) from e
     big = size_check(size, bool(later))
+    # "now" (the player's Upload right away tick): no 5-min wait, the same path as a big file.
+    straight = big or bool(later and later.get("now"))
     try:
         info = backup.read(path, received=True)   # the same check the other PC makes
     except backup.BackupError as e:   # detail CHECK_PREFIX + the real reason (unsafe, ...)
@@ -466,10 +469,11 @@ def send(path, relay, on_code, progress=None, cancel=None, clock=time.monotonic,
     chunks = max(1, math.ceil(size / CHUNK))
     channel, ttl = relay.open()
     words = new_words()
-    if big:   # too big for the relay: send later at once (nobody can join live first)
+    if straight:   # too big for the relay, or ticked: send later at once (no live join first)
         try:
             _send_later(path, relay, channel, words, size, sha, later, progress, cancel, clock,
-                        on_later, lambda: on_code(format_code(channel, words), ttl))
+                        on_later, lambda: on_code(format_code(channel, words), ttl),
+                        reason="big" if big else "now")
             return size
         except BaseException as e:
             _close_for(relay, e)
@@ -553,10 +557,11 @@ def _later_error(e):
 
 
 def _send_later(path, relay, channel, words, size, sha, later, progress, cancel, clock,
-                on_later, show_code=None):
-    """Nobody came (or the file is too big for the relay): upload to file.kiwi and leave
-    the sealed record for the code. False if the other PC joined at the last moment (the
-    live send goes on). show_code() once the mailbox is a send-later one."""
+                on_later, show_code=None, reason=None):
+    """Nobody came (or the file is too big for the relay, or the player ticked Upload right
+    away): upload to file.kiwi and leave the sealed record for the code. False if the other
+    PC joined at the last moment (the live send goes on). show_code() once the mailbox is a
+    send-later one. reason ("big" / "now" / None = nobody came) goes to on_later."""
     salt = os.urandom(16)
     rkey, verifier = share_later.record_keys(_password(channel, words), salt)
     if not relay.start_later(int(later["hours"]), salt.hex(), verifier):
@@ -566,7 +571,7 @@ def _send_later(path, relay, channel, words, size, sha, later, progress, cancel,
     if show_code:
         show_code()
     if on_later:
-        on_later("uploading", "big" if show_code else None)
+        on_later("uploading", reason)
     file_key, kiwi_key, name = os.urandom(32), os.urandom(16), share_later.random_name()
     blob = share_later.Blob(path, file_key, size, sha)
     stop = threading.Event()
