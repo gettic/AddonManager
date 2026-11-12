@@ -153,8 +153,11 @@ class BackupWindow:
         for col, (text, command, accent) in enumerate((left, right)):
             grid.columnconfigure(col, weight=1, uniform="pair")
             # The small windows open shown only when this one is (tests: never shown).
+            # Linux: the slim padding of the main window's bottom row (wider fonts; keeps
+            # the window inside 420 px with "Send to another PC...").
+            slim = "Slim." if LINUX else ""
             b = ttk.Button(grid, text=text, command=lambda c=command: c(show=self.shown),
-                           style="Accent.TButton" if accent else "TButton")
+                           style=slim + ("Accent.TButton" if accent else "TButton"))
             b.grid(row=0, column=col, sticky="ew",
                    padx=(0, theme.px(3)) if col == 0 else (theme.px(3), 0))
             out.append(b)

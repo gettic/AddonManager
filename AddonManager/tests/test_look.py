@@ -145,7 +145,7 @@ class LookWindowTests(unittest.TestCase):
         many = os.path.join(cls.base, "many")
         os.makedirs(many)
         entries = []
-        for i in range(15):
+        for i in range(25):
             folder = f"Addon{i:02d}"
             z = fixtures.make_zip(os.path.join(many, f"{folder}-1.0.{i}.zip"), folder, f"1.0.{i}")
             entries.append({"folder": folder, "name": f"Addon {i:02d}", "description": "x",
@@ -401,9 +401,14 @@ class LookWindowTests(unittest.TestCase):
         few.closed = True
         for child in self.root.winfo_children():
             child.destroy()
-        # 15 addons in the (withdrawn) start-size window: the bar shows, the buttons
-        # keep their place.
+        # 25 addons on a Steam Deck sized screen (800 px tall: the window may grow to
+        # 720 px, not more): the bar shows, the buttons keep their place. (Without the
+        # fixed screen, a big test X server lets the window grow until everything fits.)
+        screen = mock.patch.object(self.root, "winfo_screenheight", lambda: 800)
+        screen.start()
+        self.addCleanup(screen.stop)
         app = self.make_app(os.path.join(self.many, "manifest.json"))
+        self.assertLessEqual(app._size[1], 800 - ui.SCREEN_MARGIN)
         root = self.root
         app._list_resized()
         root.update_idletasks()

@@ -10,7 +10,7 @@ from tkinter import ttk
 from unittest import mock
 
 import tests  # noqa: F401  (temp home)
-from am import config, errors, fileinstall_ui, github, touch, ui
+from am import config, errors, fileinstall_ui, github, theme, touch, ui
 from tests import fixtures
 
 
@@ -254,7 +254,10 @@ class WindowExtrasTests(unittest.TestCase):
             app._need_h = 0
             app._fit_height()
             app._fit_height()   # same need: nothing again
-        self.assertEqual(sizes, [f"{ui.START_WIDTH}x{800 - ui.SCREEN_MARGIN}"])
+        # the start width is scaled with the display (Linux X servers often report a DPI
+        # a bit over 96, so 680 becomes e.g. 709 there)
+        self.assertEqual(sizes, [f"{app._size[0]}x{800 - ui.SCREEN_MARGIN}"])
+        self.assertEqual(app._size[0], theme.px(ui.START_WIDTH))
         sizes.clear()
         with mock.patch.object(self.root, "winfo_reqheight", lambda: 300), \
                 mock.patch.object(self.root, "winfo_ismapped", lambda: 0), \
