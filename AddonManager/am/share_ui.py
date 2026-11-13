@@ -20,12 +20,12 @@ from am.backup_ui import WRAP
 
 log = logging.getLogger(__name__)
 
-CHAPRIL_SETTING = "send_later_chapril"   # days a send went to Chapril (its weekly cap)
 # Send later's hosts in the order tried (the consent list): name, then (link text, page).
 LATER_HOSTS = (
     (errors.LATER_HOST_ADMINFORGE, ((errors.LATER_TERMS, share_send.ADMINFORGE_TERMS_URL),
                                     (errors.LATER_PRIVACY, share_send.ADMINFORGE_PRIVACY_URL))),
-    (errors.LATER_HOST_CHAPRIL, ((errors.LATER_TERMS_PRIVACY, share_send.CHAPRIL_TERMS_URL),)),
+    (errors.LATER_HOST_VISEE, ((errors.LATER_ABOUT, share_send.VISEE_ABOUT_URL),
+                               (errors.LATER_LIST, share_send.VISEE_LIST_URL))),
     (errors.LATER_HOST_KIWI, ((errors.LATER_TERMS, share_later.TERMS_URL),
                               (errors.LATER_PRIVACY, share_later.PRIVACY_URL))),
 )
@@ -316,27 +316,9 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 "api": getattr(self.app, "later_api", None) or share_later.API_URL,
                 "allow_local": self.app.allow_local,
                 "now": bool(self.now_var.get()),
-                # the Send servers first (tests: their own list; Chapril capped per week)
+                # the Send servers first (tests: their own list), then file.kiwi
                 "send": list(getattr(self.app, "later_send", None)
-                             or share_send.sites_to_try(share_send.chapril_ok(
-                                 config.load_settings().get(CHAPRIL_SETTING),
-                                 time.strftime("%Y-%m-%d"))))}
-
-    @staticmethod
-    def note_chapril():
-        """A send went to Chapril: remember the day (its weekly cap, the last 7 days only)."""
-        import datetime
-        today = datetime.date.today()
-        settings = config.load_settings()
-        keep = []
-        for d in settings.get(CHAPRIL_SETTING) or []:
-            try:
-                if 0 <= (today - datetime.date.fromisoformat(d)).days < 7:
-                    keep.append(d)
-            except (TypeError, ValueError):
-                continue
-        settings[CHAPRIL_SETTING] = keep + [today.isoformat()]
-        config.save_settings(settings)
+                             or share_send.sites_to_try())}
 
     def pick(self):
         if self.active or self.closed:
@@ -602,8 +584,6 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 self.ends_var.set("")
             if msg[2] == "host":   # where it goes: a Send server or file.kiwi
                 self.later_host = msg[3]
-                if msg[3] == "chapril":
-                    self.note_chapril()
             elif msg[2] == "uploading":
                 self.later_mode = True
                 self.speed = Speed()

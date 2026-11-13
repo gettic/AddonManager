@@ -68,8 +68,9 @@ class ShareError(Exception):
     ended (the other PC stopped), cancelled, too_big, broken, not_backup, disk_full,
     certificate (the secure connection couldn't be checked),
     file (couldn't read/write the file), server (an answer the app doesn't understand),
-    later_failed (the upload
-    to file.kiwi didn't work), later_file (the downloaded file isn't the right one)."""
+    later_failed (no host took the upload: file.kiwi, the last one, didn't work), later_file
+    (the downloaded file isn't the right one), later_newer (kept on a Send server only a newer
+    app knows)."""
 
     def __init__(self, kind, detail="", limit=None):
         super().__init__(f"{kind}: {detail}" if detail else kind)
@@ -794,6 +795,8 @@ def _receive_later(channel, words, relay, cancel, clock, on_later):
     try:
         r = share_later.open_record(rkey, channel, sealed, relay.local)
     except ValueError as e:
+        if str(e) == "site":   # kept on a Send server this version doesn't know
+            raise ShareError("later_newer") from e
         raise ShareError("broken", "record") from e
     if r["size"] > LATER_MAX_SIZE:
         if r["v"] == 3:   # the code is used up: don't leave it on the Send server

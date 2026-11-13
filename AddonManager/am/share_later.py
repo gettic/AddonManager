@@ -38,10 +38,10 @@ LINK_PREFIX = "https://file.kiwi/"
 TERMS_URL = "https://file.kiwi/legal/terms"
 PRIVACY_URL = "https://file.kiwi/legal/privacy"
 LATER_AFTER = 300                    # seconds the code waits for the other PC first
-CONSENT_VERSION = 6                  # the tick's wording (2: also big backups at once; 3: the guild's server first; 4: + Cloudflare terms link;
+CONSENT_VERSION = 7                  # the tick's wording (2: also big backups at once; 3: the guild's server first; 4: + Cloudflare terms link;
                                      # 5: + adminForge and Chapril Send, the hosts as a numbered list; 6: the
-                                     # guild's server gone, adminForge first); a tick given under an older
-                                     # wording counts as off
+                                     # guild's server gone, adminForge first; 7: send.vis.ee replaces Chapril,
+                                     # new note); a tick given under an older wording counts as off
 HOURS = (1, 2, 4, 8, 12, 24)         # how long the code works for a later send
 DEFAULT_HOURS = 12
 EXT = ".amsend"
@@ -278,7 +278,11 @@ def open_record(key, channel, sealed, allow_local=False):
     link, k, name = r.get("link"), r.get("key"), r.get("name")
     if r["v"] == 3:   # on a Send server (am\share_send.py): fixed address, no link
         from am import share_send
-        if (r.get("host") != "send" or r.get("site") not in share_send.SITES or "link" in r
+        site = r.get("site")
+        if (r.get("host") == "send" and isinstance(site, str) and site not in share_send.SITES
+                and re.fullmatch("[a-z0-9]{1,20}", site)):
+            raise ValueError("site")   # a host a newer app knows: "update this app"
+        if (r.get("host") != "send" or site not in share_send.SITES or "link" in r
                 or not share_send.check_parts(r.get("parts"), r.get("blob"))):
             raise ValueError("record")
     elif not isinstance(link, str) or not link_ok(link, allow_local):

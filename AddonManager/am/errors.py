@@ -480,19 +480,24 @@ def received_addons(not_listed, different):
 # stays; the guild keeps no copy and doesn't run these hosts. Changing LATER_TICK/LATER_NOTE or
 # the host rows needs a new share_later.CONSENT_VERSION.
 KIWI_HOST = "file.kiwi"
-SEND_HOSTS = {"adminforge": "adminForge's Send server", "chapril": "Chapril's Send server"}
+SEND_HOSTS = {"adminforge": "adminForge's Send server", "visee": "send.vis.ee"}
 LATER_TICK = ("Keep it online for later if the other PC isn't ready in 5 min (at once if "
               "over 500 MB), on the first that works:")
+# Measured: the Send window at Linux 150 % stays at 953 of 960 px with this length; the rest of
+# the tos points (operators, may vanish sooner, not the only copy) are in the README.
 LATER_NOTE = ("Encrypted here: only this code opens it. The guild keeps no copy and doesn't "
-              "run or guarantee these hosts. 1-2 delete it once downloaded, else in 32 hours; "
-              "file.kiwi (uses Cloudflare, Google) keeps it several days. All see your IP "
-              "address, the size and time.")
+              "run these hosts; they weren't asked and guarantee nothing. 1-2 delete it once "
+              "downloaded, else in 32 hours; file.kiwi (uses Cloudflare, Google) keeps it days. "
+              "All see your IP, size and time.")
 # The hosts, in the order tried: one row each, its pages as small links at the right.
 LATER_TERMS = "terms"
 LATER_PRIVACY = "privacy"
 LATER_TERMS_PRIVACY = "terms & privacy"
 LATER_HOST_ADMINFORGE = "1. adminForge Send (Germany)"
-LATER_HOST_CHAPRIL = "2. Chapril (France), now and then"   # fits 420 px with Linux fonts
+LATER_HOST_VISEE = "2. send.vis.ee (NL), private, no terms"   # fits 420 px with Linux fonts
+# (100 % and 150 %; "1 person" was 8 px too wide); "private" = one private person (README)
+LATER_ABOUT = "about"   # send.vis.ee has no terms page: its operator's README
+LATER_LIST = "list"     # and the public Send instances list
 LATER_HOST_KIWI = "3. file.kiwi (US)"
 LATER_KEEP = "The code works for:"
 LATER_NOW_TICK = "Upload right away (don't wait 5 min)"
@@ -704,10 +709,14 @@ def share_message(exc, fresh=False):
                 "folder or USB stick.")
     if kind == "later_failed":
         if getattr(exc, "detail", "") == "down":
-            return ("file.kiwi didn't answer for 2 hours, so the code was stopped. Try again "
-                    "later with a new code, or use a USB stick or cloud folder.")
-        return ("Uploading to file.kiwi didn't work, so the code was stopped. Try again with "
-                "a new code, or use a USB stick or cloud folder.")
+            return ("None of the 3 hosts took it (the last one didn't answer for 2 hours), so "
+                    "the code was stopped. Try again later with a new code, or use a USB stick "
+                    "or cloud folder.")
+        return ("None of the 3 hosts took it, so the code was stopped. Try again later with a "
+                "new code, or use a USB stick or cloud folder.")
+    if kind == "later_newer":
+        return ("This code was sent by a newer Addon Manager. Update this app, then ask for a "
+                "new code.")
     if kind == "store_failed":
         return "The download stopped." + STORE_NEW_CODE
     if kind == "later_file":

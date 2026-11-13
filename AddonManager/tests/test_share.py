@@ -1977,9 +1977,10 @@ class WindowShareTests(unittest.TestCase):
         self.assertTrue(other.closed)
 
     def test_send_later_consent_hosts(self):
-        """The consent list: adminForge first, then Chapril, then file.kiwi, each with its
-        pages; no guild's server or Cloudflare row; the note says the guild keeps no copy and
-        doesn't run the hosts, and that file.kiwi keeps it several days."""
+        """The consent list: adminForge first, then send.vis.ee, then file.kiwi, each with
+        its pages (send.vis.ee: no terms, so its operator's README and the instances list);
+        no Chapril, guild's server or Cloudflare row; the note says the guild keeps no copy,
+        doesn't run the hosts, they weren't asked, and that file.kiwi keeps it days."""
         from am import errors, share_send, share_ui
         backup.make(self.addons, backup.default_folder())
         app = self.make_app()
@@ -1988,30 +1989,37 @@ class WindowShareTests(unittest.TestCase):
         dlg = app.open_send(show=False)
         dlg.toggle_later()
         texts = self.texts(dlg.win)
-        for text in (errors.LATER_HOST_ADMINFORGE, errors.LATER_HOST_CHAPRIL,
+        for text in (errors.LATER_HOST_ADMINFORGE, errors.LATER_HOST_VISEE,
                      errors.LATER_HOST_KIWI):
             self.assertIn(text, texts)
         self.assertEqual([h for h, _p in share_ui.LATER_HOSTS],
-                         [errors.LATER_HOST_ADMINFORGE, errors.LATER_HOST_CHAPRIL,
+                         [errors.LATER_HOST_ADMINFORGE, errors.LATER_HOST_VISEE,
                           errors.LATER_HOST_KIWI])
         self.assertTrue(errors.LATER_HOST_ADMINFORGE.startswith("1. adminForge"))
+        self.assertTrue(errors.LATER_HOST_VISEE.startswith("2. send.vis.ee"))
+        for words in ("private", "no terms"):
+            self.assertIn(words, errors.LATER_HOST_VISEE)
+        self.assertTrue(errors.LATER_HOST_KIWI.startswith("3. file.kiwi"))
         self.assertFalse(hasattr(errors, "LATER_HOST_STORE"))
+        self.assertFalse(hasattr(errors, "LATER_HOST_CHAPRIL"))
+        self.assertFalse(any("Chapril" in t for t in texts))
         self.assertFalse(any("guild's server" in t or "(Cloudflare)" in t for t in texts))
-        for words in ("guild keeps no copy", "doesn't run or guarantee", "several days"):
+        for words in ("guild keeps no copy", "doesn't run these hosts", "weren't asked",
+                      "guarantee nothing", "keeps it days", "32 hours", "your IP"):
             self.assertIn(words, errors.LATER_NOTE)
         t, p = errors.LATER_TERMS, errors.LATER_PRIVACY
         self.assertEqual([link.cget("text") for link in dlg.later_links],
-                         [t, p, errors.LATER_TERMS_PRIVACY, t, p])
+                         [t, p, errors.LATER_ABOUT, errors.LATER_LIST, t, p])
         self.assertTrue(all(link.bind("<Button-1>") for link in dlg.later_links))
         urls = [u for _host, pages in share_ui.LATER_HOSTS for _t, u in pages]
         self.assertEqual(urls, [share_send.ADMINFORGE_TERMS_URL,
                                 share_send.ADMINFORGE_PRIVACY_URL,
-                                share_send.CHAPRIL_TERMS_URL, share_later.TERMS_URL,
-                                share_later.PRIVACY_URL])
+                                share_send.VISEE_ABOUT_URL, share_send.VISEE_LIST_URL,
+                                share_later.TERMS_URL, share_later.PRIVACY_URL])
         self.assertFalse(any("cloudflare" in u for u in urls))
         self.assertFalse(any("donat" in u or "spende" in u.lower() for u in urls))
         self.assertNotIn("store", dlg.later_choice())
-        self.assertEqual(share_later.CONSENT_VERSION, 6)
+        self.assertEqual(share_later.CONSENT_VERSION, 7)
         dlg.toggle_now()
         dlg.win.update_idletasks()
         self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
@@ -2042,8 +2050,8 @@ class WindowShareTests(unittest.TestCase):
         for text in (errors.LATER_TICK, errors.LATER_NOTE, errors.LATER_TERMS,
                      errors.LATER_PRIVACY):
             self.assertIn(text, texts)
-        for word in ("IP address", "size", "Encrypted", "guild keeps no copy",
-                     "several days", "32 hours"):
+        for word in ("your IP", "size", "Encrypted", "guild keeps no copy",
+                     "keeps it days", "32 hours"):
             self.assertIn(word, errors.LATER_NOTE)
         self.assertIn("(US)", errors.LATER_HOST_KIWI)
         self.assertNotIn("only the two", " ".join(texts).lower())
@@ -2074,11 +2082,12 @@ class WindowShareTests(unittest.TestCase):
         again = app.open_send(show=False)
         self.assertFalse(again.later_var.get())
         again.close()
-        self.assertEqual(share_later.CONSENT_VERSION, 6)           # guild server gone
-        config.save_settings(dict(old, send_later_v=5))            # the v5 wording: off too
-        again = app.open_send(show=False)
-        self.assertFalse(again.later_var.get())
-        again.close()
+        self.assertEqual(share_later.CONSENT_VERSION, 7)           # send.vis.ee, new note
+        for older in (5, 6):                                       # older wordings: off too
+            config.save_settings(dict(old, send_later_v=older))
+            again = app.open_send(show=False)
+            self.assertFalse(again.later_var.get())
+            again.close()
         rec = app.open_receive(show=False)
         rec.code_var.set(code)
         self.assertTrue(rec.start())

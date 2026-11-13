@@ -16,7 +16,7 @@ from unittest import mock
 from am import errors, share, share_later, share_send
 from am.share import ShareError
 from am.share_send import SendError
-from tests import fixtures
+from tests import REAL_SEND_URLS, fixtures
 from tests.fake_kiwi import FakeKiwi
 from tests.fake_relay import FakeRelay
 from tests.fake_send import FakeSend
@@ -228,22 +228,66 @@ class LayerTests(unittest.TestCase):
                     dict(rec, link="https://file.kiwi/x#y"), dict(rec, blob=81)):
             with self.assertRaises(ValueError):
                 share_later.open_record(key, 5, share_later.seal_record(key, 5, bad))
+        self.assertEqual(share_later.open_record(                    # send.vis.ee: 3 parts
+            key, 5, share_later.seal_record(key, 5, dict(rec, site="visee")))["site"], "visee")
+        for newer in ("elsewhere", "chapril"):        # a host this version doesn't know
+            with self.assertRaises(ValueError) as e:
+                share_later.open_record(key, 5, share_later.seal_record(
+                    key, 5, dict(rec, site=newer)))
+            self.assertEqual(str(e.exception), "site")
+        for bad in ("Bad Site", "x" * 21, 3, None):    # not a host name: just damaged
+            with self.assertRaises(ValueError) as e:
+                share_later.open_record(key, 5, share_later.seal_record(key, 5, dict(rec, site=bad)))
+            self.assertEqual(str(e.exception), "record")
 
-    def test_sites_and_chapril_cap(self):
+    def test_sites(self):
+        """adminForge, then send.vis.ee (Chapril gone); send.vis.ee's 2.5 GiB per file means
+        3 parts for a 5 GiB backup, 2 a bit under it, 1 for small ones; its upload is capped."""
+        self.assertEqual(list(share_send.SITES), ["adminforge", "visee"])
+        self.assertEqual(share_send.ORDER, ("adminforge", "visee"))
         with mock.patch.dict(share_send.SITES, {
                 k: share_send.Site(k, "https://x.example", k, 1) for k in share_send.ORDER}):
-            self.assertEqual(share_send.sites_to_try(True), ["adminforge"])   # Chapril off
-            with mock.patch.object(share_send, "CHAPRIL_ON", True):
-                self.assertEqual(share_send.sites_to_try(True), ["adminforge", "chapril"])
-                self.assertEqual(share_send.sites_to_try(False), ["adminforge"])
-        self.assertEqual(share_send.sites_to_try(True), [])     # tests: blank addresses
-        self.assertTrue(share_send.chapril_ok([], "2026-11-13"))
-        self.assertTrue(share_send.chapril_ok(["2026-11-13", "2026-11-01"], "2026-11-13"))
-        self.assertFalse(share_send.chapril_ok(["2026-11-13", "2026-11-08"], "2026-11-13"))
-        self.assertTrue(share_send.chapril_ok(["2026-11-06", "bad", 3], "2026-11-13"))
+            self.assertEqual(share_send.sites_to_try(), ["adminforge", "visee"])
+        self.assertEqual(share_send.sites_to_try(), [])     # tests: blank addresses
+        self.assertEqual(REAL_SEND_URLS, {"adminforge": "https://send.adminforge.de",
+                                          "visee": "https://send.vis.ee"})
         self.assertEqual(share_send.SITES["adminforge"].max_parts, 1)
-        self.assertEqual(share_send.SITES["chapril"].max_parts, 1)
-        self.assertFalse(share_send.CHAPRIL_ON)
+        self.assertEqual(share_send.SITES["adminforge"].max_rate, 0)
+        self.assertEqual(share_send.SITES["visee"].max_parts, 3)
+        self.assertEqual(share_send.SITES["visee"].max_rate, 8 * 1000 * 1000)
+        for name in ("CHAPRIL_ON", "CHAPRIL_PER_WEEK", "CHAPRIL_TERMS_URL", "chapril_ok"):
+            self.assertFalse(hasattr(share_send, name))
+        gib, mib = 1024 ** 3, 1024 ** 2
+        limits = (int(2.5 * gib), 20, 3 * 24 * 3600)              # send.vis.ee's /config
+        with mock.patch.object(share_send.SITES["visee"], "url", "https://x.example"):
+            client = share_send.Send("visee")
+        for plain, want in ((50 * mib, 1), (3 * gib, 2), (5 * gib - 4 * mib, 2),
+                            (share.LATER_MAX_SIZE, 3)):
+            total = share_later.Blob("unused", bytes(32), plain, "0" * 64).total
+            ranges, time_limit = client.plan(total, 24, limits)
+            self.assertEqual(len(ranges), want, plain)
+            self.assertEqual(ranges[-1][1], total)
+            self.assertLessEqual(time_limit, limits[2])         # 24 h + 8 h <= 3 days
+        with self.assertRaises(share_send.SendError):              # over 3 parts: refused
+            client.plan(8 * gib, 1, limits)
+
+    def test_upload_rate_cap(self):
+        """send.vis.ee's upload waits when it is ahead of max_rate (Cancel still ends it)."""
+        with mock.patch.object(share_send.SITES["visee"], "url", "https://x.example"):
+            client = share_send.Send("visee", sleep=lambda s: naps.append(s))
+        naps, now = [], [100.0]
+        client.clock = lambda: now[0]
+        client._pace(8 * 1000 * 1000, 100.0, None)                 # 1 s of bytes, 0 s gone
+        self.assertEqual(naps, [1.0])
+        client._pace(4 * 1000 * 1000, 99.0, None)                  # behind: no wait
+        client._pace(1000, 100.0, None)                            # a little ahead: no wait
+        self.assertEqual(naps, [1.0])
+        with self.assertRaises(SendError) as e:
+            client._pace(8 * 1000 * 1000, 100.0, lambda: True)
+        self.assertEqual(e.exception.kind, "cancelled")
+        client.max_rate = 0                                        # adminForge: no cap
+        client._pace(10 ** 12, 100.0, None)
+        self.assertEqual(naps, [1.0])
 
 
 # ---------- the client against the fake server ----------
@@ -474,7 +518,7 @@ class FlowTests(unittest.TestCase):
         self.addCleanup(self.fake.stop)
         self.spare = FakeSend()
         self.addCleanup(self.spare.stop)
-        for key, srv in (("adminforge", self.fake), ("chapril", self.spare)):
+        for key, srv in (("adminforge", self.fake), ("visee", self.spare)):
             p = mock.patch.object(share_send.SITES[key], "url", srv.url)
             p.start()
             self.addCleanup(p.stop)
@@ -514,21 +558,21 @@ class FlowTests(unittest.TestCase):
             self.assertNotIn(word, names)
 
     def test_fallbacks_in_order(self):
-        self.fake.config_status = 503                         # adminForge down -> Chapril
-        s, code = self.send(("adminforge", "chapril"))
+        self.fake.config_status = 503                         # adminForge down -> send.vis.ee
+        s, code = self.send(("adminforge", "visee"))
         s.wait_state("ready")
         s.join()
-        self.assertEqual(self.hosts(s), ["adminforge", "chapril"])
+        self.assertEqual(self.hosts(s), ["adminforge", "visee"])
         path = share.receive(code, self.receiver(), self.inbox)
         self.assertTrue(same_entries(path, self.path))
         self.assertEqual(self.spare.stored(), {})
         os.remove(path)
         self.spare.config_status = 503                        # both down -> file.kiwi
-        s, code = self.send(("adminforge", "chapril"))
+        s, code = self.send(("adminforge", "visee"))
         s.wait_state("ready")
         s.join()
         self.assertIsNone(s.error)
-        self.assertEqual(self.hosts(s), ["adminforge", "chapril", "kiwi"])
+        self.assertEqual(self.hosts(s), ["adminforge", "visee", "kiwi"])
         ticket = share.receive(code, self.receiver(), self.inbox)
         self.assertIsNotNone(ticket.link)
         self.spare.config_status = 200
@@ -640,10 +684,32 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(s.error.kind, "offline")
         self.assertEqual(self.fake.stored(), {})
 
+    def test_unknown_host_asks_for_update(self):
+        """A send kept on a Send server this version doesn't know (a newer app's host):
+        "update this app", not "damaged"."""
+        s, code = self.send(("visee",))
+        s.wait_state("ready")
+        s.join()
+        self.assertIsNone(s.error)
+        with mock.patch.dict(share_send.SITES, clear=False) as sites:
+            del sites["visee"]
+            with self.assertRaises(ShareError) as e:
+                share.receive(code, self.receiver(), self.inbox)
+        self.assertEqual(e.exception.kind, "later_newer")
+        text = errors.share_message(e.exception)
+        self.assertIn("newer Addon Manager", text)
+        self.assertNotIn("damaged", text)
+
+    def test_couldnt_send_names_all_hosts(self):
+        for detail in ("", "down"):
+            text = errors.share_message(ShareError("later_failed", detail))
+            self.assertIn("None of the 3 hosts", text)
+            self.assertIn("new code", text)
+
     def test_older_record_versions_still_open(self):
         self.assertTrue(share_later.CONSENT_VERSION >= 6)
         self.assertIn("adminForge", errors.later_uploading_text("now", "adminforge"))
-        self.assertIn("Chapril", errors.later_uploading(1, 2, None, "chapril"))
+        self.assertIn("send.vis.ee", errors.later_uploading(1, 2, None, "visee"))
         self.assertIn("file.kiwi", errors.later_uploading_text(None, "kiwi"))
 
 

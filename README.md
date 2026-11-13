@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.17.0
+Current version: v0.18.0
 
 ## Get it
 
@@ -173,24 +173,27 @@ This is optional and **off by default**. Tick "Keep it online for later if the o
 | Order | Host | Who runs it | Size | How long it keeps the file |
 | --- | --- | --- | --- | --- |
 | 1 | adminForge Send (Germany) | adminForge, another company | what the host allows | deleted right after the other PC downloads it, or within 32 hours |
-| 2 | Chapril (France) | Chapril | listed, but switched off for now | not used yet |
-| 3 | file.kiwi (US) | another company | up to 5 GB | can't be deleted early; stays a few days |
+| 2 | send.vis.ee (Netherlands) | one private person, Tim Visee; no terms or privacy page | big backups go up in 2-3 parts of up to 2.5 GB, at most 8 MB/s | deleted right after the other PC downloads it, or within 32 hours |
+| 3 | file.kiwi (US) | another company; last resort | up to 5 GB | can't be deleted early; stays a few days |
 
-The guild keeps no copy and doesn't run or guarantee these hosts. A later host is used only when the one before it is full, busy or down, or the backup is too big for it. The window links to each host's terms and privacy pages. The app remembers your choice. The hours, links and note show only while the tick is on. Unticking it also unticks "Upload right away". If you had the tick on in an older version, tick it again once, because the wording changed.
+The guild keeps no copy and doesn't run or guarantee these hosts, and they weren't asked. A later host is used only when the one before it is full, busy or down, or the backup is too big for it. The window links to each host's terms and privacy pages (for send.vis.ee, an "about" page, as it has none of its own). The app uses Send's public way of uploading. The app remembers your choice. The hours, links and note show only while the tick is on. Unticking it also unticks "Upload right away". If you had the tick on in an older version, tick "Keep it online for later" again once, because the wording changed.
+
+**A send can fail, and never rely on a sent backup as your only copy.** A host may delete it sooner than promised or be down. send.vis.ee is run by one private person and has no terms, no privacy policy and no guarantee. The app uses Send's public upload protocol without asking the operators of these hosts.
 
 - **Not ready in 5 minutes:** with the tick on, the backup is uploaded. Keep the window open until it says "Uploaded". Then you can close the PC.
 - **Upload right away:** with the tick on, a second tick, "Upload right away (don't wait 5 min)", appears. Tick it when you know the other PC will pick the backup up later. The backup is uploaded at once. It starts unticked every time and is not remembered.
 - **Over 500 MB (up to 5 GB):** this only works with the tick on. The backup is uploaded right away, with no 5-minute wait. With the tick off, the app says the backup is too big and suggests you make a backup and copy it yourself, for example with a USB stick or a cloud folder.
 - **Code time:** "The code works for" 1, 2, 4, 8, 12 or 24 hours (12 by default). The other PC can type the code any time in that time. The code works once.
 - **On the other PC:** click **Receive...**, type the code and click **Download**.
-  - From adminForge, the app downloads the file by itself, with no browser. Receiving such a send needs v0.16.0 or newer.
+  - From adminForge, the app downloads the file by itself, with no browser. Receiving such a send needs v0.16.0 or newer. For send.vis.ee it needs v0.18.0 or newer: an older app says the file arrived damaged, so update it first. A send on a host the app doesn't know yet says "update this app".
   - From file.kiwi, your browser gets the file. The download link is also shown with a **Copy link** button, for when the browser doesn't open. The Addon Manager finds the file in your Downloads folder by itself (or click **Open file...**, beside **Download**).
   - Then it checks the file and opens the usual Restore window.
-- **Closing Receive during an adminForge download** asks first, because stopping deletes that send for good. The other PC would have to send again. If that download fails, the message tells you to make a new code on the other PC.
+- **Closing Receive during an adminForge or send.vis.ee download** asks first, because stopping deletes that send for good. The other PC would have to send again. If that download fails, the message tells you to make a new code on the other PC.
 - **What adminForge sees:** its servers are in Germany. It sees your IP address, the file's size and when it was sent. The file is encrypted, so it can't open it.
+- **What send.vis.ee sees:** its servers are in the Netherlands, run by one private person with no terms or privacy page and no guarantee. It sees your IP address, the file's size and when it was sent. The file is encrypted, so it can't open it.
 - **What file.kiwi sees:** its servers are in the US, and it uses Cloudflare and Google. It sees your IP address, the file's size and when it was sent. The file is encrypted, so none of them can open it.
 - **A file on file.kiwi can't be deleted early.** Only the code opens it, so keep the code private: anyone who gets it first can open the file.
-- If no host is answering, the app tries again by itself every 5 minutes, for up to 2 hours, as long as the Send window stays open. After that it stops the code and tells you. Closing the window or the app stops it too.
+- If no host is answering, the app tries again by itself every 5 minutes, for up to 2 hours, as long as the Send window stays open. After that it stops the code and tells you. If none of the 3 hosts takes the backup, the message says "None of the 3 hosts took it" and the code is stopped. Closing the window or the app stops it too.
 - If the upload itself keeps failing, the app stops after a fixed number of tries and says the upload didn't work.
 
 A file received this way is handled with extra care:

@@ -85,7 +85,6 @@ SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": st
                  "send_later": bool,    # send later via file.kiwi (opt-in, off by default)
                  "send_later_hours": int,
                  "send_later_v": int,   # the tick's wording it was given under
-                 "send_later_chapril": list,   # days a send went to Chapril (weekly cap)
                  "backup_spoken": str,  # "skip" / "keep" the Spoken addons in backups
                  "window": str}         # main window "WxH+X+Y" (ui.App.restore_geometry)
 

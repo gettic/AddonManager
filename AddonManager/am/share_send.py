@@ -1,8 +1,8 @@
-"""Send later through public Send servers (timvisee/send): adminForge's send.adminforge.de,
-and Chapril's drop.chapril.org as a spare (switched off until its operator says yes).
+"""Send later through public Send servers (timvisee/send): adminForge's send.adminforge.de
+first, then send.vis.ee (Tim Visee's own instance, 2.5 GiB per file: big backups go up in
+2-3 parts) as the spare.
 
-Tried after the guild's own server and before file.kiwi, only when the player ticked send
-later. The sealed .amsend blob (share_later.Blob, our ChaCha20 layer with key K) goes up as
+Tried before file.kiwi (the last resort), only when the player ticked send later. The sealed .amsend blob (share_later.Blob, our ChaCha20 layer with key K) goes up as
 one normal Send file: Send's own RFC 8188 layer with a random 16-byte secret, a key-derived
 upload key and encrypted metadata with a random neutral name, exactly as Send's browser
 client makes them (app/keychain.js, app/ece.js). The receiving app downloads it by itself
@@ -12,7 +12,8 @@ Cancel). The secret and the owner token are only ever inside the sealed code rec
 
 Being gentle with volunteer servers (tos): one upload at a time, one retry per part after a
 pause (Retry-After honoured up to 5 min), then the next host; a download limit of 2; delete
-as soon as it isn't needed; the app's usual neutral User-Agent. The app only talks to the
+as soon as it isn't needed; the app's usual neutral User-Agent; send.vis.ee (one small
+server) gets at most Site.max_rate bytes per second. The app only talks to the
 fixed addresses in SITES (never one from a record or a server answer).
 
 Upload uses a WebSocket (wss://<host>/api/ws, RFC 6455 client side, standard library only);
@@ -46,18 +47,21 @@ class Site:
     url: str           # "" = never used (tests blank these)
     label: str
     max_parts: int     # parts one send may be split into on this server
+    max_rate: int = 0  # upload bytes per second at most (0 = no cap)
 
 
 SITES = {
     "adminforge": Site("adminforge", "https://send.adminforge.de", "adminForge", 1),
-    "chapril": Site("chapril", "https://drop.chapril.org", "Chapril", 1),
+    # 2.5 GiB per file: a 5 GiB backup's sealed blob is a little over 5 GiB -> 3 parts
+    "visee": Site("visee", "https://send.vis.ee", "send.vis.ee", 3, 8 * 1000 * 1000),
 }
-ORDER = ("adminforge", "chapril")
-CHAPRIL_ON = False          # off until Chapril's operator says app uploads are fine
-CHAPRIL_PER_WEEK = 2        # at most this many sends per PC in 7 days go to Chapril
+ORDER = ("adminforge", "visee")
 ADMINFORGE_TERMS_URL = "https://adminforge.de/nutzungsbestimmungen/"
 ADMINFORGE_PRIVACY_URL = "https://adminforge.de/datenschutz/"
-CHAPRIL_TERMS_URL = "https://www.chapril.org/cgu.html"   # terms and privacy in one page
+# send.vis.ee has no terms or privacy page: its operator's ffsend README (it names the host as
+# his own, "optimized for use in automated scripts") and the public Send instances list.
+VISEE_ABOUT_URL = "https://github.com/timvisee/ffsend"
+VISEE_LIST_URL = "https://github.com/timvisee/send-instances"
 
 DLIMIT = 2                  # downloads allowed: one more if a download breaks near its end
 UPLOAD_WINDOW = 6 * 3600    # the relay's LATER_UPLOAD_SECONDS: the code starts after this
@@ -81,6 +85,7 @@ OWNER_RE = "[0-9a-f]{20,64}"
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 HEADER_MAX = 16 * 1024
 CONTROL_MAX = 125           # RFC 6455: ping/pong/close payloads, never fragmented
+RATE_STEP = 0.05            # the rate cap waits once it is this many seconds ahead
 WAIT_STEP = 1.0             # seconds per look while waiting for an answer (Cancel checks)
 DETAIL_MAX = 120
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
@@ -128,35 +133,9 @@ class SendError(Exception):
         self.wait = wait
 
 
-def sites_to_try(chapril_ok=False):
-    """The Send servers to try, in order (keys). Chapril only when switched on and the
-    player's PC is under its weekly cap."""
-    out = []
-    for key in ORDER:
-        if not SITES[key].url:
-            continue
-        if key == "chapril" and not (CHAPRIL_ON and chapril_ok):
-            continue
-        out.append(key)
-    return out
-
-
-def chapril_ok(dates, today):
-    """True when fewer than CHAPRIL_PER_WEEK of the saved dates (YYYY-MM-DD) are in the last
-    7 days."""
-    import datetime
-    try:
-        now = datetime.date.fromisoformat(today)
-    except (TypeError, ValueError):
-        return False
-    recent = 0
-    for d in dates or ():
-        try:
-            if 0 <= (now - datetime.date.fromisoformat(d)).days < 7:
-                recent += 1
-        except (TypeError, ValueError):
-            continue
-    return recent < CHAPRIL_PER_WEEK
+def sites_to_try():
+    """The Send servers to try, in order (keys)."""
+    return [key for key in ORDER if SITES[key].url]
 
 
 # ---------- Send's keychain (app/keychain.js) ----------
@@ -553,6 +532,8 @@ class Send:
             raise SendError("refused", "address not allowed")
         self.allow_local = allow_local
         self.sleep = sleep
+        self.clock = time.monotonic
+        self.max_rate = self.site.max_rate
 
     # plain HTTPS
     def _open(self, method, path, body=None, headers=None, timeout=TIMEOUT):
@@ -640,11 +621,14 @@ class Send:
                         or not isinstance(owner, str) or not re.fullmatch(OWNER_RE, owner)):
                     raise SendError("broken", "bad answer")
                 made = Part(sid, owner, secret, start, end)
-                done = 0
+                done = sent = 0
+                began = self.clock()
                 for item in ece_frames(lambda a, b: read(start + a, start + b), size, secret):
                     if stop is not None and stop():
                         raise SendError("cancelled")
                     ws.send_binary(item)
+                    sent += len(item)
+                    self._pace(sent, began, stop)
                     if len(item) > HEAD:
                         done = min(size, done + len(item) - 1 - share_later.ECE_TAG)
                         if moved:
@@ -680,6 +664,17 @@ class Send:
         finally:
             if not handed:
                 ws.close()
+
+    def _pace(self, sent, began, stop):
+        """Keep the upload under max_rate (bytes/s): wait when ahead (in steps, so Cancel
+        still ends it quickly)."""
+        if not self.max_rate:
+            return
+        ahead = sent / self.max_rate - (self.clock() - began)
+        if ahead >= RATE_STEP:
+            if stop is not None and stop():
+                raise SendError("cancelled")
+            self.sleep(min(ahead, WAIT_STEP))
 
     @staticmethod
     def _answer_error(ans):
