@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -30,17 +31,46 @@ MAX_SAFETY_ROWS = 4     # safety copies, when ticked
 PLACE_MAX = 12 if LINUX else 16        # characters of a folder name shown as a place
 MENU_CHARS = 12 if LINUX else 16       # Restore's account pick: fixed width, long names cut
 ACCOUNT_WRAP = 160 if LINUX else 210   # the "Settings of account ... go to:" text beside it
+FIT_WRAP_BURST = 8     # fit_wrap: re-wraps of one label within FIT_WRAP_PAUSE seconds
+FIT_WRAP_PAUSE = 0.5
 
 
 def fit_wrap(label, inset=0):
     """The label's text wraps at the width it really gets (the window may be wider or
-    narrower than the wrap it started with). inset: the label's own padding + border."""
-    def resized(event):
-        want = event.width - inset
-        if event.width > 1 and want > 20 and abs(
-                int(float(str(label.cget("wraplength")) or 0)) - want) > 2:
-            label.configure(wraplength=want)
-    label.bind("<Configure>", resized, add="+")
+    narrower than the wrap it started with). inset: the label's own padding + border.
+    A new wrap changes the label's size, which can change the window's and come back as
+    another <Configure>: at most FIT_WRAP_BURST changes per FIT_WRAP_PAUSE seconds, so such
+    a feedback can never keep Tk busy for ever (it hung the Linux tests in v0.16.0). Held
+    back changes are looked at once more after the pause (a fast window drag still ends
+    with the right wrap)."""
+    burst = {"n": 0, "since": 0.0, "later": None}
+
+    def apply(width):
+        want = width - inset
+        if width <= 1 or want <= 20 or abs(
+                int(float(str(label.cget("wraplength")) or 0)) - want) <= 2:
+            return
+        now = time.monotonic()
+        if now - burst["since"] > FIT_WRAP_PAUSE:
+            burst["n"], burst["since"] = 0, now
+        if burst["n"] >= FIT_WRAP_BURST:   # still re-wrapping: a feedback loop, pause
+            if burst["later"] is None:
+                try:
+                    burst["later"] = label.after(int(FIT_WRAP_PAUSE * 1000) + 50, again)
+                except tk.TclError:
+                    pass
+            return
+        burst["n"] += 1
+        label.configure(wraplength=want)
+
+    def again():
+        burst["later"] = None
+        try:
+            apply(label.winfo_width())
+        except tk.TclError:
+            pass   # closed meanwhile
+
+    label.bind("<Configure>", lambda event: apply(event.width), add="+")
 
 
 def _wrapped_lines(f, text, width):

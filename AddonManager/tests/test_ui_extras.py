@@ -205,6 +205,38 @@ class WindowExtrasTests(unittest.TestCase):
         app.close_backup_window()
         app.closed = True
 
+    def test_fit_wrap_feedback_cannot_loop(self):
+        """A wrap that feeds back into another <Configure> (the label's new size changes the
+        window's) stops after FIT_WRAP_BURST changes instead of keeping Tk busy for ever
+        (the v0.16.0 Linux test hang); after the pause it re-wraps normally again."""
+        from am import backup_ui
+        label = ttk.Label(self.root, text="x " * 200, wraplength=600)
+        backup_ui.fit_wrap(label)
+        set_to, loop = [], [True]
+
+        def feedback(_e):   # each new wrap brings another, different width
+            now = int(float(str(label.cget("wraplength"))))
+            if set_to and set_to[-1] == now:
+                return   # no new wrap, no new size: nothing comes back
+            set_to.append(now)
+            if loop[0] and len(set_to) < 1000:
+                label.event_generate("<Configure>", width=400 if now == 300 else 300,
+                                     height=20)
+        label.bind("<Configure>", feedback, add="+")
+        clock = [1000.0]
+        with mock.patch.object(backup_ui.time, "monotonic", lambda: clock[0]):
+            label.event_generate("<Configure>", width=300, height=20)
+            self.assertLess(len(set_to), 1000, "fit_wrap kept re-wrapping")
+            self.assertLessEqual(len(set_to), backup_ui.FIT_WRAP_BURST + 2)
+            self.assertIn(300, set_to)
+            self.assertIn(400, set_to)
+            # a real resize after the pause: wraps at the new width again
+            loop[0] = False
+            clock[0] += backup_ui.FIT_WRAP_PAUSE + 1
+            label.event_generate("<Configure>", width=250, height=20)
+            self.assertEqual(int(float(str(label.cget("wraplength")))), 250)
+        label.destroy()
+
     def test_receive_prefills_a_copied_code(self):
         app = self.make_app(share_url="https://relay.invalid")
         self.pump(app)

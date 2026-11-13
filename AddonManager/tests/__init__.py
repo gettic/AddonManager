@@ -41,3 +41,46 @@ from am import share_send  # noqa: E402
 REAL_SEND_URLS = {k: s.url for k, s in share_send.SITES.items()}
 for _site in share_send.SITES.values():
     _site.url = ""
+
+
+# A test that hangs ends the run with its name and every thread's stack (instead of the
+# CI running silently until its time limit). ADDONMANAGER_TEST_LIMIT: seconds per test
+# (default 300; the slowest test takes well under a minute), 0 = off.
+import faulthandler  # noqa: E402
+import sys  # noqa: E402
+import threading  # noqa: E402
+import unittest  # noqa: E402
+
+try:
+    TEST_LIMIT = float(os.environ.get("ADDONMANAGER_TEST_LIMIT", "300"))
+except ValueError:
+    TEST_LIMIT = 300.0
+_plain_run = unittest.TestCase.run
+
+
+def _hung(test_id):
+    try:
+        sys.stderr.write(f"\n\nTEST HUNG: {test_id} ran over {TEST_LIMIT:g} s. Stacks:\n")
+        sys.stderr.flush()
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        sys.stderr.flush()
+    finally:
+        os._exit(3)
+
+
+def _run_with_watchdog(self, result=None):
+    if TEST_LIMIT <= 0:
+        return _plain_run(self, result)
+    timer = threading.Timer(TEST_LIMIT, _hung, args=(self.id(),))
+    timer.daemon = True
+    timer.start()
+    # The C-level backstop, in case no Python thread gets to run.
+    faulthandler.dump_traceback_later(TEST_LIMIT + 60, exit=True)
+    try:
+        return _plain_run(self, result)
+    finally:
+        timer.cancel()
+        faulthandler.cancel_dump_traceback_later()
+
+
+unittest.TestCase.run = _run_with_watchdog
