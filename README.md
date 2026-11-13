@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.16.0
+Current version: v0.16.1
 
 ## Get it
 
