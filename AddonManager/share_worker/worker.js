@@ -30,19 +30,9 @@
 // A new app joins with "<id>|caps=later"; an app without "later" gets 410 "later".
 // The record is sealed with a key from the code (scrypt on the PCs); the verifier is a hash.
 //
-// Guild storage for send later (tried before file.kiwi; am/share_store.py): the sealed blob is
-// kept here in Durable Object SQLite storage (Workers Free: errors, never a bill), split over
-// StoreSlice objects of < 1 GB each, and deleted after the download or after 24 h at most.
-//   POST /v1/<ch>/store {blob, put, get}   sender, before later (rate-limited per IP): put/get
-//                                          are sha256 hashes of the app's own tokens
-//                                          -> {id, piece, slice}; 503 busy / 413 too_big
-//   DELETE /v1/<ch>/store                  sender: drop it (fallback to file.kiwi)
-//   PUT  /v1/s/<id>/<slice>/<n>            sender (X-Store-Token = put token), in order
-//   GET  /v1/s/<id>/<slice>/<n>            receiver (X-Store-Token = get token)
-//   DELETE /v1/s/<id>                      either token: everything deleted now
-// The mailbox ties it in: closed without the record taken (cancel, wrong code, sender gone,
-// code ended) -> dropped; record taken -> STORE_DOWNLOAD_SECONDS left for the download.
-// A box with a store needs "store" in the receiver's caps (older apps get 410 "later").
+// The guild storage (v0.15.0-v0.16.x: /v1/<ch>/store and /v1/s/...) is gone: those paths
+// answer 404, and older apps then upload to their other hosts. Migration v4 deleted its
+// StoreLedger/StoreSlice objects and all their data.
 
 const SEND_SLOTS = new Set(["pakeA", "confA", "header"]);
 const RECV_SLOTS = new Set(["pakeB", "confB", "done"]);
@@ -50,11 +40,8 @@ const REASONS = new Set(["done", "cancel", "bad_code"]);
 const MSG_MAX = 4096;
 const MAX_WAIT = 20;          // seconds a poll is held
 const TOMBSTONE = 300;        // seconds a closed mailbox still answers "closed"
-const BOX_ROUTES = new Set(["msg", "chunk", "close", "ping", "later", "record", "take", "store"]);
+const BOX_ROUTES = new Set(["msg", "chunk", "close", "ping", "later", "record", "take"]);
 const RECORD_MAX = 4096;
-const STORE_ROUTE = /^\/v1\/s\/([0-9a-f]{32})(?:\/([0-9])\/([0-9]{1,4}))?$/;
-const MAX_SLICES = 10;
-const STORE_MARGIN = 7200;    // seconds: a code ends this long before its store's hard end
 
 // What the receiving app can do, from its join body ("<id>|caps=later").
 function joinCaps(body) {
@@ -128,9 +115,8 @@ async function allowed(env, request, kind) {
   if (!env.RATE) return true;
   const day = new Date().toISOString().slice(0, 10);
   const key = await sha256hex(`am-share|${day}|${ip}`);
-  const max = kind === "store" ? num(env, "HARD_STORE", 3)
-    : num(env, kind === "open" ? "HARD_OPEN" : "HARD_JOIN", 20);
-  const window = kind === "store" ? num(env, "STORE_WINDOW", 86400) : num(env, "HARD_WINDOW", 600);
+  const max = num(env, kind === "open" ? "HARD_OPEN" : "HARD_JOIN", 20);
+  const window = num(env, "HARD_WINDOW", 600);
   const r = await env.RATE.get(env.RATE.idFromName(key))
     .fetch(`https://rate/?kind=${kind}&max=${max}&window=${window}`, { method: "POST" });
   return r.status === 204;
@@ -144,7 +130,7 @@ export class RateBox {
   async fetch(request) {
     const url = new URL(request.url);
     const asked = url.searchParams.get("kind");
-    const kind = asked === "join" || asked === "store" ? asked : "open";
+    const kind = asked === "join" ? asked : "open";
     const max = Number(url.searchParams.get("max")) || 20;
     const window = (Number(url.searchParams.get("window")) || 600) * 1000;
     const now = Date.now();
@@ -159,33 +145,6 @@ export class RateBox {
   }
 }
 
-function ledger(env) {
-  return env.LEDGER.get(env.LEDGER.idFromName("ledger"));
-}
-
-function sliceStub(env, id, slice) {
-  return env.SLICE.get(env.SLICE.idFromName(`st:${id}:${slice}`));
-}
-
-// /v1/s/<id>/<slice>/<n> (pieces) and /v1/s/<id> (DELETE). Only these shapes reach the
-// storage objects; their other routes (init, wipe, reserve, ...) are for the Worker only.
-async function storeRoute(request, env, m, len) {
-  if (!env.LEDGER || !env.SLICE) return err(404, "not_found");
-  const [, id, slice, n] = m;
-  const headers = new Headers();
-  headers.set("X-Store-Token", request.headers.get("X-Store-Token") || "");
-  if (slice === undefined) {
-    if (request.method !== "DELETE") return err(404, "not_found");
-    return ledger(env).fetch(`https://ledger/delete?id=${id}`, { method: "POST", headers });
-  }
-  if (len > num(env, "STORE_PIECE", 4194304) + 64) return err(413, "too_big");
-  if (request.method !== "PUT" && request.method !== "GET") return err(404, "not_found");
-  return sliceStub(env, id, slice).fetch(`https://slice/piece/${Number(n)}`, {
-    method: request.method, headers,
-    body: request.method === "PUT" ? request.body : undefined,
-  });
-}
-
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -195,8 +154,6 @@ export default {
     if (parts[0] !== "v1") return err(404, "not_found");
     const maxCh = num(env, "MAX_CHANNEL", 499);
     const len = Number(request.headers.get("Content-Length") || 0);
-    const sm = STORE_ROUTE.exec(url.pathname);
-    if (sm) return storeRoute(request, env, sm, len);
     if (len > num(env, "CHUNK_MAX", 1048576 + 64)) return err(413, "too_big");
 
     if (parts.length === 2 && parts[1] === "open" && request.method === "POST") {
@@ -229,8 +186,6 @@ export default {
     if (rest !== "join" && !BOX_ROUTES.has(rest.split("/")[0])) return err(404, "not_found");
     // Taking a send-later record is a code try: the same per-IP limits as join.
     if (rest === "take" && !(await allowed(env, request, "join"))) return err(429, "rate");
-    if (rest === "store" && request.method === "POST"
-        && !(await allowed(env, request, "store"))) return err(429, "rate");
     const headers = new Headers();
     if (token) headers.set("X-Token", token);
     return stub.fetch(`https://box/${rest}${url.search}`, {
@@ -307,10 +262,6 @@ export class ShareBox {
 
   async close(reason) {
     const now = Date.now();
-    const old = this.meta && !this.meta.closed ? this.meta : null;
-    // Its guild storage: kept for the download only when the record was taken.
-    const store = old && old.store;
-    const taken = Boolean(store && reason === "done" && old.later && old.later.store === store);
     this.slots.clear();
     this.chunks.clear();
     await this.ctx.storage.deleteAlarm();
@@ -319,62 +270,6 @@ export class ShareBox {
     this.saveMeta();
     await this.ctx.storage.setAlarm(now + TOMBSTONE * 1000);
     this.notify();
-    if (store) await this.tellLedger(taken ? "taken" : "drop", store);
-  }
-
-  async tellLedger(what, id) {
-    if (!this.env.LEDGER) return;
-    try {
-      await ledger(this.env).fetch(`https://ledger/${what}?id=${id}`, { method: "POST" });
-    } catch { /* the ledger's own alarm cleans up at the hard end */ }
-  }
-
-  // ---------- guild storage ----------
-  async storeOpen(request, side) {
-    const m = this.meta;
-    if (side !== "send") return err(403, "side");
-    if (request.method === "DELETE") {   // the app falls back to file.kiwi
-      const id = m.store;
-      m.store = null;
-      if (m.later) m.later.store = null;
-      this.saveMeta();
-      if (id) await this.tellLedger("drop", id);
-      return empty();
-    }
-    if (m.recvHash) return err(409, "joined");
-    if (m.later) return err(409, "order");
-    if (!this.env.LEDGER || !this.env.SLICE) return err(404, "not_found");
-    let body;
-    try {
-      body = JSON.parse(await readText(request, 400));
-    } catch {
-      return err(400, "bad");
-    }
-    const blob = body && body.blob;
-    const put = body && body.put;
-    const get = body && body.get;
-    if (!Number.isInteger(blob) || blob < 1 || typeof put !== "string" || !/^[0-9a-f]{64}$/.test(put)
-        || typeof get !== "string" || !/^[0-9a-f]{64}$/.test(get) || put === get) {
-      return err(400, "bad");
-    }
-    if (m.store) {   // a repeat after a network blip: the first one goes
-      const old = m.store;
-      m.store = null;
-      await this.tellLedger("drop", old);
-    }
-    const r = await ledger(this.env).fetch("https://ledger/reserve", {
-      method: "POST", body: JSON.stringify({ blob, put, get }),
-    });
-    if (r.status !== 200) return r;
-    const out = await r.json();
-    if (this.meta !== m || m.closed || m.recvHash || m.later) {
-      await this.tellLedger("drop", out.id);
-      return err(409, m.recvHash ? "joined" : "order");
-    }
-    m.store = out.id;
-    m.storeEnd = out.end;
-    this.saveMeta();
-    return json(200, { id: out.id, piece: out.piece, slice: out.slice });
   }
 
   async forget() {
@@ -495,10 +390,6 @@ export class ShareBox {
       return empty();
     }
     if (parts[0] === "later" && request.method === "POST") return this.startLater(request, side);
-    if (parts[0] === "store" && parts.length === 1
-        && (request.method === "POST" || request.method === "DELETE")) {
-      return this.storeOpen(request, side);
-    }
     if (parts[0] === "record" && request.method === "PUT") return this.putRecord(request, side);
     if (parts[0] === "msg" && parts.length === 2) return this.msg(request, side, parts[1], wait);
     if (parts[0] === "chunk" && parts.length === 2 && /^[0-9]{1,6}$/.test(parts[1])) {
@@ -521,11 +412,9 @@ export class ShareBox {
     const hours = body && body.hours;
     const salt = body && body.salt;
     const verifier = body && body.verifier;
-    const store = (body && body.store) || null;   // the guild storage this send uses
     if (!Number.isInteger(hours) || hours < 1 || hours > this.laterMaxHours
         || typeof salt !== "string" || !/^[0-9a-f]{32}$/.test(salt)
-        || typeof verifier !== "string" || !/^[0-9a-f]{64}$/.test(verifier)
-        || (store !== null && store !== m.store)) {
+        || typeof verifier !== "string" || !/^[0-9a-f]{64}$/.test(verifier)) {
       return err(400, "bad");
     }
     // One watch token for the box: a join (rate-limited) hands it out, and GET /later
@@ -542,7 +431,7 @@ export class ShareBox {
     }
     const now = Date.now();
     m.later = { hours, salt, verifier, state: "uploading", started: now, until: null,
-      record: null, watch, watchHash, store };
+      record: null, watch, watchHash };
     m.sendLast = now;
     this.laterP = 0;
     this.saveMeta();
@@ -563,13 +452,7 @@ export class ShareBox {
         : err(409, "taken");
     }
     const now = Date.now();
-    let until = now + m.later.hours * 3600000;
-    // Guild storage: the code ends early enough for the download before the hard end.
-    if (m.later.store && m.storeEnd) until = Math.min(until, m.storeEnd - STORE_MARGIN * 1000);
-    if (until <= now) {
-      await this.close("expired");
-      return err(410, "expired");
-    }
+    const until = now + m.later.hours * 3600000;
     Object.assign(m.later, { state: "ready", record: b64, until });
     this.saveMeta();
     await this.ctx.storage.setAlarm(m.later.until + 1000);
@@ -581,7 +464,6 @@ export class ShareBox {
     // send later: no live join; a new app goes on to /later and /take with the watch token
     const caps = joinCaps(body);
     if (!caps.includes("later")) return err(410, "later");
-    if (this.meta.later.store && !caps.includes("store")) return err(410, "later");
     return json(200, { later: true, token: this.meta.later.watch });
   }
 
@@ -701,262 +583,5 @@ export class ShareBox {
     if (got === null) return err(410, this.meta?.closed || "cancel");
     if (got === undefined) return empty();
     return new Response(got, { headers: { "Content-Type": "application/octet-stream" } });
-  }
-}
-
-// ---------- guild storage ----------
-// One ledger for the whole Worker: every stored send (size, token hashes, hard end), the
-// room in use and today's bytes. Never an IP. Its alarm drops anything past its end, and a
-// reservation that got no piece within STORE_START_SECONDS. Today's bytes count what was
-// really stored: a dropped send gives back the part that never arrived.
-export class StoreLedger {
-  constructor(ctx, env) {
-    this.ctx = ctx;
-    this.env = env;
-    this.sql = ctx.storage.sql;
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS s (id TEXT PRIMARY KEY, size INTEGER NOT NULL,
-      slices INTEGER NOT NULL, put_hash TEXT NOT NULL, get_hash TEXT NOT NULL,
-      opened INTEGER NOT NULL, deadline INTEGER NOT NULL, day TEXT NOT NULL,
-      started INTEGER NOT NULL DEFAULT 0)`);
-    this.sql.exec("CREATE TABLE IF NOT EXISTS day (d TEXT PRIMARY KEY, bytes INTEGER NOT NULL)");
-  }
-
-  get startMs() { return num(this.env, "STORE_START_SECONDS", 300) * 1000; }
-
-  // When a row has to go: its end, or (no piece yet) STORE_START_SECONDS after opening.
-  ends() {
-    return `CASE WHEN started = 0 AND opened + ${this.startMs} < deadline
-      THEN opened + ${this.startMs} ELSE deadline END`;
-  }
-
-  get piece() { return Math.min(num(this.env, "STORE_PIECE", 4194304), 8388608); }
-
-  get slice() {   // a whole number of pieces, under 1 GB (Free plan: 1 GB per object)
-    const p = this.piece;
-    return Math.max(p, Math.floor(num(this.env, "STORE_SLICE", 943718400) / p) * p);
-  }
-
-  row(id) {
-    return this.sql.exec("SELECT * FROM s WHERE id = ?", id).toArray()[0] || null;
-  }
-
-  async fetch(request) {
-    const url = new URL(request.url);
-    const what = url.pathname.slice(1);
-    const id = url.searchParams.get("id") || "";
-    await this.sweep();
-    if (what === "reserve") return this.reserve(request);
-    if (!/^[0-9a-f]{32}$/.test(id)) return err(404, "not_found");
-    const row = this.row(id);
-    if (what === "taken") {   // the code was used: the receiver has a few hours to download
-      if (row) {
-        const end = Math.min(row.deadline,
-          Date.now() + num(this.env, "STORE_DOWNLOAD_SECONDS", 21600) * 1000);
-        this.sql.exec("UPDATE s SET deadline = ? WHERE id = ?", end, id);
-        await this.schedule();
-      }
-      return empty();
-    }
-    if (what === "drop") {
-      if (row) await this.drop(row);
-      return empty();
-    }
-    if (what === "started") {   // the first piece arrived (from slice 0)
-      if (row && !row.started) {
-        this.sql.exec("UPDATE s SET started = 1 WHERE id = ?", id);
-        await this.schedule();
-      }
-      return empty();
-    }
-    if (what === "delete") {   // DELETE /v1/s/<id> with the put or the get token
-      if (!row) return err(404, "not_found");
-      const hash = await sha256hex(request.headers.get("X-Store-Token") || "");
-      if (hash !== row.put_hash && hash !== row.get_hash) return err(403, "token");
-      await this.drop(row);
-      return empty();
-    }
-    return err(404, "not_found");
-  }
-
-  async reserve(request) {
-    const env = this.env;
-    let b;
-    try {
-      b = JSON.parse(await readText(request, 400));
-    } catch {
-      return err(400, "bad");
-    }
-    const size = b && b.blob;
-    if (!Number.isInteger(size) || size < 1 || !/^[0-9a-f]{64}$/.test(String(b.put))
-        || !/^[0-9a-f]{64}$/.test(String(b.get))) return err(400, "bad");
-    if (env.STORE_ON === "0") return err(503, "busy");
-    const piece = this.piece;
-    const slice = this.slice;
-    const slices = Math.ceil(size / slice);
-    if (size > num(env, "STORE_MAX_SEND", 4000000000) || slices > MAX_SLICES) {
-      return err(413, "too_big");
-    }
-    const live = this.sql.exec("SELECT COALESCE(SUM(size), 0) AS t FROM s").one().t;
-    if (live + size > num(env, "STORE_LIVE_CAP", 4400000000)) return err(503, "busy");
-    const day = new Date().toISOString().slice(0, 10);
-    this.sql.exec("DELETE FROM day WHERE d <> ?", day);
-    const used = (this.sql.exec("SELECT bytes FROM day WHERE d = ?", day).toArray()[0]
-      || { bytes: 0 }).bytes;
-    if (used + size > num(env, "STORE_DAY_CAP", 20000000000)) return err(503, "busy");
-    const now = Date.now();
-    const end = now + num(env, "STORE_MAX_SECONDS", 86400) * 1000;
-    const id = randomToken();
-    // Written before any await: a reserve at the same moment sees this one's room.
-    this.sql.exec("INSERT INTO s VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)", id, size, slices, b.put,
-      b.get, now, end, day);
-    this.sql.exec(`INSERT INTO day VALUES (?, ?)
-      ON CONFLICT(d) DO UPDATE SET bytes = bytes + excluded.bytes`, day, size);
-    try {
-      for (let k = 0; k < slices; k++) {
-        const bytes = Math.min(slice, size - k * slice);
-        const r = await sliceStub(env, id, k).fetch("https://slice/init", {
-          method: "POST",
-          body: JSON.stringify({ id, k, bytes, piece, put: b.put, get: b.get, end }),
-        });
-        if (r.status !== 204) throw new Error("init");
-      }
-    } catch {
-      const row = this.row(id);
-      if (row) await this.drop(row);
-      return err(503, "busy");
-    }
-    await this.schedule();
-    return json(200, { id, piece, slice, end });
-  }
-
-  async drop(row) {
-    this.sql.exec("DELETE FROM s WHERE id = ?", row.id);
-    let stored = 0;
-    for (let k = 0; k < row.slices; k++) {
-      try {
-        const r = await sliceStub(this.env, row.id, k).fetch("https://slice/wipe",
-          { method: "POST" });
-        stored += Number((await r.json()).stored) || 0;
-      } catch { /* the slice's own alarm wipes it at the hard end */ }
-    }
-    // Today's count keeps only what was really stored.
-    const back = Math.max(0, row.size - stored);
-    if (back) {
-      this.sql.exec("UPDATE day SET bytes = MAX(0, bytes - ?) WHERE d = ?", back, row.day);
-    }
-    await this.schedule();
-  }
-
-  async sweep() {
-    const old = this.sql.exec(`SELECT * FROM s WHERE ${this.ends()} <= ?`, Date.now())
-      .toArray();
-    for (const row of old) await this.drop(row);
-  }
-
-  async schedule() {
-    const next = this.sql.exec(`SELECT MIN(${this.ends()}) AS d FROM s`).one().d;
-    if (next === null) await this.ctx.storage.deleteAlarm();
-    else await this.ctx.storage.setAlarm(next + 1000);
-  }
-
-  async alarm() {
-    await this.sweep();
-    await this.schedule();
-  }
-}
-
-// One slice (< 1 GB) of one stored send: pieces in order, kept as STORE_ROW-sized rows.
-// An object nobody set up (a guessed id) only reads, so it never stores anything.
-export class StoreSlice {
-  constructor(ctx, env) {
-    this.ctx = ctx;
-    this.env = env;
-    this.meta = undefined;   // undefined = not loaded yet, null = nothing here
-  }
-
-  async load() {
-    if (this.meta === undefined) this.meta = (await this.ctx.storage.get("meta")) || null;
-    return this.meta;
-  }
-
-  async wipe() {
-    this.meta = null;
-    await this.ctx.storage.deleteAlarm();
-    await this.ctx.storage.deleteAll();
-  }
-
-  async alarm() {
-    await this.wipe();
-  }
-
-  async fetch(request) {
-    const url = new URL(request.url);
-    const parts = url.pathname.split("/").filter(Boolean);
-    if (parts[0] === "init" && request.method === "POST") {
-      const b = JSON.parse(await readText(request, 1000));
-      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS p (n INTEGER NOT NULL,
-        r INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (n, r))`);
-      this.meta = { id: b.id, k: b.k, bytes: b.bytes, piece: b.piece, put: b.put, get: b.get,
-        end: b.end, next: 0 };
-      await this.ctx.storage.put("meta", this.meta);
-      await this.ctx.storage.setAlarm(b.end);
-      return empty();
-    }
-    if (parts[0] === "wipe" && request.method === "POST") {   // -> how much it held
-      const m = await this.load();
-      const stored = m ? Math.min(m.next * m.piece, m.bytes) : 0;
-      await this.wipe();
-      return json(200, { stored });
-    }
-    const m = await this.load();
-    if (!m || parts[0] !== "piece") return err(404, "not_found");
-    if (Date.now() >= m.end) {
-      await this.wipe();
-      return err(404, "not_found");
-    }
-    const n = Number(parts[1]);
-    const pieces = Math.ceil(m.bytes / m.piece);
-    if (!Number.isInteger(n) || n < 0 || n >= pieces) return err(404, "not_found");
-    const hash = await sha256hex(request.headers.get("X-Store-Token") || "");
-    if (request.method === "PUT") {
-      if (hash !== m.put) return err(403, "token");
-      // Switched off: no more uploads (downloads and deletes still work). The app then
-      // goes on with file.kiwi.
-      if (this.env.STORE_ON === "0") return err(410, "off");
-      const want = n < pieces - 1 ? m.piece : m.bytes - (pieces - 1) * m.piece;
-      const data = await readCapped(request, want);
-      if (data === null || data.length !== want) return err(400, "length");
-      if (this.meta !== m) return err(404, "not_found");   // wiped meanwhile
-      if (n < m.next) return empty();                     // a repeat after a network blip
-      if (n !== m.next) return err(409, "order");
-      const row = num(this.env, "STORE_ROW", 1048576);
-      for (let off = 0, r = 0; off < want; off += row, r++) {
-        this.ctx.storage.sql.exec("INSERT OR REPLACE INTO p VALUES (?, ?, ?)", n, r,
-          data.slice(off, off + row).buffer);
-      }
-      m.next = n + 1;
-      this.ctx.storage.put("meta", m);
-      if (m.k === 0 && n === 0 && this.env.LEDGER) {   // the reservation is in use now
-        try {
-          await ledger(this.env).fetch(`https://ledger/started?id=${m.id}`, { method: "POST" });
-        } catch { /* worst case it's dropped as unused; the app then uses file.kiwi */ }
-      }
-      return empty();
-    }
-    if (request.method === "GET") {
-      if (hash !== m.get) return err(403, "token");
-      if (n >= m.next) return err(409, "order");
-      const rows = this.ctx.storage.sql.exec("SELECT data FROM p WHERE n = ? ORDER BY r", n)
-        .toArray();
-      let size = 0;
-      for (const r of rows) size += r.data.byteLength;
-      const out = new Uint8Array(size);
-      let o = 0;
-      for (const r of rows) { out.set(new Uint8Array(r.data), o); o += r.data.byteLength; }
-      return new Response(out, {
-        headers: { "Content-Type": "application/octet-stream", "Cache-Control": "no-store" },
-      });
-    }
-    return err(404, "not_found");
   }
 }

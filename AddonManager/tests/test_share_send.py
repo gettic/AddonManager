@@ -444,8 +444,7 @@ class SendLaterSender(LaterSender):
     def __init__(self, path, url, kiwi_url, sites, **kw):
         self.states = __import__("queue").Queue()
         self.hosts = []
-        self._later = {"hours": 12, "api": kiwi_url, "allow_local": True, "store": False,
-                       "send": sites}
+        self._later = {"hours": 12, "api": kiwi_url, "allow_local": True, "send": sites}
         Sender.__init__(self, path, url, **kw)
 
     def _run(self, path, args):
@@ -642,10 +641,9 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.fake.stored(), {})
 
     def test_older_record_versions_still_open(self):
-        self.assertTrue(share_later.CONSENT_VERSION >= 5)
+        self.assertTrue(share_later.CONSENT_VERSION >= 6)
         self.assertIn("adminForge", errors.later_uploading_text("now", "adminforge"))
         self.assertIn("Chapril", errors.later_uploading(1, 2, None, "chapril"))
-        self.assertIn("the guild's server", errors.later_uploading_text(None, "store"))
         self.assertIn("file.kiwi", errors.later_uploading_text(None, "kiwi"))
 
 

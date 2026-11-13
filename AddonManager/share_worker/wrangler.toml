@@ -16,16 +16,6 @@ class_name = "ShareBox"
 name = "RATE"
 class_name = "RateBox"
 
-# Guild storage for big send-later backups (Durable Object SQLite storage). WORKERS FREE ONLY:
-# on Free, going over a limit is an error, never a bill. Never move this account to Workers Paid.
-[[durable_objects.bindings]]
-name = "LEDGER"
-class_name = "StoreLedger"
-
-[[durable_objects.bindings]]
-name = "SLICE"
-class_name = "StoreSlice"
-
 # Free plan: only SQLite-backed Durable Objects. Never edit an old migration; add a new one.
 [[migrations]]
 tag = "v1"
@@ -38,6 +28,12 @@ new_sqlite_classes = ["RateBox"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["StoreLedger", "StoreSlice"]
+
+# The guild storage is gone: this deletes both classes and ALL their data. Deploy it only
+# 24 h or more after STORE_ON = "0" went live (stored sends must have run out first).
+[[migrations]]
+tag = "v4"
+deleted_classes = ["StoreLedger", "StoreSlice"]
 
 # Per-IP limits (the IP is hashed and never stored). Approximate, per Cloudflare location.
 [[ratelimits]]
@@ -65,16 +61,3 @@ HARD_WINDOW = "600"          # ... per 10 minutes (RateBox, memory only)
 LATER_IDLE = "300"           # an upload for later stops after 5 minutes without the sender
 LATER_UPLOAD_SECONDS = "21600"   # and after 6 hours of uploading in any case
 LATER_MAX_HOURS = "24"       # the longest a later code can work (the player picks 1-24 h)
-# Guild storage (tried before file.kiwi; only when the player ticked send later).
-STORE_ON = "1"               # "0" = switched off: no new stores, no more uploads (apps use file.kiwi); downloads/deletes still work
-STORE_PIECE = "4194304"      # bytes per upload/download request (4 MiB; 1048576 if CPU is tight)
-STORE_ROW = "1048576"        # bytes per SQLite row
-STORE_SLICE = "943718400"    # bytes per StoreSlice object (900 MiB; Free = 1 GB per object)
-STORE_MAX_SEND = "4000000000"    # biggest stored send (bigger -> file.kiwi)
-STORE_LIVE_CAP = "4400000000"    # stored at once for everyone (Free: 5 GB DO storage in all)
-STORE_DAY_CAP = "20000000000"    # bytes stored per UTC day (keeps row writes far under 100k/day)
-STORE_MAX_SECONDS = "86400"      # everything is deleted after 24 hours at most
-STORE_START_SECONDS = "300"     # a reservation with no piece after 5 minutes is dropped
-STORE_DOWNLOAD_SECONDS = "21600" # after the code is used: 6 hours to download, then deleted
-HARD_STORE = "3"             # stored sends per IP ...
-STORE_WINDOW = "86400"       # ... per day (RateBox, memory only)

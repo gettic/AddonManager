@@ -193,12 +193,6 @@ def _selftest_later(step):
             ok = False
         except ValueError:
             pass
-        # A guild-storage record (v2: no link, the store's id and get token).
-        rec2 = {"v": 2, "host": "store", "id": "a" * 32, "get": "b" * 32, "piece": 4194304,
-                "slice": 943718400, "key": "0" * 64, "size": 1, "sha256": "0" * 64,
-                "blob": 100, "name": share_later.random_name()}
-        ok = ok and share_later.open_record(
-            key, 37, share_later.seal_record(key, 37, rec2)) == rec2
         k = os.urandom(16)
         data = os.urandom(70000)                       # two RFC 8188 records
         ok = ok and share_later.ece_decrypt(k, share_later.ece_encrypt(k, data)) == data

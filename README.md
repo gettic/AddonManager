@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.16.1
+Current version: v0.17.0
 
 ## Get it
 
@@ -162,7 +162,7 @@ In the **Backup** window, click **Send to another PC...**. Choose a new backup (
 - The code works once. Both PCs must be online together: the code lasts 10 minutes, and a backup up to 500 MB goes straight across.
 - Before the code appears, the app warns you: the file has your account and character names and data your addons saved about other players. Only give the code to yourself or someone you trust.
 - The file is encrypted from end to end, so nobody in the middle can open it.
-- The relay in the middle is a Cloudflare Worker run by the app's maker. It only sees encrypted bytes, the code's channel number, sizes and times. Nothing is kept: it is deleted when the transfer ends, is cancelled or times out. Logs are off and IP addresses are not stored. The code of the relay is public: see `AddonManager\share_worker\`.
+- Sending with a code live (both PCs online together) uses a relay, a Cloudflare Worker run by the app's maker. It only sees encrypted bytes, the code's channel number, sizes and times. Nothing is kept: it is deleted when the transfer ends, is cancelled or times out. Logs are off and IP addresses are not stored. The code of the relay is public: see `AddonManager\share_worker\`.
 - Nothing changes on the receiving PC yet. The normal Restore window opens and you choose what to restore.
 - Before it zips, the app tells you if the disk is too full.
 
@@ -172,23 +172,21 @@ This is optional and **off by default**. Tick "Keep it online for later if the o
 
 | Order | Host | Who runs it | Size | How long it keeps the file |
 | --- | --- | --- | --- | --- |
-| 1 | The guild's server (on Cloudflare) | the app's maker | up to about 4 GB | deleted right after the other PC downloads it, or within 32 hours |
-| 2 | adminForge Send (Germany) | adminForge, another company | what the host allows | deleted right after the other PC downloads it, or within 32 hours |
-| 3 | Chapril (France) | Chapril | listed, but switched off for now | not used yet |
-| 4 | file.kiwi (US) | another company | up to 5 GB | can't be deleted early; stays a few days |
+| 1 | adminForge Send (Germany) | adminForge, another company | what the host allows | deleted right after the other PC downloads it, or within 32 hours |
+| 2 | Chapril (France) | Chapril | listed, but switched off for now | not used yet |
+| 3 | file.kiwi (US) | another company | up to 5 GB | can't be deleted early; stays a few days |
 
-A later host is used only when the one before it is full, busy or down, or the backup is too big for it. The window links to each host's terms and privacy pages. The app remembers your choice. The hours, links and note show only while the tick is on. Unticking it also unticks "Upload right away". If you had the tick on in an older version, tick it again once, because the wording changed.
+The guild keeps no copy and doesn't run or guarantee these hosts. A later host is used only when the one before it is full, busy or down, or the backup is too big for it. The window links to each host's terms and privacy pages. The app remembers your choice. The hours, links and note show only while the tick is on. Unticking it also unticks "Upload right away". If you had the tick on in an older version, tick it again once, because the wording changed.
 
 - **Not ready in 5 minutes:** with the tick on, the backup is uploaded. Keep the window open until it says "Uploaded". Then you can close the PC.
 - **Upload right away:** with the tick on, a second tick, "Upload right away (don't wait 5 min)", appears. Tick it when you know the other PC will pick the backup up later. The backup is uploaded at once. It starts unticked every time and is not remembered.
 - **Over 500 MB (up to 5 GB):** this only works with the tick on. The backup is uploaded right away, with no 5-minute wait. With the tick off, the app says the backup is too big and suggests you make a backup and copy it yourself, for example with a USB stick or a cloud folder.
 - **Code time:** "The code works for" 1, 2, 4, 8, 12 or 24 hours (12 by default). The other PC can type the code any time in that time. The code works once.
 - **On the other PC:** click **Receive...**, type the code and click **Download**.
-  - From the guild's server or adminForge, the app downloads the file by itself, with no browser. Receiving such a send needs this version or newer.
+  - From adminForge, the app downloads the file by itself, with no browser. Receiving such a send needs v0.16.0 or newer.
   - From file.kiwi, your browser gets the file. The download link is also shown with a **Copy link** button, for when the browser doesn't open. The Addon Manager finds the file in your Downloads folder by itself (or click **Open file...**, beside **Download**).
   - Then it checks the file and opens the usual Restore window.
-- **Closing Receive during a guild-server download** asks first, because stopping deletes that send for good. The other PC would have to send again. If that download fails, the message tells you to make a new code on the other PC.
-- **What the guild's server keeps:** the encrypted file, its size and times, and hashes of two secret tokens. Cloudflare runs it, so it sees your IP address for a moment, like any website. Logs are off. The code of the server is public: see `AddonManager\share_worker\`.
+- **Closing Receive during an adminForge download** asks first, because stopping deletes that send for good. The other PC would have to send again. If that download fails, the message tells you to make a new code on the other PC.
 - **What adminForge sees:** its servers are in Germany. It sees your IP address, the file's size and when it was sent. The file is encrypted, so it can't open it.
 - **What file.kiwi sees:** its servers are in the US, and it uses Cloudflare and Google. It sees your IP address, the file's size and when it was sent. The file is encrypted, so none of them can open it.
 - **A file on file.kiwi can't be deleted early.** Only the code opens it, so keep the code private: anyone who gets it first can open the file.

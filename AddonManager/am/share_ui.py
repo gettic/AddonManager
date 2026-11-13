@@ -23,8 +23,6 @@ log = logging.getLogger(__name__)
 CHAPRIL_SETTING = "send_later_chapril"   # days a send went to Chapril (its weekly cap)
 # Send later's hosts in the order tried (the consent list): name, then (link text, page).
 LATER_HOSTS = (
-    (errors.LATER_HOST_STORE, ((errors.LATER_TERMS, share_later.STORE_TERMS_URL),
-                               (errors.LATER_PRIVACY, share_later.STORE_PRIVACY_URL))),
     (errors.LATER_HOST_ADMINFORGE, ((errors.LATER_TERMS, share_send.ADMINFORGE_TERMS_URL),
                                     (errors.LATER_PRIVACY, share_send.ADMINFORGE_PRIVACY_URL))),
     (errors.LATER_HOST_CHAPRIL, ((errors.LATER_TERMS_PRIVACY, share_send.CHAPRIL_TERMS_URL),)),
@@ -205,7 +203,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         settings = config.load_settings()
         self.later_mode = False      # uploading for later (or done)
         self.later_done = False
-        self.later_host = None       # "store" (the guild's server) / "kiwi"
+        self.later_host = None       # a share_send.SITES key / "kiwi"
         self.later = None            # the choice when Get code was clicked
         # A tick given under an older wording of the tick counts as off (tos).
         self.later_var = tk.BooleanVar(value=settings.get("send_later") is True and settings.get(
@@ -318,9 +316,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 "api": getattr(self.app, "later_api", None) or share_later.API_URL,
                 "allow_local": self.app.allow_local,
                 "now": bool(self.now_var.get()),
-                # the guild's server first (tests: False = straight to file.kiwi)
-                "store": getattr(self.app, "later_store", True) is not False,
-                # then the Send servers (tests: their own list; Chapril capped per week)
+                # the Send servers first (tests: their own list; Chapril capped per week)
                 "send": list(getattr(self.app, "later_send", None)
                              or share_send.sites_to_try(share_send.chapril_ok(
                                  config.load_settings().get(CHAPRIL_SETTING),
@@ -604,7 +600,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             self.started = True
             if self.code:
                 self.ends_var.set("")
-            if msg[2] == "host":   # where it goes: the guild's server, a Send server, file.kiwi
+            if msg[2] == "host":   # where it goes: a Send server or file.kiwi
                 self.later_host = msg[3]
                 if msg[3] == "chapril":
                     self.note_chapril()
@@ -702,7 +698,7 @@ class ReceiveDialog(_ShareDialog):
             self.set_progress(msg[2], msg[3])
             self.set_status(errors.receiving(msg[2], msg[3], self.speed.left(msg[2], msg[3]))
                             if msg[2] < msg[3] else errors.RECEIVE_CHECKING)
-        elif kind == "share_later" and msg[2] == "store":   # downloading from the guild's
+        elif kind == "share_later" and msg[2] == "store":   # downloading from a Send
             self.store_download = True                     # server: closing asks first
         elif kind == "share_later":   # the other PC is still uploading it for later
             self.set_progress(msg[3] or 0, 1000)
@@ -729,11 +725,11 @@ class ReceiveDialog(_ShareDialog):
             self.entry.state(["!disabled"])
             self.go_button.state(["!disabled"])
 
-    store_download = False   # downloading a send kept on the guild's server
+    store_download = False   # downloading a send kept on a Send server
     asking = False
 
     def close(self):
-        """Cancel/Esc/X. While a guild-server download runs, stopping deletes that send for
+        """Cancel/Esc/X. While a Send-server download runs, stopping deletes that send for
         good, so ask first (only a yes stops it)."""
         if self.active and self.store_download and not self.closed:
             if self.asking:

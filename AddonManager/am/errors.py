@@ -443,7 +443,7 @@ RECEIVE_NOTE = ("Only use a code from yourself or someone you trust. You'll see 
 RECEIVE_OK = "Receive"
 RECEIVE_CONNECTING = "Connecting..."
 RECEIVE_CHECKING = "Checking the file..."
-# Closing Receive while it downloads from the guild's server (the send can't come back).
+# Closing Receive while it downloads from a Send server (the send can't come back).
 RECEIVE_STOP_TITLE = "Stop receiving?"
 RECEIVE_STOP_TEXT = ("Are you sure? The send will be deleted and can't be received again: "
                      "the other PC would have to send it again.")
@@ -475,33 +475,30 @@ def received_addons(not_listed, different):
     return " ".join(parts)
 
 
-# Send later (am\share_later.py, am\share_store.py): only when the player ticks it. Plain,
+# Send later (am\share_later.py, am\share_send.py): only when the player ticks it. Plain,
 # honest texts (tos conditions): every host in the order tried, what each sees, how long it
-# stays. Changing LATER_TICK/LATER_NOTE needs a new share_later.CONSENT_VERSION.
-STORE_HOST = "the guild's server"
+# stays; the guild keeps no copy and doesn't run these hosts. Changing LATER_TICK/LATER_NOTE or
+# the host rows needs a new share_later.CONSENT_VERSION.
 KIWI_HOST = "file.kiwi"
 SEND_HOSTS = {"adminforge": "adminForge's Send server", "chapril": "Chapril's Send server"}
 LATER_TICK = ("Keep it online for later if the other PC isn't ready in 5 min (at once if "
               "over 500 MB), on the first that works:")
-LATER_NOTE = ("Encrypted here first: only this code opens it. 1-3 delete it once "
-              "downloaded, else within 32 hours. file.kiwi (uses Cloudflare and Google) "
-              "can't be deleted early, keeps it a few days. All see your IP address, the "
-              "file's size and when it's sent.")
+LATER_NOTE = ("Encrypted here: only this code opens it. The guild keeps no copy and doesn't "
+              "run or guarantee these hosts. 1-2 delete it once downloaded, else in 32 hours; "
+              "file.kiwi (uses Cloudflare, Google) keeps it several days. All see your IP "
+              "address, the size and time.")
 # The hosts, in the order tried: one row each, its pages as small links at the right.
 LATER_TERMS = "terms"
 LATER_PRIVACY = "privacy"
 LATER_TERMS_PRIVACY = "terms & privacy"
-LATER_HOST_STORE = "1. The guild's server (Cloudflare)"
-LATER_HOST_ADMINFORGE = "2. adminForge Send (Germany)"
-LATER_HOST_CHAPRIL = "3. Chapril (France), now and then"   # fits 420 px with Linux fonts
-LATER_HOST_KIWI = "4. file.kiwi (US)"
+LATER_HOST_ADMINFORGE = "1. adminForge Send (Germany)"
+LATER_HOST_CHAPRIL = "2. Chapril (France), now and then"   # fits 420 px with Linux fonts
+LATER_HOST_KIWI = "3. file.kiwi (US)"
 LATER_KEEP = "The code works for:"
 LATER_NOW_TICK = "Upload right away (don't wait 5 min)"
 
 
 def _host(host):
-    if host == "store":
-        return STORE_HOST
     return SEND_HOSTS.get(host, KIWI_HOST)
 
 
@@ -655,8 +652,8 @@ SHARE_CERTIFICATE = ("Can't make a safe connection to the send service. Check th
                      "happening, tell a guild officer.")
 
 
-# A failed download from the guild's server: the send is deleted there and the code is used
-# up, so these never say "try again" or "nothing was changed".
+# A failed download from a Send server: the send is deleted there and the code is used up,
+# so these never say "try again" or "nothing was changed".
 STORE_NEW_CODE = (" The code works only once, so the send was deleted. Make a new code on the "
                   "other PC.")
 STORE_USED_UP = {
@@ -675,7 +672,7 @@ def share_message(exc, fresh=False):
         return NEW_BACKUP_CHECK
     kind = getattr(exc, "kind", "")
     if kind in STORE_USED_UP and str(getattr(exc, "detail", "")).startswith("store"):
-        return STORE_USED_UP[kind] + STORE_NEW_CODE   # guild server: the code is used up
+        return STORE_USED_UP[kind] + STORE_NEW_CODE   # Send server: the code is used up
     if kind == "bad_format":
         return "That doesn't look like a code. Codes look like 37-amber-lamp-river."
     if kind == "wrong_code":
@@ -700,9 +697,9 @@ def share_message(exc, fresh=False):
         limit = getattr(exc, "limit", None) or 500 * 1024 * 1024
         if getattr(exc, "detail", "") == "later_off":
             return (f"That backup is over {limit_text(limit)}, too big to send live. The "
-                    "\"Keep it online for later\" option below (the guild's server, else a "
-                    "third-party host) can send it, or make a backup and copy it yourself with "
-                    "a USB stick or cloud folder.")
+                    "\"Keep it online for later\" option below (on a public file host) can "
+                    "send it, or make a backup and copy it yourself with a USB stick or cloud "
+                    "folder.")
         return (f"That backup is too big to send ({limit_text(limit)} at most). Use a cloud "
                 "folder or USB stick.")
     if kind == "later_failed":
@@ -712,9 +709,7 @@ def share_message(exc, fresh=False):
         return ("Uploading to file.kiwi didn't work, so the code was stopped. Try again with "
                 "a new code, or use a USB stick or cloud folder.")
     if kind == "store_failed":
-        site = str(getattr(exc, "detail", "")).startswith("send")
-        return ("The download stopped." if site
-                else "The download from the guild's server stopped.") + STORE_NEW_CODE
+        return "The download stopped." + STORE_NEW_CODE
     if kind == "later_file":
         return ("That isn't the finished download for this code (or it is damaged). Download "
                 "it again, then pick it.")
@@ -724,7 +719,7 @@ def share_message(exc, fresh=False):
         return "That file isn't a backup that can be sent (or it is damaged)."
     if kind == "disk_full":
         need = getattr(exc, "limit", None)
-        if need and getattr(exc, "detail", "") == "store":   # guild server: the code is used up
+        if need and getattr(exc, "detail", "") == "store":   # Send server: the code is used up
             return (f"Not enough free disk space: about {limit_text(need)} is needed. The code "
                     "works only once, so free some space and ask the other PC for a new send.")
         if need:

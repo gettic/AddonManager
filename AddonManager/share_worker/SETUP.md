@@ -54,43 +54,16 @@ Optional for players and off by default. If the other PC hasn't joined after 5 m
 - **Can't be deleted early:** file.kiwi deletes files on its own schedule (a few days). Once the code ends, the stored file can't be opened.
 - **Switch it off:** remove `"later"` from `BOX_ROUTES` in `worker.js` and deploy. Setting `LATER_MAX_HOURS` to `"0"` doesn't work, because `num()` falls back to 24. Once it is off, the app's tick box fails cleanly with "Uploading to file.kiwi didn't work".
 
-## Guild storage for big sends (tried before file.kiwi)
+## Guild storage (removed)
+
+v0.15.0-v0.16.x could keep big send-later backups on this Worker (Durable Objects
+`StoreLedger`/`StoreSlice`). It was switched off (`STORE_ON = "0"`), and migration `v4`
+(`deleted_classes`) then deleted both classes and all their data; deploy `v4` only 24 h or
+more after the switch-off. Never edit `v3` or `v4`. Older apps that still ask for the storage
+get 404 and upload to their other hosts instead.
 
 **Stay on Workers Free. Never move this account to Workers Paid:** on Free, going over a limit
-is an error ("busy"), never a bill; on Paid, storage over the free amount is billed.
-
-With the send-later tick on, the app first keeps the sealed backup on this Worker itself
-(Durable Object SQLite storage: `StoreLedger` keeps the list, `StoreSlice` holds < 1 GB each),
-so the other PC's app can download it by itself. Only when that is full, switched off, too big
-or stops answering does it use file.kiwi.
-
-- **What it keeps:** the already-encrypted blob (random id, no names), the sizes and two token
-  hashes (the tokens come with each request over HTTPS and are only hashed, never kept). The
-  tokens themselves are made by the apps; the get token is only inside the sealed
-  record. No IP addresses (the per-IP count is in RateBox's memory only).
-- **Deleted:** when the receiver has downloaded it (the app deletes it), when the code is
-  cancelled, used wrongly or runs out, when the sender stops while uploading, 6 hours after
-  the code was used, and after 24 hours at most in any case (alarms). The code ends 2 h
-  before that hard end.
-- **Limits** (`[vars]`, change and deploy): `STORE_PIECE` 4 MiB per request, `STORE_ROW`
-  1 MiB per row, `STORE_SLICE` 900 MiB per object, `STORE_MAX_SEND` 4 GB per send,
-  `STORE_LIVE_CAP` 4.4 GB for everyone at once (Free: 5 GB of DO storage in all),
-  `STORE_DAY_CAP` 20 GB per UTC day, `HARD_STORE` 3 stored sends per IP per day.
-- **CPU (10 ms per request on Free):** after deploying, send a ~300 MB and a ~2 GB test backup
-  and look at the Worker's CPU time in the dashboard metrics. If requests hit the limit (error
-  1102), set `STORE_PIECE = "1048576"`. If that still fails, switch it off (below).
-- **See what's stored:** dashboard -> Durable Objects -> the namespaces' storage; after a test
-  it should be back near zero.
-- **Switch it off:** `STORE_ON = "0"` and deploy. No new stores and no more uploads (an upload
-  that is running stops and the app goes on with file.kiwi); downloads and deletes of sends
-  already stored still work, so receivers can finish. Everything stored is gone 24 h later.
-- **Unused reservations:** a reservation that gets no piece within `STORE_START_SECONDS` (5 min)
-  is dropped, and today's count (`STORE_DAY_CAP`) keeps only the bytes really stored.
-- Migration `v3` adds the two classes (SQLite-backed, as Free needs).
-
-Local test: the same `wrangler dev --local` copy as above, ideally with `STORE_PIECE = "65536"`,
-`STORE_SLICE = "262144"` and `STORE_ROW = "20000"` so one small backup crosses several slices
-and rows (`LocalLaterWorkerTests.test_guild_storage_round_trip`).
+is an error ("busy"), never a bill.
 
 ## Switch it off
 
