@@ -18,6 +18,7 @@ import dataclasses
 import datetime
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -37,6 +38,44 @@ TEMP_MAX_AGE = 2 * 60 * 60           # older ones are leftovers of a run that wa
 
 NEW, UPDATE, SAME, HAND, GUILD = "new", "update", "same", "hand", "guild"
 BLIZZARD, BAD_NAME = "blizzard", "bad_name"
+
+# A longer version in the picked file's name ("ZG Release Forever 1.6.37602.rar" while the
+# toc says 1.6): shown and remembered instead, but only when it starts with the toc's.
+_NAME_VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
+_ARCHIVE_EXTS = (".zip", ".rar", ".7z")
+MAX_VERSION_TEXT = 50
+
+
+def name_versions(source_name):
+    """Every dotted number in a picked file/folder name (archive extension left out)."""
+    stem = source_name if isinstance(source_name, str) else ""
+    base, ext = os.path.splitext(stem)
+    if ext.lower() in _ARCHIVE_EXTS:
+        stem = base
+    return _NAME_VERSION_RE.findall(stem)
+
+
+def full_version(toc_version, longer):
+    """The longest of `longer` (strings) that is all numbers and starts with the toc's
+    version + "." (1.6 -> 1.6.37602; never 1.60 or 1.7.x); else toc_version unchanged."""
+    v = versions.plain(toc_version)
+    if not v or versions.parse(v) is None:
+        return toc_version
+    best = None
+    for c in longer or ():
+        c = versions.plain(c) if isinstance(c, str) else None
+        if c and len(c) <= MAX_VERSION_TEXT and c.startswith(v + ".") \
+                and versions.parse(c) is not None and (best is None or len(c) > len(best)):
+            best = c
+    return best or toc_version
+
+
+def _tracked_version(tracked, folder):
+    for f, info in (tracked or {}).items():
+        if isinstance(f, str) and f.lower() == folder.lower() and isinstance(info, dict):
+            v = info.get("version")
+            return v if isinstance(v, str) else None
+    return None
 
 
 @dataclasses.dataclass
@@ -201,7 +240,10 @@ def _set_state(a, addons_dir, guild_folders, tracked):
     a.installed_version = toc.describe(os.path.join(addons_dir, existing), existing)[2]
     if existing.lower() not in _lower_set(tracked):
         a.state = HAND
-    elif a.version and a.installed_version and versions.same(a.version, a.installed_version):
+        return
+    v = _tracked_version(tracked, existing)
+    a.installed_version = full_version(a.installed_version, [v] if v else ())
+    if a.version and a.installed_version and versions.same(a.version, a.installed_version):
         a.state = SAME
     else:
         a.state = UPDATE
@@ -247,10 +289,14 @@ def scan(path, addons_dir, guild_folders=(), tracked=None, runner=None, tmp_root
             chosen, title, version, status = toc.describe(src, folder)
             files, left, count, size = _addon_files(src)
             a = FoundAddon(folder, title, version, status, src, renamed, files, left, count, size)
-            _set_state(a, addons_dir, guild_folders, tracked or {})
             plan.addons.append(a)
         if not plan.addons and not plan.skipped:
             raise ArchiveError("empty", plan.name)
+        if len(plan.addons) == 1 and not plan.skipped:   # a pack's name says nothing per addon
+            a = plan.addons[0]
+            a.version = full_version(a.version, name_versions(plan.name))
+        for a in plan.addons:
+            _set_state(a, addons_dir, guild_folders, tracked or {})
         plan.addons.sort(key=lambda a: a.folder.lower())
         return plan
     except BaseException:
@@ -447,5 +493,6 @@ def other_rows(addons_dir, tracked, guild_folders=()):
             continue
         kept[folder] = info
         _chosen, title, version, status = toc.describe(path, folder)
+        version = full_version(version, [info["version"]] if info.get("version") else ())
         rows.append(OtherRow(folder, title or info.get("name") or folder, version, status))
     return rows, kept

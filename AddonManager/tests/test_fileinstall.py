@@ -577,6 +577,76 @@ class TrackingTests(Base):
             self.assertFalse(installer.addon_name_ok(bad), bad)
 
 
+class FullVersionTests(Base):
+    """A longer version in the file's name (toc 1.6, "ZG Release Forever 1.6.37602.rar")."""
+
+    def test_name_versions_and_prefix_rule(self):
+        nv = fileinstall.name_versions
+        self.assertEqual(nv("ZG Release Forever 1.6.37602.rar"), ["1.6.37602"])
+        self.assertEqual(nv("ZG-v1.6.37602.zip"), ["1.6.37602"])
+        self.assertEqual(nv("ZG 1.6.37602.7z"), ["1.6.37602"])
+        self.assertEqual(nv("ZG 1.6.37602"), ["1.6.37602"])      # a folder: no extension cut
+        self.assertEqual(nv("ZG.zip"), [])
+        self.assertEqual(nv(None), [])
+        fv = fileinstall.full_version
+        self.assertEqual(fv("1.6", ["1.6.37602"]), "1.6.37602")
+        self.assertEqual(fv("v1.6", ["1.6.37602"]), "1.6.37602")
+        self.assertEqual(fv("1.6", ["2026.11", "1.6.3", "1.6.37602"]), "1.6.37602")
+        for toc_v, cands in (("1.6", ["1.60.1"]), ("1.7", ["1.6.37602"]),
+                             ("1.6-beta", ["1.6.1"]), ("1.6", []), ("1.6", ["1.6"]),
+                             ("1.6", ["1.6.x"]), (None, ["1.6.1"])):
+            self.assertEqual(fv(toc_v, cands), toc_v, (toc_v, cands))
+
+    def test_single_addon_archive_shows_and_keeps_full(self):
+        path = self.zip(af.addon_files("ZG", "1.6"), "fullver ZG Release Forever 1.6.37602.zip")
+        plan = self.scan(path)
+        self.assertEqual(plan.addons[0].version, "1.6.37602")
+        result = self.install(plan)
+        self.assertEqual(result.installed, [("ZG", "1.6.37602", "ZG")])
+        tracked = fileinstall.track({}, result, plan.name)
+        self.assertEqual(tracked["ZG"]["version"], "1.6.37602")
+        rows, _kept = fileinstall.other_rows(self.addons, tracked)
+        self.assertEqual([(r.folder, r.version) for r in rows], [("ZG", "1.6.37602")])
+        # the same file again: same version, not an update to itself
+        again = self.scan(self.zip(af.addon_files("ZG", "1.6"), "ZG 1.6.37602.zip"), tracked)
+        self.assertEqual(again.addons[0].state, fileinstall.SAME)
+        newer = self.scan(self.zip(af.addon_files("ZG", "1.6"), "ZG 1.6.37700.zip"), tracked)
+        self.assertEqual(newer.addons[0].state, fileinstall.UPDATE)
+        self.assertIn("Update v1.6.37602 to v1.6.37700", fileinstall_ui.note_for(newer.addons[0]))
+        # updated by hand to a toc of 1.7: the saved 1.6.37602 no longer fits
+        make_addon_folder(self.addons, "ZG", "1.7")
+        rows, _kept = fileinstall.other_rows(self.addons, tracked)
+        self.assertEqual(rows[0].version, "1.7")
+        self.untouched()
+
+    def test_folder_pick_too(self):
+        src = os.path.join(self.tmp, "ZG 1.6.37602")
+        make_addon_folder(src, "ZG", "1.6")
+        self.assertEqual(self.scan(src).addons[0].version, "1.6.37602")
+
+    def test_pack_keeps_each_toc_version(self):
+        e = dict(af.addon_files("Pack", "1.0"))
+        e.update(af.addon_files("PackLib", "1.0"))
+        plan = self.scan(self.zip(e, "Pack 1.0.5.zip"))
+        self.assertEqual([a.version for a in plan.addons], ["1.0", "1.0"])
+        one = dict(af.addon_files("Solo", "1.0"))
+        one.update(af.addon_files("Blizzard_X", "1.0"))   # skipped, but still a second addon
+        self.assertEqual(self.scan(self.zip(one, "Solo 1.0.5.zip")).addons[0].version, "1.0")
+
+    def test_hand_copy_keeps_toc_version(self):
+        make_addon_folder(self.addons, "ZG", "1.6")
+        plan = self.scan(self.zip(af.addon_files("ZG", "1.6"), "ZG 1.6.37602.zip"),
+                         {"Other": {"version": "1.6.37602"}})
+        self.assertEqual((plan.addons[0].state, plan.addons[0].installed_version),
+                         (fileinstall.HAND, "1.6"))
+
+    def test_restored_record_keeps_full(self):
+        make_addon_folder(self.addons, "ZG", "1.6")
+        tracked = fileinstall.merge_restored({}, {"ZG": {"name": "ZG", "version": "1.6.37602"}})
+        rows, _kept = fileinstall.other_rows(self.addons, tracked)
+        self.assertEqual(rows[0].version, "1.6.37602")
+
+
 class DialogTests(Base):
     def setUp(self):
         super().setUp()
