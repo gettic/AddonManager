@@ -420,6 +420,10 @@ SEND_NEWEST = "Newest backup: "
 SEND_OTHER = "Other file..."
 SEND_CHANGE = "Change..."   # after an error: opens "What to send" again
 SEND_CHOSEN = "File: "
+# Folded "What to send" while a send runs / after an error: short, so it fits on one line
+# beside Change... (the full choice shows again when the choices open).
+SEND_FOLDED = "Sending:"
+SEND_FOLDED_NEW = "a new backup"
 SEND_PRIVATE = ("This file has your account and character names and data your addons saved "
                 "about other players. Only give the code to yourself or someone you trust.")
 SEND_SAFE = "It is sent encrypted. The code works once, for 10 minutes."
@@ -476,26 +480,29 @@ def received_addons(not_listed, different):
 # stays. Changing LATER_TICK/LATER_NOTE needs a new share_later.CONSENT_VERSION.
 STORE_HOST = "the guild's server"
 KIWI_HOST = "file.kiwi"
+SEND_HOSTS = {"adminforge": "adminForge's Send server", "chapril": "Chapril's Send server"}
 LATER_TICK = ("Keep it online for later if the other PC isn't ready in 5 min (at once if "
-              "over 500 MB): on the guild's server, else file.kiwi (a third-party host)")
-LATER_NOTE = ("It's encrypted here first: only this code opens it. First the guild's server "
-              "(on Cloudflare): deleted once downloaded, or after 24 h. If that's full or down: "
-              "file.kiwi (another company, US, with Cloudflare and Google): can't be deleted "
-              "early, stays a few days. Both see your IP address, the file's size and when "
-              "it's sent.")
-# The links line: "Cloudflare: terms privacy   file.kiwi: terms privacy"
-LATER_CLOUDFLARE = "Cloudflare:"
-LATER_KIWI = "file.kiwi:"
-LATER_STORE_TERMS = "terms"
-LATER_STORE_PRIVACY = "privacy"
+              "over 500 MB), on the first that works:")
+LATER_NOTE = ("Encrypted here first: only this code opens it. 1-3 delete it once "
+              "downloaded, else within 32 hours. file.kiwi (uses Cloudflare and Google) "
+              "can't be deleted early, keeps it a few days. All see your IP address, the "
+              "file's size and when it's sent.")
+# The hosts, in the order tried: one row each, its pages as small links at the right.
 LATER_TERMS = "terms"
 LATER_PRIVACY = "privacy"
+LATER_TERMS_PRIVACY = "terms & privacy"
+LATER_HOST_STORE = "1. The guild's server (Cloudflare)"
+LATER_HOST_ADMINFORGE = "2. adminForge Send (Germany)"
+LATER_HOST_CHAPRIL = "3. Chapril (France), now and then"   # fits 420 px with Linux fonts
+LATER_HOST_KIWI = "4. file.kiwi (US)"
 LATER_KEEP = "The code works for:"
 LATER_NOW_TICK = "Upload right away (don't wait 5 min)"
 
 
 def _host(host):
-    return STORE_HOST if host == "store" else KIWI_HOST
+    if host == "store":
+        return STORE_HOST
+    return SEND_HOSTS.get(host, KIWI_HOST)
 
 
 def later_uploading_text(reason, host=None):
@@ -516,10 +523,11 @@ LATER_UPLOADING_BIG = later_uploading_text("big")
 LATER_UPLOADING_NOW = later_uploading_text("now")
 LATER_GOT = ("The other PC uploaded it to file.kiwi. Click Download to get it in your "
              "browser. I then find it in your Downloads by myself; if I don't, click Open "
-             "the download... and pick it.")
+             "file... and pick it.")
 LATER_KEEP_OPEN = "Keep this window open until it's restored: the code works only once."
 LATER_DOWNLOAD = "Download"
-LATER_OPEN = "Open the download..."
+LATER_OPEN = "Open file..."   # short: it shares the row with Download (half each)
+LATER_OPEN_TITLE = "Open the download"   # its file picker's title
 LATER_LINK_NOTE = "Browser didn't open? Copy this link into it:"
 LATER_COPY_LINK = "Copy link"
 LATER_LINK_COPIED = "Link copied. Paste it into your browser."
@@ -692,8 +700,8 @@ def share_message(exc, fresh=False):
         limit = getattr(exc, "limit", None) or 500 * 1024 * 1024
         if getattr(exc, "detail", "") == "later_off":
             return (f"That backup is over {limit_text(limit)}, too big to send live. The "
-                    "\"Keep it online for later\" option below (the guild's server, or file.kiwi, "
-                    "a third-party host) can send it, or make a backup and copy it yourself with "
+                    "\"Keep it online for later\" option below (the guild's server, else a "
+                    "third-party host) can send it, or make a backup and copy it yourself with "
                     "a USB stick or cloud folder.")
         return (f"That backup is too big to send ({limit_text(limit)} at most). Use a cloud "
                 "folder or USB stick.")
@@ -704,7 +712,9 @@ def share_message(exc, fresh=False):
         return ("Uploading to file.kiwi didn't work, so the code was stopped. Try again with "
                 "a new code, or use a USB stick or cloud folder.")
     if kind == "store_failed":
-        return "The download from the guild's server stopped." + STORE_NEW_CODE
+        site = str(getattr(exc, "detail", "")).startswith("send")
+        return ("The download stopped." if site
+                else "The download from the guild's server stopped.") + STORE_NEW_CODE
     if kind == "later_file":
         return ("That isn't the finished download for this code (or it is damaged). Download "
                 "it again, then pick it.")

@@ -2280,12 +2280,22 @@ class WindowShareTests(unittest.TestCase):
         app.open_backup_window(show=False)
         dlg = app.open_send(show=False)
         dlg.toggle_later()
-        for text in (errors.LATER_CLOUDFLARE, errors.LATER_KIWI, errors.LATER_STORE_TERMS,
-                     errors.LATER_STORE_PRIVACY):
+        for text in (errors.LATER_HOST_STORE, errors.LATER_HOST_ADMINFORGE,
+                     errors.LATER_HOST_CHAPRIL, errors.LATER_HOST_KIWI):
             self.assertIn(text, self.texts(dlg.win))
+        t, p = errors.LATER_TERMS, errors.LATER_PRIVACY
         self.assertEqual([link.cget("text") for link in dlg.later_links],
-                         [errors.LATER_STORE_TERMS, errors.LATER_STORE_PRIVACY,
-                          errors.LATER_TERMS, errors.LATER_PRIVACY])
+                         [t, p, t, p, errors.LATER_TERMS_PRIVACY, t, p])
+        from am import share_send, share_ui
+        self.assertTrue(all(link.bind("<Button-1>") for link in dlg.later_links))
+        urls = [u for _host, pages in share_ui.LATER_HOSTS for _t, u in pages]
+        self.assertEqual(urls, [share_later.STORE_TERMS_URL, share_later.STORE_PRIVACY_URL,
+                                 share_send.ADMINFORGE_TERMS_URL,
+                                 share_send.ADMINFORGE_PRIVACY_URL,
+                                 share_send.CHAPRIL_TERMS_URL, share_later.TERMS_URL,
+                                 share_later.PRIVACY_URL])
+        self.assertFalse(any("donat" in u or "spende" in u.lower() for u in urls))   # no donations
+        self.assertEqual(dlg.later_choice()["send"], [])   # tests: no real Send server
         dlg.toggle_now()
         dlg.win.update_idletasks()
         self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
@@ -2336,9 +2346,10 @@ class WindowShareTests(unittest.TestCase):
         for text in (errors.LATER_TICK, errors.LATER_NOTE, errors.LATER_TERMS,
                      errors.LATER_PRIVACY):
             self.assertIn(text, texts)
-        for word in ("US", "IP address", "size", "encrypted", "can't be deleted early",
-                     "a few days"):
+        for word in ("IP address", "size", "Encrypted", "can't be deleted early",
+                     "a few days", "32 hours"):
             self.assertIn(word, errors.LATER_NOTE)
+        self.assertIn("(US)", errors.LATER_HOST_KIWI)
         self.assertNotIn("only the two", " ".join(texts).lower())
         self.assertNotIn("premium", " ".join(texts).lower())       # no paid-tier pointers
         self.assertFalse(dlg.later_var.get())                      # off by default
@@ -2367,8 +2378,8 @@ class WindowShareTests(unittest.TestCase):
         again = app.open_send(show=False)
         self.assertFalse(again.later_var.get())
         again.close()
-        self.assertEqual(share_later.CONSENT_VERSION, 4)           # + Cloudflare terms link
-        config.save_settings(dict(old, send_later_v=3))            # the v3 wording: off too
+        self.assertEqual(share_later.CONSENT_VERSION, 5)           # + adminForge, Chapril
+        config.save_settings(dict(old, send_later_v=4))            # the v4 wording: off too
         again = app.open_send(show=False)
         self.assertFalse(again.later_var.get())
         again.close()
@@ -2466,7 +2477,8 @@ class WindowShareTests(unittest.TestCase):
         self.assertIn("disabled", dlg.now_check.state())           # not while sending
         # folded while sending: one "What to send" line, no file.kiwi details
         self.assertFalse(dlg.what_box.winfo_manager())
-        self.assertTrue(str(dlg.what_line.cget("text")).startswith(errors.SEND_WHAT + " "))
+        self.assertEqual(str(dlg.what_line.cget("text")),
+                         errors.SEND_FOLDED + " " + errors.SEND_FOLDED_NEW)
         self.assertFalse(dlg.later_rest.winfo_manager())
         self.pump_until(app, lambda: dlg.later_done, timeout=60)
         self.assertIn(errors.LATER_UPLOADING_NOW, said)

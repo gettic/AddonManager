@@ -153,6 +153,16 @@ class Files(unittest.TestCase):
             u = selfupdate.check("0.1.0", base, True, cache_file=cache)
         self.assertEqual(u.version, "99.0.0")
 
+    def test_check_without_fresh_cache_asks_again(self):
+        cache = os.path.join(self.work, "cache.json")
+        base = URI(self.api)
+        with open(cache, "w", encoding="utf-8") as f:   # fresh cache: nothing newer
+            json.dump({f"{base}|app:gettic/AddonManager":
+                       {"time": time.time(), "release": release(tag="v0.0.1")}}, f)
+        self.assertIsNone(selfupdate.check("0.1.0", base, True, cache_file=cache))
+        u = selfupdate.check("0.1.0", base, True, cache_file=cache, use_fresh_cache=False)
+        self.assertEqual(u.version, "99.0.0")
+
     # fetch
     def test_fetch_good(self):
         new = selfupdate.fetch(self.update(), self.exe, allow_local=True)
@@ -674,6 +684,144 @@ class Bar(unittest.TestCase):
         self.assertTrue(selfupdate.wait_ok(APP_VERSION, timeout=0.5))
         app.update_later_button.invoke()
         self.assertFalse(self.shown(app))
+        app.check_again()   # Check again doesn't bring the "updated" note back
+        self.pump(app, lambda: not app.busy)
+        self.assertFalse(self.shown(app))
+
+    # ---------- Check again / F5 also checks the app ----------
+    def counting_worker(self, gate=None):
+        """A stand-in for ui._update_check_worker: counts the starts, answers "no update"
+        (after gate is set, when given)."""
+        calls = []
+
+        def worker(q, github_api, allow_local, failed, force=False):
+            calls.append((failed, force))
+            if gate is not None:
+                gate.wait(10)
+            q.put(("app_update", None))
+        return calls, worker
+
+    def test_check_again_finds_new_release(self):
+        fixtures.write_release(self.api, "gettic/AddonManager", "v0.0.0", [])   # not newer
+        app = self.make_app()
+        self.pump(app, lambda: app._app_checked and not app.busy)
+        self.assertIsNone(app.update_mode)
+        self.assertFalse(self.shown(app))
+        fixtures.make_app_release(self.api, os.path.join(self.work, "dl"), URI)   # v99 out now
+        app._check_key()   # F5 (the fresh cache from startup is skipped)
+        self.pump(app, lambda: app.update_mode == "offer" and not app.busy)
+        self.assertEqual(app.update_mode, "offer")
+        self.assertTrue(self.shown(app))
+
+    def test_check_again_brings_back_later(self):
+        app = self.make_app()
+        self.pump(app, lambda: app.update_mode == "offer" and not app.busy)
+        app.update_later_button.invoke()
+        self.assertFalse(self.shown(app))
+        calls, worker = self.counting_worker()
+        with mock.patch.object(ui, "_update_check_worker", worker):
+            app.check_again()
+            self.pump(app, lambda: not app.busy)
+        self.assertTrue(self.shown(app))
+        self.assertEqual(len(calls), 1)   # an offer is up: checked again for a newer one
+        self.assertEqual(app.app_update.version, "99.0.0")   # "no update" keeps the offer
+
+    def test_check_again_replaces_offer_with_newer(self):
+        app = self.make_app()
+        self.pump(app, lambda: app.update_mode == "offer" and not app.busy)
+        self.assertEqual(app.app_update.version, "99.0.0")
+        fixtures.make_app_release(self.api, os.path.join(self.work, "dl"), URI,
+                                  tag="v100.0.0")
+        app.check_again()
+        self.pump(app, lambda: app.app_update.version == "100.0.0"
+                  and not app.busy and not app._app_checking)
+        self.assertEqual(app.update_mode, "offer")
+        self.assertEqual(app.update_text.cget("text"), "Addon Manager v100.0.0 is out.")
+        # An older answer never replaces it.
+        app.queue.put(("app_update", selfupdate.pick(release(), "0.1.0")))
+        self.pump(app, lambda: False, timeout=0.3)
+        self.assertEqual(app.app_update.version, "100.0.0")
+
+    def test_offer_not_replaced_while_updating(self):
+        app = self.make_app()
+        self.pump(app, lambda: app.update_mode == "offer" and not app.busy)
+        app.updating = True   # the app's own update is installing
+        calls, worker = self.counting_worker()
+        with mock.patch.object(ui, "_update_check_worker", worker):
+            app._start_app_check(force=True)
+        self.assertEqual(calls, [])
+        app.queue.put(("app_update", selfupdate.pick(release(tag="v100.0.0"), "0.1.0")))
+        self.pump(app, lambda: False, timeout=0.3)
+        self.assertEqual(app.app_update.version, "99.0.0")
+        app.updating = False
+
+    def test_newer_failed_version_does_not_replace_offer(self):
+        app = self.make_app()
+        self.pump(app, lambda: app.update_mode == "offer" and not app.busy)
+        fixtures.make_app_release(self.api, os.path.join(self.work, "dl"), URI,
+                                  tag="v100.0.0")
+        selfupdate.remember_failed("100.0.0")
+        app.check_again()
+        self.pump(app, lambda: not app.busy and not app._app_checking)
+        self.assertEqual(app.app_update.version, "99.0.0")
+
+    def test_check_again_skips_after_update_and_without_exe(self):
+        calls, worker = self.counting_worker()
+        with mock.patch.object(ui, "_update_check_worker", worker):
+            app = self.make_app(updated_from="0.0.9")
+            self.pump(app, lambda: not app.busy)
+            app.check_again()
+            self.pump(app, lambda: not app.busy)
+            self.root.destroy()
+            self.root = tk.Tk()
+            self.root.withdraw()
+            app = ui.App(self.root, os.path.join(self.site, "manifest.json"), True,
+                         self.root_dir, check_game=lambda: False, detect=lambda: [],
+                         github_api=self.api)   # no exe: a run from source
+            self.pump(app, lambda: not app.busy)
+            app.check_again()
+            self.pump(app, lambda: not app.busy)
+        self.assertEqual(calls, [])
+
+    def test_no_two_checks_at_once(self):
+        import threading
+        gate = threading.Event()
+        calls, worker = self.counting_worker(gate)
+        try:
+            with mock.patch.object(ui, "_update_check_worker", worker):
+                app = self.make_app()
+                self.pump(app, lambda: not app.busy)
+                app.check_again()   # the startup check is still waiting
+                self.pump(app, lambda: not app.busy)
+                self.assertEqual(len(calls), 1)
+                gate.set()
+                self.pump(app, lambda: not app._app_checking)
+                app.check_again()   # done now: a new check may start
+                self.pump(app, lambda: not app.busy and not app._app_checking)
+        finally:
+            gate.set()
+        self.assertEqual(calls, [(None, False), (None, True)])
+
+    def test_check_again_respects_failed_version(self):
+        fixtures.write_release(self.api, "gettic/AddonManager", "v0.0.0", [])
+        app = self.make_app()
+        self.pump(app, lambda: app._app_checked and not app.busy)
+        fixtures.make_app_release(self.api, os.path.join(self.work, "dl"), URI)
+        selfupdate.remember_failed("99.0.0")   # written to disk after the window opened
+        app.check_again()
+        self.pump(app, lambda: not app.busy and not app._app_checking)
+        self.assertIsNone(app.update_mode)
+        self.assertFalse(self.shown(app))
+
+    def test_toggle_betas_no_app_check(self):
+        calls, worker = self.counting_worker()
+        with mock.patch.object(ui, "_update_check_worker", worker):
+            app = self.make_app()
+            self.pump(app, lambda: not app.busy and not app._app_checking)
+            app.beta_var.set(True)
+            app.toggle_betas()
+            self.pump(app, lambda: not app.busy)
+        self.assertEqual(len(calls), 1)   # only the startup one
 
 
 if __name__ == "__main__":

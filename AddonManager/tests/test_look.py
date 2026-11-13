@@ -97,6 +97,27 @@ class ThemeTests(unittest.TestCase):
                     corner=corner, step=step))
                 self.assertTrue(os.path.isfile(path), path)
 
+    def test_even_wrap_no_lone_last_word(self):
+        from am import backup_ui
+        theme.apply(self.root)
+        f = tkfont.Font(root=self.root, font=theme.font())
+        text = "A safety copy of what gets replaced is saved first."
+        # a wrap that leaves only the last word on line 2
+        width = f.measure("A safety copy of what gets replaced is saved") + f.measure(" ") + 2
+        label = ttk.Label(self.root, text=text, wraplength=width)
+        label.update_idletasks()
+        before = label.winfo_reqheight()
+        backup_ui.even_wrap(label)
+        label.update_idletasks()
+        self.assertLess(int(float(str(label.cget("wraplength")))), width)
+        self.assertEqual(label.winfo_reqheight(), before)   # same number of lines
+        lines = backup_ui._wrapped_lines(f, text, int(float(str(label.cget("wraplength")))))
+        self.assertGreaterEqual(f.measure(lines[-1]) * 3, width)
+        # a one-line text and an even split stay as they are
+        short = ttk.Label(self.root, text="Short.", wraplength=width)
+        backup_ui.even_wrap(short)
+        self.assertEqual(int(float(str(short.cget("wraplength")))), width)
+
     def test_head_font_falls_back(self):
         with mock.patch.object(theme, "HEAD_CHOICES", ("No Such Font 123",)):
             theme.apply(self.root)

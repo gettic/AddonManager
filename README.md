@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.15.1
+Current version: v0.16.0
 
 ## Get it
 
@@ -75,7 +75,7 @@ If something fails, the app tells you in plain words and nothing is half-install
 When a newer version of Addon Manager is out, a bar appears with **Update now**, **Later** and a **What's new** link.
 
 - **Update now** downloads the new `AddonManager.exe` (on Linux, `AddonManager-x86_64.AppImage`) from the AddonManager releases, replaces the old one and restarts the app. On Windows the new icon shows right away. If the new version doesn't start, the old one comes back. The leftover `AddonManager.exe.old` is removed automatically (an old one from an earlier update goes away the next time you open the app).
-- **Later** hides the bar.
+- **Later** hides the bar. **Check again** (or F5) looks for a newer Addon Manager too and brings the bar back.
 
 Keep `AddonManager.exe` (or the AppImage) in a normal folder, such as Desktop, Downloads or Documents. If it is inside your WoW folder, or in a folder the app can't write to, it can't replace itself. The bar then shows the download page instead, and you download the new version by hand.
 
@@ -145,7 +145,7 @@ A progress bar with a percentage shows while a backup is made (also when **Send 
 
 ### Delete old backups
 
-Click **Old backups...** in the **Backup** window. Tick the backups you don't need and press **Delete...**. **Tick all but the newest** helps. Safety copies show only with their tick.
+Click **Old backups...** in the **Backup** window. Tick the backups you don't need and press **Delete...** (next to **Close**, bottom right). **Tick all but the newest** helps. Safety copies show only with their tick.
 
 - They go to the Recycle Bin (on Linux: the Trash).
 - On a drive without one (USB stick, network, some cloud drives), the question says they are deleted for good.
@@ -168,28 +168,31 @@ In the **Backup** window, click **Send to another PC...**. Choose a new backup (
 
 ### If the other PC isn't ready (send later)
 
-This is optional and **off by default**. Tick "Keep it online for later if the other PC isn't ready in 5 min (at once if over 500 MB): on the guild's server, else file.kiwi (a third-party host)". The backup goes to two places, in this order:
+This is optional and **off by default**. Tick "Keep it online for later if the other PC isn't ready in 5 min (at once if over 500 MB), on the first that works:". The backup is encrypted first. It goes to the first host in this list that works:
 
 | Order | Host | Who runs it | Size | How long it keeps the file |
 | --- | --- | --- | --- | --- |
-| 1 | The guild's server (on Cloudflare) | the app's maker | up to about 4 GB | deleted right after the other PC downloads it, or after 24 hours at most |
-| 2 | file.kiwi | another company | up to 5 GB | can't be deleted early; stays a few days |
+| 1 | The guild's server (on Cloudflare) | the app's maker | up to about 4 GB | deleted right after the other PC downloads it, or within 32 hours |
+| 2 | adminForge Send (Germany) | adminForge, another company | what the host allows | deleted right after the other PC downloads it, or within 32 hours |
+| 3 | Chapril (France) | Chapril | listed, but switched off for now | not used yet |
+| 4 | file.kiwi (US) | another company | up to 5 GB | can't be deleted early; stays a few days |
 
-file.kiwi is used only when the guild's server is full, busy or down, or the backup is over about 4 GB. The window links to Cloudflare's and file.kiwi's terms and privacy pages. The app remembers your choice. The hours, links and note show only while the tick is on. Unticking it also unticks "Upload right away". If you had the tick on in an older version, tick it again once, because the wording changed.
+A later host is used only when the one before it is full, busy or down, or the backup is too big for it. The window links to each host's terms and privacy pages. The app remembers your choice. The hours, links and note show only while the tick is on. Unticking it also unticks "Upload right away". If you had the tick on in an older version, tick it again once, because the wording changed.
 
 - **Not ready in 5 minutes:** with the tick on, the backup is uploaded. Keep the window open until it says "Uploaded". Then you can close the PC.
 - **Upload right away:** with the tick on, a second tick, "Upload right away (don't wait 5 min)", appears. Tick it when you know the other PC will pick the backup up later. The backup is uploaded at once. It starts unticked every time and is not remembered.
 - **Over 500 MB (up to 5 GB):** this only works with the tick on. The backup is uploaded right away, with no 5-minute wait. With the tick off, the app says the backup is too big and suggests you make a backup and copy it yourself, for example with a USB stick or a cloud folder.
 - **Code time:** "The code works for" 1, 2, 4, 8, 12 or 24 hours (12 by default). The other PC can type the code any time in that time. The code works once.
 - **On the other PC:** click **Receive...**, type the code and click **Download**.
-  - From the guild's server, the app downloads the file by itself, with no browser. Receiving such a send needs this version or newer.
-  - From file.kiwi, your browser gets the file. The download link is also shown with a **Copy link** button, for when the browser doesn't open. The Addon Manager finds the file in your Downloads folder by itself (or click **Open the download...**).
+  - From the guild's server or adminForge, the app downloads the file by itself, with no browser. Receiving such a send needs this version or newer.
+  - From file.kiwi, your browser gets the file. The download link is also shown with a **Copy link** button, for when the browser doesn't open. The Addon Manager finds the file in your Downloads folder by itself (or click **Open file...**, beside **Download**).
   - Then it checks the file and opens the usual Restore window.
 - **Closing Receive during a guild-server download** asks first, because stopping deletes that send for good. The other PC would have to send again. If that download fails, the message tells you to make a new code on the other PC.
 - **What the guild's server keeps:** the encrypted file, its size and times, and hashes of two secret tokens. Cloudflare runs it, so it sees your IP address for a moment, like any website. Logs are off. The code of the server is public: see `AddonManager\share_worker\`.
+- **What adminForge sees:** its servers are in Germany. It sees your IP address, the file's size and when it was sent. The file is encrypted, so it can't open it.
 - **What file.kiwi sees:** its servers are in the US, and it uses Cloudflare and Google. It sees your IP address, the file's size and when it was sent. The file is encrypted, so none of them can open it.
 - **A file on file.kiwi can't be deleted early.** Only the code opens it, so keep the code private: anyone who gets it first can open the file.
-- If file.kiwi isn't answering, the app tries again by itself every 5 minutes, for up to 2 hours, as long as the Send window stays open. After that it stops the code and tells you. Closing the window or the app stops it too.
+- If no host is answering, the app tries again by itself every 5 minutes, for up to 2 hours, as long as the Send window stays open. After that it stops the code and tells you. Closing the window or the app stops it too.
 - If the upload itself keeps failing, the app stops after a fixed number of tries and says the upload didn't work.
 
 A file received this way is handled with extra care:

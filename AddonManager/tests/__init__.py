@@ -35,3 +35,9 @@ config.STATS_URL = ""
 # ...and no backup is ever sent to the real relay (share tests use tests\fake_relay.py).
 REAL_SHARE_URL = config.SHARE_URL
 config.SHARE_URL = ""
+# ...and nothing ever goes to a real Send server (tests\fake_send.py stands in).
+from am import share_send  # noqa: E402
+
+REAL_SEND_URLS = {k: s.url for k, s in share_send.SITES.items()}
+for _site in share_send.SITES.values():
+    _site.url = ""

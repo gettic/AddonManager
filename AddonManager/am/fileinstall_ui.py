@@ -207,7 +207,7 @@ class FileInstallDialog:
         theme.frame_window(win, frame)
         theme.heading(frame, TITLE).pack(fill="x")
         ttk.Label(frame, text=f"From: {plan.name}", wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(6, 0))
+                  justify="left").pack(anchor="w", pady=(theme.px(6), 0))
         # WoW open: installing still works (like guild installs); say so where it's decided.
         self.game_label = None
         if game_running:
@@ -217,9 +217,10 @@ class FileInstallDialog:
                                        anchor="w", justify="left", wraplength=theme.px(WRAP),
                                        padx=theme.px(6), pady=theme.px(4),
                                        font=theme.font())
-            self.game_label.pack(fill="x", pady=(8, 0))
+            self.game_label.pack(fill="x", pady=(theme.px(8), 0))
         ttk.Label(frame, text=FOUND if plan.addons else NOTHING_TO_INSTALL,
-                  style="Muted.TLabel", wraplength=theme.px(WRAP)).pack(anchor="w", pady=(8, 2))
+                  style="Muted.TLabel", wraplength=theme.px(WRAP)).pack(
+            anchor="w", pady=(theme.px(8), theme.px(2)))
         self.vars, self.checks = {}, {}
         self._rows_area()
         for folder, why in plan.skipped:
@@ -229,11 +230,11 @@ class FileInstallDialog:
         left = left_out_line(plan)
         if left:
             ttk.Label(frame, text=left, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                      justify="left").pack(anchor="w", pady=(8, 0))
+                      justify="left").pack(anchor="w", pady=(theme.px(8), 0))
         self.safety_label = ttk.Label(frame, text=SAFETY_NOTE, style="Muted.TLabel",
                                       wraplength=theme.px(WRAP), justify="left")
         self.trust = ttk.Label(frame, text=TRUST_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP))
-        self.trust.pack(anchor="w", pady=(8, 0))
+        self.trust.pack(anchor="w", pady=(theme.px(8), 0))
         self.status_var = tk.StringVar()
         self.status = ttk.Label(frame, textvariable=self.status_var, wraplength=theme.px(WRAP),
                                 justify="left")
@@ -241,7 +242,7 @@ class FileInstallDialog:
         self.status_var.trace_add("write", lambda *_a: self._place_status())
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.buttons = ttk.Frame(frame)
-        self.buttons.pack(fill="x", pady=(12, 0))
+        self.buttons.pack(fill="x", pady=(theme.px(12), 0))
         self.cancel_button = ttk.Button(self.buttons, text=CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
         self.install_button = ttk.Button(self.buttons, text=INSTALL, style="Accent.TButton",
@@ -290,7 +291,7 @@ class FileInstallDialog:
             version = versions.display(a.version) if a.version else "?"
             check = ttk.Checkbutton(holder, text=f"{a.title}   {version}", variable=var,
                                     command=self._update_safety)
-            check.pack(anchor="w", pady=(4, 0))
+            check.pack(anchor="w", pady=(theme.px(4), 0))
             if not a.can_install:
                 var.set(False)
                 check.state(["disabled"])
@@ -308,7 +309,7 @@ class FileInstallDialog:
                 self.status.pack_forget()
             elif not self.status.winfo_manager():
                 after = self.progress if self.progress.winfo_manager() else self.buttons
-                self.status.pack(anchor="w", pady=(8, 0), before=after)
+                self.status.pack(anchor="w", pady=(theme.px(8), 0), before=after)
         except tk.TclError:
             pass
 
@@ -320,7 +321,7 @@ class FileInstallDialog:
         replaces = any(a.installed_folder for a in self.plan.addons
                        if a.can_install and self.vars[a.folder].get())
         if replaces and not self.safety_label.winfo_manager():
-            self.safety_label.pack(anchor="w", pady=(8, 0), before=self.trust)
+            self.safety_label.pack(anchor="w", pady=(theme.px(8), 0), before=self.trust)
         elif not replaces and self.safety_label.winfo_manager():
             self.safety_label.pack_forget()
 
@@ -341,7 +342,7 @@ class FileInstallDialog:
 
     def set_progress(self, done, total):
         if not self.progress.winfo_manager():
-            self.progress.pack(fill="x", pady=(6, 0), before=self.buttons)
+            self.progress.pack(fill="x", pady=(theme.px(6), 0), before=self.buttons)
         self.progress.configure(value=min(100, done * 100 // max(total, 1)))
 
     def _finish(self, text):

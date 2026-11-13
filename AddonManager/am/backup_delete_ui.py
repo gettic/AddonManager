@@ -112,9 +112,9 @@ class DeleteBackupsDialog(backup_ui._Dialog):
         self._token = 0
         ttk.Label(self.frame, text=errors.DELETE_NOTE, style="Muted.TLabel",
                   wraplength=theme.px(backup_ui.WRAP), justify="left").pack(
-            anchor="w", pady=(6, 0))
+            anchor="w", pady=(theme.px(6), 0))
         self.rows = ttk.Frame(self.frame)
-        self.rows.pack(fill="x", pady=(4, 0))
+        self.rows.pack(fill="x", pady=(theme.px(4), 0))
         self.safety_var = tk.BooleanVar(value=False)
         # The tick's text wraps (wider Linux fonts would widen the window past 420 px);
         # Linux rows in 9 pt like the Restore list's rows (Row.TButton).
@@ -124,19 +124,20 @@ class DeleteBackupsDialog(backup_ui._Dialog):
         self.safety_check = ttk.Checkbutton(self.frame, text=errors.DELETE_SAFETY,
                                             variable=self.safety_var, command=self.toggle_safety,
                                             style=WRAP_STYLE)
-        self.safety_check.pack(anchor="w", pady=(8, 0))
+        self.safety_check.pack(anchor="w", pady=(theme.px(8), 0))
         self.newest_button = ttk.Button(self.frame, text=errors.DELETE_NEWEST,
                                         command=self.tick_but_newest)
-        self.newest_button.pack(anchor="w", pady=(8, 0))
+        self.newest_button.pack(anchor="w", pady=(theme.px(8), 0))
         self.total_var = tk.StringVar(value=errors.DELETE_NOTHING)
         ttk.Label(self.frame, textvariable=self.total_var, style="Muted.TLabel").pack(
-            anchor="w", pady=(6, 0))
+            anchor="w", pady=(theme.px(6), 0))
         self._status_area(collapse=True)
         self.delete_button = ttk.Button(self.buttons, text=errors.DELETE_BUTTON,
                                         style="Accent.TButton", command=self.start)
-        self.delete_button.pack(side="left")
         self.close_button = ttk.Button(self.buttons, text=errors.CLOSE, command=self.close)
         self.close_button.pack(side="right")
+        # Delete... beside Close at the right, like every dialog's red action.
+        self.delete_button.pack(side="right", padx=(0, theme.px(6)))
         self.set_status(errors.DELETE_LOOKING)
         self.render()
         self.search()
@@ -195,7 +196,7 @@ class DeleteBackupsDialog(backup_ui._Dialog):
                 self._row(holder, f)
             if safety:
                 ttk.Label(holder, text=errors.DELETE_SAFETY_HEADING, style="Muted.TLabel").pack(
-                    anchor="w", pady=(4, 2))
+                    anchor="w", pady=(theme.px(4), theme.px(2)))
                 for f in safety:
                     self._row(holder, f)
             if more:

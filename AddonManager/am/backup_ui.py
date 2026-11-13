@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 
 from am import backup, config, errors, sysenv, theme, versions
@@ -40,6 +41,46 @@ def fit_wrap(label, inset=0):
                 int(float(str(label.cget("wraplength")) or 0)) - want) > 2:
             label.configure(wraplength=want)
     label.bind("<Configure>", resized, add="+")
+
+
+def _wrapped_lines(f, text, width):
+    """The lines of text when wrapped at width (greedy, at spaces, like Tk)."""
+    lines, line = [], ""
+    for word in text.split(" "):
+        test = f"{line} {word}" if line else word
+        if line and f.measure(test) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = test
+    return lines + [line]
+
+
+def even_wrap(label):
+    """No lone word on the last line: when the label's last line would be under a third
+    of its wrap width, wrap a bit narrower (same number of lines, evened out)."""
+    try:
+        text = str(label.cget("text"))
+        width = int(float(str(label.cget("wraplength")) or 0))
+        name = (ttk.Style(label).lookup(str(label.cget("style")) or "TLabel", "font")
+                or theme.font())
+        f = tkfont.Font(root=label, font=name)
+    except (tk.TclError, ValueError):
+        return
+    if width <= 0 or "\n" in text:
+        return
+    lines = _wrapped_lines(f, text, width)
+    if len(lines) < 2 or f.measure(lines[-1]) * 3 >= width:
+        return
+    lo, hi = width // 2, width   # the narrowest width with the same number of lines
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if len(_wrapped_lines(f, text, mid)) == len(lines):
+            hi = mid
+        else:
+            lo = mid + 1
+    # Tk counts the space after a line's last word too: room for it, plus a little.
+    label.configure(wraplength=min(width, hi + f.measure(" ") + theme.px(2)))
 
 
 def game_strip(parent, text=None):
@@ -100,7 +141,7 @@ class BackupWindow:
         frame.configure(padding=(pad + c, pad, pad + c, pad + c))
         theme.heading(frame, errors.BACKUP_HEADING).pack(fill="x", padx=(0, 0))
         ttk.Label(frame, text=errors.BACKUP_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(2, 0))
+                  justify="left").pack(anchor="w", pady=(theme.px(2), 0))
         self.make_button, self.restore_button = self._pair(
             frame, errors.BACKUP_THIS_PC, (errors.BACKUP_BUTTON, app.open_backup, True),
             (errors.RESTORE_BUTTON, app.open_restore, False))
@@ -111,7 +152,7 @@ class BackupWindow:
                 (errors.RECEIVE_BUTTON, app.open_receive, False)))
         self.last_var = tk.StringVar(value=errors.BACKUP_LAST_LOOKING)
         ttk.Label(frame, textvariable=self.last_var, wraplength=theme.px(WRAP), justify="left").pack(
-            anchor="w", pady=(12, 0))
+            anchor="w", pady=(theme.px(12), 0))
         # Open folder + Old backups...: a pair row under the last-backup line, packed only
         # once something is found (Open folder: an own backup; Old backups...: any file,
         # safety copies too). Old backups... opens am\backup_delete_ui.py's window.
@@ -329,7 +370,7 @@ class SpokenAsk:
             ttk.Label(frame, text=text, style=style, wraplength=theme.px(WRAP), justify="left").pack(
                 anchor="w", pady=(gap, 0))
         buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(14, 0))
+        buttons.pack(fill="x", pady=(theme.px(14), 0))
         self.keep_button = ttk.Button(buttons, text=errors.SPOKEN_KEEP,
                                       command=lambda: self.answer("keep"))
         self.keep_button.pack(side="right")
@@ -464,11 +505,14 @@ class _Dialog:
         self.status_var = tk.StringVar()
         self.status = ttk.Label(self.frame, textvariable=self.status_var, wraplength=theme.px(WRAP),
                                 justify="left")
+        # Wraps at the width the window really has (px(WRAP) could be wider than the rest
+        # of the content and widen the window when a long message shows).
+        fit_wrap(self.status)
         if not collapse:
-            self.status.pack(anchor="w", pady=(10, 0))
+            self.status.pack(anchor="w", fill="x", pady=(theme.px(10), 0))
         self.progress = ttk.Progressbar(self.frame, mode="determinate", maximum=100)
         self.buttons = ttk.Frame(self.frame)
-        self.buttons.pack(fill="x", pady=(12, 0))
+        self.buttons.pack(fill="x", pady=(theme.px(12), 0))
         if collapse:
             self.status_var.trace_add("write", lambda *_a: self._place_status())
 
@@ -479,7 +523,9 @@ class _Dialog:
                 self.status.pack_forget()
             elif not self.status.winfo_manager():
                 below = self.progress if self.progress.winfo_manager() else self.buttons
-                self.status.pack(anchor="w", pady=(10, 0), before=below)
+                # px(6): a little tighter than a full section gap (Send must fit a 1080p
+                # screen at 150 % with every line shown, test_look)
+                self.status.pack(anchor="w", fill="x", pady=(theme.px(6), 0), before=below)
         except tk.TclError:
             pass   # the window is closing
 
@@ -511,7 +557,18 @@ class _Dialog:
         return not self.closed
 
     def set_status(self, text):
+        self._status_wrap()
         self.status_var.set(text)
+
+    def _status_wrap(self):
+        """Before a message shows: wrap it at the width the window has now (never wider
+        than px(WRAP)), so a long message can't widen the window; fit_wrap follows later."""
+        try:
+            width = self.buttons.winfo_width()   # the button row fills the content width
+            if width > 20:
+                self.status.configure(wraplength=min(theme.px(WRAP), width))
+        except tk.TclError:
+            pass   # the window is closing
 
     def set_progress(self, done, total):
         if not self.progress.winfo_manager():
@@ -579,14 +636,14 @@ class LicenceDialog(_Dialog):
     def __init__(self, app, show=True):
         super().__init__(app, errors.LICENCES_TITLE, show)
         box = ttk.Frame(self.frame)
-        box.pack(fill="both", expand=True, pady=(8, 0))
+        box.pack(fill="both", expand=True, pady=(theme.px(8), 0))
         # wrap none: the notices file has its own line breaks and tables; a sideways
         # scrollbar shows the rest of a long line.
         self.text = tk.Text(box, width=NOTICES_CHARS, height=24, wrap="none",
                             background=theme.FIELD, foreground=theme.TEXT,
                             insertbackground=theme.TEXT, relief="flat", borderwidth=0,
                             highlightthickness=1, highlightbackground=theme.BORDER,
-                            font=theme.font(bigger=-1), padx=6, pady=4)
+                            font=theme.font(bigger=-1), padx=theme.px(6), pady=theme.px(4))
         bar = self.vbar = ttk.Scrollbar(box, orient="vertical", command=self.text.yview,
                                         style="Gold.Vertical.TScrollbar")
         self.hbar = ttk.Scrollbar(box, orient="horizontal", command=self.text.xview,
@@ -604,7 +661,7 @@ class LicenceDialog(_Dialog):
         self.text.insert("1.0", notices)
         self.text.configure(state="disabled")   # read-only (selecting and copying work)
         self.buttons = ttk.Frame(self.frame)
-        self.buttons.pack(fill="x", pady=(10, 0))
+        self.buttons.pack(fill="x", pady=(theme.px(10), 0))
         self.close_button = ttk.Button(self.buttons, text=errors.CLOSE, command=self.close)
         self.close_button.pack(side="right")
         self._show(self.close_button)
@@ -627,7 +684,7 @@ class BackupDialog(_SpokenCheck, _Dialog):
         self.addons_var = tk.BooleanVar(value=settings.get("backup_addons") is not False)
         self.settings_check = ttk.Checkbutton(self.frame, text=errors.BACKUP_SETTINGS,
                                               variable=self.settings_var)
-        self.settings_check.pack(anchor="w", pady=(10, 0))
+        self.settings_check.pack(anchor="w", pady=(theme.px(10), 0))
         self.addons_check = ttk.Checkbutton(self.frame, text=errors.BACKUP_ADDONS,
                                             variable=self.addons_var)
         self.addons_check.pack(anchor="w")
@@ -656,11 +713,12 @@ class BackupDialog(_SpokenCheck, _Dialog):
         self.cloud_area.pack(anchor="w", fill="x")
         threading.Thread(target=_cloud_worker, daemon=True, args=(app.queue,)).start()
         ttk.Label(self.frame, text=errors.BACKUP_PRIVATE, style="Muted.TLabel",
-                  wraplength=theme.px(WRAP), justify="left").pack(anchor="w", pady=(10, 0))
+                  wraplength=theme.px(WRAP), justify="left").pack(
+            anchor="w", pady=(theme.px(10), 0))
         self._status_area(collapse=True)
         # The progress bar is there from the start (empty), so the window never changes
         # size when the backup begins.
-        self.progress.pack(fill="x", pady=(6, 0), before=self.buttons)
+        self.progress.pack(fill="x", pady=(theme.px(6), 0), before=self.buttons)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
         self.make_button = ttk.Button(self.buttons, text=errors.BACKUP_MAKE,
@@ -699,9 +757,9 @@ class BackupDialog(_SpokenCheck, _Dialog):
         if self.cloud_buttons or not clouds or self.closed:
             return
         ttk.Label(self.cloud_area, text=errors.BACKUP_CLOUD, style="Muted.TLabel",
-                  wraplength=theme.px(WRAP), justify="left").pack(anchor="w", pady=(8, 0))
+                  wraplength=theme.px(WRAP), justify="left").pack(anchor="w", pady=(theme.px(8), 0))
         grid = ttk.Frame(self.cloud_area)
-        grid.pack(fill="x", pady=(2, 0))
+        grid.pack(fill="x", pady=(theme.px(2), 0))
         for c in range(CLOUD_COLUMNS):
             grid.columnconfigure(c, weight=1, uniform="cloud")
         for i, (label, path) in enumerate(clouds[:MAX_CLOUD_BUTTONS]):
@@ -862,19 +920,19 @@ class BackupListDialog(_Dialog):
         self.opening = None      # the path being opened (checked in a thread)
         self.row_buttons = []
         ttk.Label(self.frame, text=errors.FOUND_HEADING, style="Muted.TLabel").pack(
-            anchor="w", pady=(6, 0))
+            anchor="w", pady=(theme.px(6), 0))
         self.rows = ttk.Frame(self.frame)
-        self.rows.pack(fill="x", pady=(4, 0))
+        self.rows.pack(fill="x", pady=(theme.px(4), 0))
         self.safety_var = tk.BooleanVar(value=False)
         # The tick's text wraps (wider Linux fonts would widen the window past 420 px).
         ttk.Style(self.win).configure(SPOKEN_STYLE, wraplength=theme.px(WRAP - 30))
         self.safety_check = ttk.Checkbutton(self.frame, text=errors.FOUND_SAFETY,
                                             variable=self.safety_var, command=self.render,
                                             style=SPOKEN_STYLE)
-        self.safety_check.pack(anchor="w", pady=(8, 0))
+        self.safety_check.pack(anchor="w", pady=(theme.px(8), 0))
         self.note = ttk.Label(self.frame, text=errors.FOUND_NOTE, style="Muted.TLabel",
                               wraplength=theme.px(WRAP), justify="left")
-        self.note.pack(anchor="w", fill="x", pady=(6, 0))
+        self.note.pack(anchor="w", fill="x", pady=(theme.px(6), 0))
         fit_wrap(self.note)
         self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
@@ -906,7 +964,7 @@ class BackupListDialog(_Dialog):
         b = ttk.Button(self.rows, style="Row.TButton",
                        text=errors.found_row(when, f.size, f.place, f.online),
                        command=lambda: self.pick(f.path, f.online))
-        b.pack(fill="x", pady=(0, 4))
+        b.pack(fill="x", pady=(0, theme.px(4)))
         if self.opening:
             b.state(["disabled"])
         self.row_buttons.append(b)
@@ -922,7 +980,7 @@ class BackupListDialog(_Dialog):
             self._row(f)
         if safety:
             ttk.Label(self.rows, text=errors.FOUND_SAFETY_HEADING, style="Muted.TLabel").pack(
-                anchor="w", pady=(4, 2))
+                anchor="w", pady=(theme.px(4), theme.px(2)))
             for f in safety:
                 self._row(f)
         if more:
@@ -987,8 +1045,10 @@ class RestoreDialog(_Dialog):
         self.info = info
         self.result = None
         self.menu_buttons = []   # the account picks (greyed while restoring)
-        ttk.Label(self.frame, text=errors.backup_from(info), wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(6, 0))
+        from_label = ttk.Label(self.frame, text=errors.backup_from(info),
+                               wraplength=theme.px(WRAP), justify="left")
+        from_label.pack(anchor="w", pady=(theme.px(6), 0))
+        even_wrap(from_label)   # no lone word on its last line
         self.local = backup.local_accounts(app.addons_dir)
         # A file from another PC (send code): the player always picks their own account
         # for each one in the file; nothing is pre-filled, not even the same name.
@@ -1001,7 +1061,7 @@ class RestoreDialog(_Dialog):
                 if acc in self.local and not received:
                     continue   # same account here: nothing to ask
                 line = ttk.Frame(self.frame)
-                line.pack(fill="x", pady=(8, 0))
+                line.pack(fill="x", pady=(theme.px(8), 0))
                 ttk.Label(line, text=errors.account_line(acc), wraplength=theme.px(ACCOUNT_WRAP),
                           justify="left").pack(side="left", anchor="w")
                 var = tk.StringVar(value=self.account_map[acc] or (
@@ -1019,7 +1079,7 @@ class RestoreDialog(_Dialog):
         self.settings_var = tk.BooleanVar(value=can_settings and info.settings_files > 0)
         self.bindings_var = tk.BooleanVar(value=can_settings and info.binding_files > 0)
         checks = ttk.Frame(self.frame)
-        checks.pack(anchor="w", pady=(10, 0))
+        checks.pack(anchor="w", pady=(theme.px(10), 0))
         self.checks = {}
         for key, text, var, on in (
                 ("addons", errors.RESTORE_ADDONS, self.addons_var, bool(info.addons)),
@@ -1031,21 +1091,21 @@ class RestoreDialog(_Dialog):
             if LINUX:   # wider fonts: one tick per line keeps the window narrow
                 c.pack(anchor="w")
             else:
-                c.pack(side="left", padx=(0, 10))
+                c.pack(side="left", padx=(0, theme.px(10)))
             if not on:
                 c.state(["disabled"])
             self.checks[key] = c
         if received and info.addons:
             ttk.Label(self.frame, text=errors.RECEIVED_ADDONS_NOTE, wraplength=theme.px(WRAP),
-                      justify="left").pack(anchor="w", pady=(8, 0))
+                      justify="left").pack(anchor="w", pady=(theme.px(8), 0))
             line = errors.received_addons(*not_guild_addons(info, app.rows))
             if line:
                 ttk.Label(self.frame, text=line, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                          justify="left").pack(anchor="w", pady=(4, 0))
+                          justify="left").pack(anchor="w", pady=(theme.px(4), 0))
         if getattr(info, "left_out", None):
             ttk.Label(self.frame, text=errors.restore_left_out(info.left_out),
                       style="Muted.TLabel", wraplength=theme.px(WRAP), justify="left").pack(
-                anchor="w", pady=(8, 0))
+                anchor="w", pady=(theme.px(8), 0))
         guild = {f.lower() for f in _guild_folders(app)}   # those show as guild rows
         others = sorted((f for f in (getattr(info, "others", None) or {})
                          if f.lower() not in guild), key=str.lower)
@@ -1054,13 +1114,15 @@ class RestoreDialog(_Dialog):
             self.others_label = ttk.Label(self.frame, text=errors.restore_others(others),
                                           style="Muted.TLabel", wraplength=theme.px(WRAP),
                                           justify="left")
-            self.others_label.pack(anchor="w", pady=(8, 0))
+            self.others_label.pack(anchor="w", pady=(theme.px(8), 0))
         if info.accounts and not self.local:
             ttk.Label(self.frame, text=errors.NO_ACCOUNT, wraplength=theme.px(WRAP),
-                      justify="left").pack(anchor="w", pady=(8, 0))
+                      justify="left").pack(anchor="w", pady=(theme.px(8), 0))
         for text in (errors.RESTORE_MERGE, errors.RESTORE_SAFETY):
-            ttk.Label(self.frame, text=text, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                      justify="left").pack(anchor="w", pady=(6, 0))
+            note = ttk.Label(self.frame, text=text, style="Muted.TLabel",
+                             wraplength=theme.px(WRAP), justify="left")
+            note.pack(anchor="w", pady=(theme.px(6), 0))
+            even_wrap(note)
         self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")

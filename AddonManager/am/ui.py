@@ -174,6 +174,7 @@ class App:
         # The app's own update check must be done first (latest/outdated for the app).
         self._app_checked = not app_exe or bool(updated_from)
         self._app_newer = False
+        self._app_checking = False   # an app update check is running (see _start_app_check)
         self.github_api = github.api_base(github_api, allow_local)
         self.manifest_location = config.manifest_url(config.load_settings(), manifest_location)
         self.check_game = check_game
@@ -234,10 +235,8 @@ class App:
             selfupdate.mark_ok(APP_VERSION)
             self.update_mode = "done"
             self._render_update_bar()
-        elif self.app_exe:
-            threading.Thread(target=_update_check_worker, daemon=True,
-                             args=(self.queue, self.github_api, self.allow_local,
-                                   self.settings.get(selfupdate.SETTINGS_FAILED))).start()
+        else:
+            self._start_app_check(force=False)
         self._after = root.after(100, self._poll)
 
     # ---------- layout ----------
@@ -264,7 +263,8 @@ class App:
         self.folder_var = tk.StringVar(value=NOT_CHOSEN)
         # Read-only but selectable: Ctrl+C and right-click Copy (copy only, no typing).
         self.folder_entry = ttk.Entry(folder, textvariable=self.folder_var, state="readonly",
-                                      style="Muted.Path.TEntry", takefocus=0)
+                                      style="Muted.Path.TEntry", takefocus=0,
+                                      font=theme.font())   # Linux: Tk's text font is smaller
         self.folder_entry.grid(row=0, column=0, sticky="ew")
         # A long path shows its end (...\World of Warcraft\_forever_), the useful part.
         self.folder_var.trace_add("write", lambda *_a: self._folder_to_end())
@@ -550,6 +550,24 @@ class App:
         except tk.TclError:
             return
         self._set_top(self._list_top)
+        self._draw_rows()
+        # Once more when Tk is idle: <Configure> can come before grid has placed the
+        # columns (first paint: no Status header, short row lines). Grid places them in
+        # an idle call queued with this one, so the redraw waits one idle round more.
+        if not getattr(self, "_draw_due", None):
+            try:
+                self._draw_due = self.root.after_idle(self._draw_rows_idle, 1)
+            except tk.TclError:
+                pass
+
+    def _draw_rows_idle(self, rounds=0):
+        try:
+            if rounds > 0:
+                self._draw_due = self.root.after_idle(self._draw_rows_idle, rounds - 1)
+                return
+        except tk.TclError:
+            return
+        self._draw_due = None
         self._draw_rows()
 
     def _draw_rows(self):
@@ -1364,6 +1382,28 @@ class App:
                          args=(self.queue, self.check_game, self.manifest_location,
                                self.allow_local, self.github_api, force,
                                bool(self.beta_var.get()))).start()
+        if force:   # Check again / F5 / Ctrl+R: the app's own update too
+            # Bring back an offer hidden with Later (not the "updated" note's OK).
+            if self.update_dismissed and self.update_mode in ("offer", "cant"):
+                self.update_dismissed = False
+                self._render_update_bar()
+            self._start_app_check(force=True)
+
+    def _start_app_check(self, force):
+        """The app's own update check in a thread. Skipped for dev runs (no exe), right
+        after an update, while a "can't here" bar is up, while the app's update installs,
+        or while a check is running. With an offer up only a forced check (Check again)
+        runs: a newer version then replaces the offer (see _poll "app_update")."""
+        if not self.app_exe or self._app_checking or self.updating:
+            return
+        if self.update_mode is not None and not (force and self.update_mode == "offer"):
+            return
+        self._app_checking = True
+        # The failed version is read from disk: remember_failed writes it there.
+        threading.Thread(target=_update_check_worker, daemon=True,
+                         args=(self.queue, self.github_api, self.allow_local,
+                               config.load_settings().get(selfupdate.SETTINGS_FAILED),
+                               force)).start()
 
     def toggle_betas(self):
         """Show beta versions switched: save it and redo the list (cached releases)."""
@@ -1727,6 +1767,12 @@ class App:
                 except tk.TclError:
                     pass
                 self._resize_due = False
+            if getattr(self, "_draw_due", None):   # the rows' idle redraw (_list_resized)
+                try:
+                    self.root.after_cancel(self._draw_due)
+                except tk.TclError:
+                    pass
+                self._draw_due = None
             theme.release_images([getattr(self, "_logo", None)]
                                  + list(getattr(self.root, "_am_icons", None) or []))
             self.files.close()   # an open Add from file plan's temp folder
@@ -1805,10 +1851,19 @@ class App:
             self.settings[stats.DAY_SETTING], self.settings[stats.WEEK_SETTING] = msg[1], msg[2]
             config.save_settings(self.settings)
         elif kind == "app_update":
-            self._app_checked, self._app_newer = True, msg[1] is not None
+            self._app_checking = False
+            new = msg[1]
+            self._app_checked = True
+            self._app_newer = new is not None or self.update_mode == "offer"
             self._maybe_send_stats()
-            if msg[1] is not None and self.update_mode is None:
-                self.app_update, self.update_mode = msg[1], "offer"
+            if new is None:
+                pass   # nothing newer (or offline): an offer already up stays
+            elif self.update_mode is None:
+                self.app_update, self.update_mode = new, "offer"
+                self._render_update_bar()
+            elif (self.update_mode == "offer" and not self.updating and self.app_update
+                  and versions.compare(new.version, self.app_update.version) == 1):
+                self.app_update = new   # Check again found an even newer one: offer that
                 self._render_update_bar()
         elif kind == "app_progress":
             _, done, total = msg
@@ -2034,10 +2089,12 @@ def _stats_worker(q, url, payload, allow_local, today, this_week):
         stats.worker(q, url, payload, allow_local, today, this_week)
 
 
-def _update_check_worker(q, github_api, allow_local, failed):
-    """Thread: is there a newer Addon Manager? ("app_update", Update or None)."""
+def _update_check_worker(q, github_api, allow_local, failed, force=False):
+    """Thread: is there a newer Addon Manager? ("app_update", Update or None).
+    force (Check again): ask GitHub even if the cache is fresh, like the addon releases."""
     q.put(("app_update", selfupdate.check(APP_VERSION, github_api, allow_local,
-                                          cache_file=config.cache_path(), failed=failed)))
+                                          cache_file=config.cache_path(),
+                                          use_fresh_cache=not force, failed=failed)))
 
 
 def _app_update_worker(q, update, exe, allow_local):

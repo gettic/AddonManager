@@ -202,7 +202,22 @@ def _selftest_later(step):
         k = os.urandom(16)
         data = os.urandom(70000)                       # two RFC 8188 records
         ok = ok and share_later.ece_decrypt(k, share_later.ece_encrypt(k, data)) == data
-        return step("send later", ok, "scrypt + ChaCha20-Poly1305 records + aes128gcm")
+        # A Send server's file (am\share_send.py): keychain, metadata, the layer as a stream.
+        from am import share_send
+        stream = b"".join(share_send.ece_frames(lambda a, b: data[a:b], len(data), k))
+        reader = share_send.EceReader(k, len(data))
+        ok = ok and reader.feed(stream) == data
+        reader.finish()
+        ok = ok and share_send.open_metadata(k, share_send.seal_metadata(k, "a.amsend", 5))[
+            "size"] == 5 and share_send.auth_header(share_send.auth_key(k), "AAAA").startswith(
+            "send-v1 ")
+        part = share_send.Part("0123456789abcdef", "0" * 20, k, 0, 100)
+        rec3 = {"v": 3, "host": "send", "site": "adminforge", "parts": [part.record()],
+                "key": "0" * 64, "size": 1, "sha256": "0" * 64, "blob": 100,
+                "name": share_later.random_name()}
+        ok = ok and share_later.open_record(
+            key, 37, share_later.seal_record(key, 37, rec3)) == rec3
+        return step("send later", ok, "scrypt + ChaCha20-Poly1305 records + aes128gcm + Send")
     except Exception as e:
         return step("send later", False, repr(e))
 

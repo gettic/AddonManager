@@ -15,14 +15,29 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from am import backup, backup_ui, config, errors, share, share_later, theme
+from am import backup, backup_ui, config, errors, share, share_later, share_send, theme
 from am.backup_ui import WRAP
 
 log = logging.getLogger(__name__)
 
+CHAPRIL_SETTING = "send_later_chapril"   # days a send went to Chapril (its weekly cap)
+# Send later's hosts in the order tried (the consent list): name, then (link text, page).
+LATER_HOSTS = (
+    (errors.LATER_HOST_STORE, ((errors.LATER_TERMS, share_later.STORE_TERMS_URL),
+                               (errors.LATER_PRIVACY, share_later.STORE_PRIVACY_URL))),
+    (errors.LATER_HOST_ADMINFORGE, ((errors.LATER_TERMS, share_send.ADMINFORGE_TERMS_URL),
+                                    (errors.LATER_PRIVACY, share_send.ADMINFORGE_PRIVACY_URL))),
+    (errors.LATER_HOST_CHAPRIL, ((errors.LATER_TERMS_PRIVACY, share_send.CHAPRIL_TERMS_URL),)),
+    (errors.LATER_HOST_KIWI, ((errors.LATER_TERMS, share_later.TERMS_URL),
+                              (errors.LATER_PRIVACY, share_later.PRIVACY_URL))),
+)
+
 CODE_SIZE = 15 if sys.platform != "win32" else 16
 TICK_MS = 1000
 DOWNLOAD_POLL_MS = 2000   # how often Downloads is checked for the send-later file
+# Send: the gap between lines of one group (the choices, the send-later details) stays
+# 2 px at every scaling; the window must fit a 1080p screen at 150 % (test_look).
+TIGHT = 2
 
 
 def code_font():
@@ -103,7 +118,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         box.pack(fill="x")
         # "What to send:" with Other file... at its right (one row: a shorter window).
         head = ttk.Frame(box)
-        head.pack(fill="x", pady=(4, 0))
+        head.pack(fill="x", pady=(TIGHT, 0))
         ttk.Label(head, text=errors.SEND_WHAT, style="Muted.TLabel").pack(side="left",
                                                                           anchor="s")
         # Folded: one line with the choice made, and after an error a Change... link that
@@ -111,7 +126,8 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         row = self.what_row = ttk.Frame(self.frame)
         self.what_line = ttk.Label(row, style="Muted.TLabel", justify="left",
                                    wraplength=theme.px(WRAP - 70))
-        self.what_line.pack(side="left", anchor="nw")
+        self.what_line.pack(side="left", anchor="nw", fill="x", expand=True)
+        backup_ui.fit_wrap(self.what_line)   # a long file name wraps at its real width
         self.change_link = tk.Label(row, text=errors.SEND_CHANGE, cursor="hand2",
                                     background=theme.BG, foreground=theme.LINK,
                                     font=theme.font("underline"))
@@ -122,11 +138,11 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                                          text=errors.send_new(
                                              settings.get("backup_addons", True) is not False,
                                              settings.get("backup_settings", True) is not False))
-        self.new_radio.pack(anchor="w", pady=(4, 0))
+        self.new_radio.pack(anchor="w", pady=(TIGHT, 0))
         self.newest_radio = ttk.Radiobutton(box, text=errors.SEND_NEWEST + "...",
                                             value="newest", variable=self.choice)
         self.newest_radio.state(["disabled"])
-        self.newest_radio.pack(anchor="w", pady=(2, 0))
+        self.newest_radio.pack(anchor="w", pady=(TIGHT, 0))
         self.other_radio = ttk.Radiobutton(box, text=errors.SEND_CHOSEN, value="other",
                                            variable=self.choice)
         self.other_button = ttk.Button(head, text=errors.SEND_OTHER, command=self.pick,
@@ -139,14 +155,14 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.game_label = backup_ui.game_strip(self.frame, errors.SEND_GAME_OPEN)
         self.private_label = ttk.Label(self.frame, text=errors.SEND_PRIVATE,
                                        wraplength=theme.px(WRAP), justify="left")
-        self.private_label.pack(anchor="w", pady=(6, 0))
+        self.private_label.pack(anchor="w", pady=(theme.px(4), 0))
         self.choice.trace_add("write", lambda *_a: self._game_state())
         # "Sent encrypted, works once, for 10 minutes": only while file.kiwi is off (with
         # the tick the code works for the chosen hours and the file.kiwi note says the rest;
         # see _later_state). It also keeps the window short.
         self.safe_label = ttk.Label(self.frame, text=errors.SEND_SAFE, style="Muted.TLabel",
                                     wraplength=theme.px(WRAP), justify="left")
-        self.safe_label.pack(anchor="w", pady=(4, 0))
+        self.safe_label.pack(anchor="w", pady=(theme.px(4), 0))
         self._later_area()
         self.code_area = ttk.Frame(self.frame)
         self.code_area.pack(fill="x")
@@ -199,7 +215,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
               and hours in share_later.HOURS)   # true / 48 / 3 in a hand-edited file -> 12
         self.hours_var = tk.IntVar(value=hours if ok else share_later.DEFAULT_HOURS)
         area = self.later_box = ttk.Frame(self.frame)
-        area.pack(fill="x", pady=(6, 0))
+        area.pack(fill="x", pady=(theme.px(4), 0))
         self.later_check = ttk.Checkbutton(area, variable=self.later_var,
                                            command=self.save_later)
         self.later_check.grid(row=0, column=0, sticky="nw")
@@ -214,7 +230,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         # Upload right away (no 5-min wait for the other PC): off each time, never saved.
         self.now_var = tk.BooleanVar(value=False)
         now = ttk.Frame(rest)
-        now.pack(anchor="w", pady=(2, 0))
+        now.pack(anchor="w", pady=(TIGHT, 0))
         self.now_check = ttk.Checkbutton(now, variable=self.now_var)
         self.now_check.grid(row=0, column=0, sticky="nw")
         self.now_label = ttk.Label(now, text=errors.LATER_NOW_TICK,
@@ -222,7 +238,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.now_label.grid(row=0, column=1, sticky="w")
         self.now_label.bind("<Button-1>", lambda _e: self.toggle_now())
         keep = ttk.Frame(rest)
-        keep.pack(anchor="w", pady=(2, 0))
+        keep.pack(anchor="w", pady=(TIGHT, 0))
         ttk.Label(keep, text=errors.LATER_KEEP).pack(side="left")
         self.hours_text = tk.StringVar(value=errors.later_hours(self.hours_var.get()))
         self.hours_button = ttk.Menubutton(keep, textvariable=self.hours_text, width=9)
@@ -231,28 +247,25 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             menu.add_radiobutton(label=errors.later_hours(h), value=h,
                                  variable=self.hours_var, command=self.save_later)
         self.hours_button["menu"] = menu
-        self.hours_button.pack(side="left", padx=(6, 0))
-        links = ttk.Frame(rest)
-        links.pack(anchor="w", pady=(2, 0))
+        self.hours_button.pack(side="left", padx=(theme.px(6), 0))
+        links = self.later_hosts = ttk.Frame(rest)
+        links.pack(anchor="w", pady=(TIGHT, 0))
         self.later_links = []
-        # "Cloudflare: terms privacy   file.kiwi: terms privacy" (both hosts, one short line)
-        for i, (host, pages) in enumerate((
-                (errors.LATER_CLOUDFLARE, ((errors.LATER_STORE_TERMS, share_later.STORE_TERMS_URL),
-                                           (errors.LATER_STORE_PRIVACY,
-                                            share_later.STORE_PRIVACY_URL))),
-                (errors.LATER_KIWI, ((errors.LATER_TERMS, share_later.TERMS_URL),
-                                     (errors.LATER_PRIVACY, share_later.PRIVACY_URL))))):
+        # The hosts in the order tried, one row each: name, then its pages as small links.
+        for row, (host, pages) in enumerate(LATER_HOSTS):
             tk.Label(links, text=host, background=theme.BG, foreground=theme.MUTED,
-                     font=theme.font(bigger=-1)).pack(side="left",
-                                                      padx=(theme.px(12) if i else 0, 3))
+                     font=theme.font(bigger=-1)).grid(row=row, column=0, sticky="w",
+                                                      padx=(0, theme.px(8)))
+            cell = tk.Frame(links, background=theme.BG)
+            cell.grid(row=row, column=1, sticky="w")
             for text, url in pages:
-                link = tk.Label(links, text=text, cursor="hand2", background=theme.BG,
+                link = tk.Label(cell, text=text, cursor="hand2", background=theme.BG,
                                 foreground=theme.MUTED, font=theme.font("underline", bigger=-1))
-                link.pack(side="left", padx=(0, 4))
+                link.pack(side="left", padx=(0, theme.px(4)))
                 link.bind("<Button-1>", lambda _e, u=url: self.app.open_link(u))
                 self.later_links.append(link)
         ttk.Label(rest, text=errors.LATER_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP - 24),
-                  justify="left").pack(anchor="w", pady=(2, 0))
+                  justify="left").pack(anchor="w", pady=(TIGHT, 0))
         self._later_state()
 
     def toggle_later(self):
@@ -276,7 +289,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         if ticked and self.safe_label.winfo_manager():
             self.safe_label.pack_forget()
         elif not ticked and not self.safe_label.winfo_manager():
-            self.safe_label.pack(anchor="w", pady=(4, 0), before=self.later_box)
+            self.safe_label.pack(anchor="w", pady=(theme.px(4), 0), before=self.later_box)
         show = ticked and not self.active   # folded away while a send runs (_fold)
         if show and not self.later_rest.winfo_manager():
             self.later_rest.grid(row=1, column=1, sticky="w")
@@ -306,7 +319,28 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 "allow_local": self.app.allow_local,
                 "now": bool(self.now_var.get()),
                 # the guild's server first (tests: False = straight to file.kiwi)
-                "store": getattr(self.app, "later_store", True) is not False}
+                "store": getattr(self.app, "later_store", True) is not False,
+                # then the Send servers (tests: their own list; Chapril capped per week)
+                "send": list(getattr(self.app, "later_send", None)
+                             or share_send.sites_to_try(share_send.chapril_ok(
+                                 config.load_settings().get(CHAPRIL_SETTING),
+                                 time.strftime("%Y-%m-%d"))))}
+
+    @staticmethod
+    def note_chapril():
+        """A send went to Chapril: remember the day (its weekly cap, the last 7 days only)."""
+        import datetime
+        today = datetime.date.today()
+        settings = config.load_settings()
+        keep = []
+        for d in settings.get(CHAPRIL_SETTING) or []:
+            try:
+                if 0 <= (today - datetime.date.fromisoformat(d)).days < 7:
+                    keep.append(d)
+            except (TypeError, ValueError):
+                continue
+        settings[CHAPRIL_SETTING] = keep + [today.isoformat()]
+        config.save_settings(settings)
 
     def pick(self):
         if self.active or self.closed:
@@ -317,7 +351,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             self.other = path
             self.other_radio.configure(text=errors.SEND_CHOSEN + os.path.basename(path))
             if not self.other_radio.winfo_manager():
-                self.other_radio.pack(anchor="w", pady=(2, 0), after=self.newest_radio)
+                self.other_radio.pack(anchor="w", pady=(TIGHT, 0), after=self.newest_radio)
             self.choice.set("other")
 
     def chosen_path(self):
@@ -408,15 +442,16 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         try:
             if folded:
                 radio = {"newest": self.newest_radio, "other": self.other_radio}.get(
-                    self.choice.get(), self.new_radio)
-                self.what_line.configure(text=errors.SEND_WHAT + " " + " ".join(
-                    str(radio.cget("text")).split()))
+                    self.choice.get())
+                what = (" ".join(str(radio.cget("text")).split()) if radio is not None
+                        else errors.SEND_FOLDED_NEW)
+                self.what_line.configure(text=errors.SEND_FOLDED + " " + what)
                 if change and not self.change_link.winfo_manager():
                     self.change_link.pack(side="right", anchor="ne", padx=(theme.px(8), 0))
                 elif not change and self.change_link.winfo_manager():
                     self.change_link.pack_forget()
                 if not self.what_row.winfo_manager():
-                    self.what_row.pack(fill="x", pady=(6, 0), before=self.what_box)
+                    self.what_row.pack(fill="x", pady=(theme.px(4), 0), before=self.what_box)
                 self.what_box.pack_forget()
             else:
                 if not self.what_box.winfo_manager():
@@ -462,12 +497,12 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             seconds = min(seconds, share_later.LATER_AFTER)
         self.ends_at = time.monotonic() + seconds
         ttk.Label(self.code_area, text=errors.SEND_CODE_HEAD, wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(10, 0))
+                  justify="left").pack(anchor="w", pady=(theme.px(10), 0))
         self.code_label = ttk.Label(self.code_area, text=code, font=code_font(),
                                     foreground=theme.TEXT)
-        self.code_label.pack(anchor="w", pady=(4, 0))
+        self.code_label.pack(anchor="w", pady=(theme.px(4), 0))
         line = ttk.Frame(self.code_area)
-        line.pack(fill="x", pady=(4, 0))
+        line.pack(fill="x", pady=(theme.px(4), 0))
         self.copy_button = ttk.Button(line, text=errors.SEND_COPY, command=self.copy,
                                       width=theme.button_chars(line))
         self.copy_button.pack(side="left")
@@ -569,8 +604,10 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
             self.started = True
             if self.code:
                 self.ends_var.set("")
-            if msg[2] == "host":   # where it goes: the guild's server or file.kiwi
+            if msg[2] == "host":   # where it goes: the guild's server, a Send server, file.kiwi
                 self.later_host = msg[3]
+                if msg[3] == "chapril":
+                    self.note_chapril()
             elif msg[2] == "uploading":
                 self.later_mode = True
                 self.speed = Speed()
@@ -608,11 +645,11 @@ class ReceiveDialog(_ShareDialog):
 
     def __init__(self, app, show=True):
         super().__init__(app, errors.RECEIVE_TITLE, show)
-        ttk.Label(self.frame, text=errors.RECEIVE_TYPE).pack(anchor="w", pady=(6, 0))
+        ttk.Label(self.frame, text=errors.RECEIVE_TYPE).pack(anchor="w", pady=(theme.px(6), 0))
         self.code_var = tk.StringVar()
         self.entry = ttk.Entry(self.frame, textvariable=self.code_var, width=24,
                                font=code_font())
-        self.entry.pack(anchor="w", fill="x", pady=(4, 0))
+        self.entry.pack(anchor="w", fill="x", pady=(theme.px(4), 0))
         self.entry.bind("<Return>", lambda _e: self.start())
         code = clipboard_code(getattr(app, "read_clipboard", None))
         if code:   # a copied code: filled in and selected (typing replaces it)
@@ -620,9 +657,9 @@ class ReceiveDialog(_ShareDialog):
             self.entry.select_range(0, "end")
             self.entry.icursor("end")
         ttk.Label(self.frame, text=errors.RECEIVE_EXAMPLE, style="Muted.TLabel").pack(
-            anchor="w", pady=(2, 0))
+            anchor="w", pady=(theme.px(2), 0))
         ttk.Label(self.frame, text=errors.RECEIVE_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(10, 0))
+                  justify="left").pack(anchor="w", pady=(theme.px(10), 0))
         self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
@@ -718,7 +755,7 @@ class ReceiveDialog(_ShareDialog):
     failed = frozenset()  # files that didn't open: the Downloads watch skips them
 
     def show_ticket(self, ticket):
-        """The code unlocked a send-later: Download (browser) and Open the download...;
+        """The code unlocked a send-later: Download (browser) and Open file...;
         the Downloads folder is watched so the file opens by itself once it's there."""
         self.ticket = ticket
         self.failed = set()
@@ -726,25 +763,34 @@ class ReceiveDialog(_ShareDialog):
         area = ttk.Frame(self.frame)
         below = (self.status if self.status.winfo_manager() else
                  self.progress if self.progress.winfo_manager() else self.buttons)
-        area.pack(fill="x", before=below, pady=(10, 0))
-        ttk.Label(area, text=errors.LATER_GOT, wraplength=theme.px(WRAP), justify="left").pack(
-            anchor="w")
-        ttk.Label(area, text=errors.LATER_KEEP_OPEN, style="Muted.TLabel", wraplength=theme.px(WRAP),
-                  justify="left").pack(anchor="w", pady=(4, 0))
+        area.pack(fill="x", before=below, pady=(theme.px(10), 0))
+        # The texts wrap at the width the window has now (px(WRAP) can be wider than the
+        # code entry and its note: the window would widen when the ticket shows).
+        width = self.buttons.winfo_width()
+        wrap = min(theme.px(WRAP), width) if width > 20 else theme.px(WRAP)
+
+        def note(text, style="TLabel", gap=0):
+            label = ttk.Label(area, text=text, style=style, wraplength=wrap, justify="left")
+            label.pack(anchor="w", fill="x", pady=(gap, 0))
+            backup_ui.fit_wrap(label)
+        note(errors.LATER_GOT)
+        note(errors.LATER_KEEP_OPEN, "Muted.TLabel", theme.px(4))
+        # Download and Open file...: two equal halves of the width the window
+        # already has (a small char width + sticky ew: the pair never widens the window).
         line = ttk.Frame(area)
-        line.pack(anchor="w", pady=(6, 0))
-        self.download_button = ttk.Button(line, text=errors.LATER_DOWNLOAD,
+        line.pack(fill="x", pady=(theme.px(6), 0))
+        line.columnconfigure((0, 1), weight=1, uniform="ticket")
+        self.download_button = ttk.Button(line, text=errors.LATER_DOWNLOAD, width=1,
                                           style="Accent.TButton", command=self.download)
-        self.download_button.pack(side="left")
-        self.open_button = ttk.Button(line, text=errors.LATER_OPEN, command=self.pick_download)
-        self.open_button.pack(side="left", padx=(theme.px(6), 0))
-        theme.even_buttons(line)
+        self.download_button.grid(row=0, column=0, sticky="ew", padx=(0, theme.px(3)))
+        self.open_button = ttk.Button(line, text=errors.LATER_OPEN, width=1,
+                                      command=self.pick_download)
+        self.open_button.grid(row=0, column=1, sticky="ew", padx=(theme.px(3), 0))
         # The code is used up now: if the browser doesn't open, the link can still be
         # copied into it by hand. Copy link sits at the right, like the window's buttons.
-        ttk.Label(area, text=errors.LATER_LINK_NOTE, style="Muted.TLabel",
-                  wraplength=theme.px(WRAP), justify="left").pack(anchor="w", pady=(8, 0))
+        note(errors.LATER_LINK_NOTE, "Muted.TLabel", theme.px(8))
         row = ttk.Frame(area)
-        row.pack(fill="x", pady=(4, 0))
+        row.pack(fill="x", pady=(theme.px(4), 0))
         self.copy_link_button = ttk.Button(row, text=errors.LATER_COPY_LINK,
                                            command=self.copy_link,
                                            width=max(theme.button_chars(row), theme.chars(
@@ -752,7 +798,7 @@ class ReceiveDialog(_ShareDialog):
         self.copy_link_button.pack(side="right")
         self.link_var = tk.StringVar(value=ticket.link)
         self.link_entry = ttk.Entry(row, textvariable=self.link_var, state="readonly",
-                                    style="Path.TEntry", width=10)
+                                    style="Path.TEntry", width=10, font=theme.font())
         self.link_entry.pack(side="left", fill="x", expand=True, padx=(0, theme.px(6)),
                              ipady=theme.px(1))
         self.go_button.pack_forget()
@@ -970,6 +1016,6 @@ def _ask_later_file(parent):
     from tkinter import filedialog
     dirs = share_later.downloads_dirs()
     return filedialog.askopenfilename(
-        parent=parent, title=errors.LATER_OPEN.rstrip("."),
+        parent=parent, title=errors.LATER_OPEN_TITLE,
         initialdir=dirs[0] if dirs and os.path.isdir(dirs[0]) else None,
         filetypes=[("Addon Manager send", "*" + share_later.EXT), ("All files", "*.*")])
