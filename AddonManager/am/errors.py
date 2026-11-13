@@ -51,6 +51,13 @@ GAME_RUNNING = (f"WoW Forever is running. You can still install, then {RELOAD_LO
                 "to use the new versions.")
 
 
+# The secure connection to the download server couldn't be checked (no certificates found
+# here, or a wrong clock); Send / Receive has its own SHARE_CERTIFICATE.
+CERTIFICATE = ("Can't make a safe connection to the download server. Check that your "
+               "computer's date and time are right, then try again. If it keeps happening, "
+               "tell a guild officer.")
+
+
 def manifest_message(exc):
     kind = getattr(exc, "kind", "")
     if kind == "not_set":
@@ -59,6 +66,8 @@ def manifest_message(exc):
         return "Can't reach the internet. Check your connection and click Check again."
     if kind == "timeout":
         return "The download server isn't answering. Try again in a few minutes."
+    if kind == "certificate":
+        return CERTIFICATE
     if kind == "too_new":
         return ("This Addon Manager is too old for the guild's addon list. "
                 "Please download the newest one.")
@@ -79,6 +88,8 @@ def release_message(exc, name):
                 "Can't reach the internet. Check your connection and click Check again.")
     if kind == "timeout":
         return ("Can't check now", "The download server isn't answering. Try again in a few minutes.")
+    if kind == "certificate":
+        return ("Can't check now", CERTIFICATE)
     if kind == "no_release":
         return ("No release yet", f"{name} has no release to download yet.")
     if kind == "no_asset":
@@ -96,6 +107,8 @@ def install_message(exc, name):
             return "Can't reach the internet. Check your connection and click Check again."
         if kind == "timeout":
             return "The download server isn't answering. Try again in a few minutes."
+        if kind == "certificate":
+            return CERTIFICATE
         if kind == "rate_limited":
             return release_message(exc, name)[1]
         if kind in ("checksum", "too_big"):
@@ -156,6 +169,8 @@ def app_update_message(exc):
         return "Can't reach the internet. Check your connection and try again."
     if kind == "timeout":
         return "The download server isn't answering. Try again in a few minutes."
+    if kind == "certificate":
+        return CERTIFICATE
     if kind == "rate_limited":
         return f"GitHub is limiting downloads from {THIS_PC}. Try again in a few minutes."
     if kind == "damaged":
@@ -475,6 +490,10 @@ LATER_GOT = ("The other PC uploaded it to file.kiwi. Click Download to get it in
 LATER_KEEP_OPEN = "Keep this window open until it's restored: the code works only once."
 LATER_DOWNLOAD = "Download"
 LATER_OPEN = "Open the download..."
+LATER_LINK_NOTE = "Browser didn't open? Copy this link into it:"
+LATER_COPY_LINK = "Copy link"
+LATER_LINK_COPIED = "Link copied. Paste it into your browser."
+LATER_NO_BROWSER = "Browser didn't open. Copy the link above."
 LATER_LOOKING = "Waiting for the download..."
 LATER_CHECKING = "Checking the file..."
 
@@ -592,6 +611,12 @@ NEW_BACKUP_CHECK = ("Couldn't check the new backup, so it wasn't sent. It's kept
                     "backup folder." + DETAILS)
 
 
+# The secure connection couldn't be checked (no certificates found here, or a wrong clock).
+SHARE_CERTIFICATE = ("Can't make a safe connection to the send service. Check that your "
+                     "computer's date and time are right, then try again. If it keeps "
+                     "happening, tell a guild officer.")
+
+
 def share_message(exc, fresh=False):
     """Sending or receiving didn't work (nothing on this PC was changed).
     fresh: the backup was made just now for this send (a failed check isn't the player's
@@ -615,6 +640,8 @@ def share_message(exc, fresh=False):
         return "Stopped. Nothing was changed."
     if kind in ("offline", "timeout"):
         return "Can't reach the send service. Check your internet and try again."
+    if kind == "certificate":
+        return SHARE_CERTIFICATE
     if kind == "busy":
         return ("The send service is busy. Try again in a few minutes, or use a cloud "
                 "folder or USB stick.")

@@ -92,6 +92,7 @@ def selftest(args):
         all_ok &= _selftest_share(step)
         all_ok &= _selftest_later(step)
         all_ok &= _selftest_file_install(addons_dir, step)
+        all_ok &= _selftest_system(step)
         # The window toolkit must be bundled: build the window hidden, load, close.
         import tkinter as tk
         from am import ui
@@ -207,7 +208,7 @@ def _selftest_file_install(addons_dir, step):
     import shutil
     import tempfile
     import zipfile
-    from am import archive, fileinstall, installer, instance, toc
+    from am import archive, fileinstall, installer, instance, sysenv, toc
 
     def addon(prefix, name, version):
         return {f"{prefix}{name}/{name}.toc": f"## Interface: 16001\n## Version: {version}\n",
@@ -243,7 +244,7 @@ def _selftest_file_install(addons_dir, step):
             import subprocess
             made = subprocess.run([tar, "-a", "-cf", seven, "-C", src, "SelftestSeven"],
                                   capture_output=True, creationflags=archive._no_window(),
-                                  env=archive._tar_env()).returncode == 0
+                                  env=sysenv.system_env()).returncode == 0
             if made:
                 try:
                     plan = fileinstall.scan(seven, addons_dir, [], {}, tmp_root=tmp)
@@ -269,6 +270,36 @@ def _selftest_file_install(addons_dir, step):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return bool(ok)
+
+
+def _selftest_system(step):
+    """Built Linux program only (sysenv): HTTPS has certificates to check against (the
+    build's own OpenSSL looks in Debian's places), and programs we start get the system's
+    LD_LIBRARY_PATH, not our _internal folder. No network."""
+    from am import sysenv
+    if not (getattr(sys, "frozen", False) and os.name != "nt"):
+        return step("system", True, "not the built Linux program")
+    ok = True
+    try:
+        import ssl
+        loaded = ssl.create_default_context().cert_store_stats().get("x509_ca", 0)
+        chosen = next((f"{n}={os.environ[n]}" for n in ("SSL_CERT_FILE", "SSL_CERT_DIR")
+                       if os.environ.get(n)), "OpenSSL default")
+        has_dir = bool(ssl.get_default_verify_paths().capath)   # a folder loads lazily
+        ok &= step("certificates", loaded > 0 or has_dir,
+                   f"{chosen}; {loaded} loaded")
+    except Exception as e:
+        ok = step("certificates", False, repr(e))
+    try:
+        import subprocess
+        out = subprocess.run(["/bin/sh", "-c", 'printf %s "${LD_LIBRARY_PATH-}"'],
+                             capture_output=True, text=True, timeout=20,
+                             env=sysenv.system_env()).stdout
+        own = getattr(sys, "_MEIPASS", "") or "_internal"
+        ok &= step("child env", own not in out, f"LD_LIBRARY_PATH={out or '(none)'}")
+    except Exception as e:
+        ok = step("child env", False, repr(e))
+    return ok
 
 
 def _selftest_dnd(app, step):
@@ -350,6 +381,8 @@ def main(argv=None):
         os.environ[config.HOME_ENV] = os.path.abspath(args.home)
     config.setup_logging()
     log.info("%s %s starting", APP_NAME, APP_VERSION)
+    from am import sysenv
+    sysenv.fix_certificates()   # built Linux program: before any network call or thread
     sys.excepthook = lambda *exc: log.error("Unexpected error", exc_info=exc)
 
     if args.selftest or args.selftest_update:

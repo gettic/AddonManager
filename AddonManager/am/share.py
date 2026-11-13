@@ -64,6 +64,7 @@ CHECK_PREFIX = "check "   # not_backup detail: backup.read refused the file (+ i
 class ShareError(Exception):
     """kind: bad_format, offline, timeout, busy, not_found, used, wrong_code, expired,
     ended (the other PC stopped), cancelled, too_big, broken, not_backup, disk_full,
+    certificate (the secure connection couldn't be checked),
     file (couldn't read/write the file), server (an answer the app doesn't understand),
     later_failed (the upload
     to file.kiwi didn't work), later_file (the downloaded file isn't the right one)."""
@@ -209,8 +210,10 @@ class Relay:
                 e.close()
             return e.code, str(kind)
         except Exception as e:   # URLError, OSError, timeouts
+            if download.is_cert_error(e):   # not a blip: trying again won't help
+                raise ShareError("certificate", download.error_text(e)) from e
             raise ShareError("timeout" if download._is_timeout(e) else "offline",
-                             type(e).__name__) from e
+                             download.error_text(e)) from e
 
     def _call(self, method, path, body=None, max_bytes=MSG_MAX, ok=(200, 204)):
         """(status, data). Network blips and 5xx (not 503) are tried RETRIES times."""
@@ -549,6 +552,8 @@ def _later_error(e):
     kind = getattr(e, "kind", "")
     if kind == "cancelled":
         return ShareError("cancelled")
+    if kind == "certificate":
+        return ShareError("certificate", getattr(e, "detail", ""))
     if kind == "file":
         return ShareError("not_backup", "file changed")
     if getattr(e, "detail", "") == "down":   # file.kiwi didn't answer for KIWI_DOWN_FOR

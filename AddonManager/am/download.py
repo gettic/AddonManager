@@ -2,6 +2,7 @@
 
 import hashlib
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -15,7 +16,8 @@ CHUNK = 64 * 1024
 
 
 class DownloadError(Exception):
-    """kind: offline, timeout, http, rate_limited, redirect, too_big, checksum.
+    """kind: offline, timeout, certificate, http, rate_limited, redirect, too_big, checksum.
+    certificate: the secure connection couldn't be checked (see is_cert_error).
     code: HTTP status (http/rate_limited); wait: seconds until a rate limit resets."""
 
     def __init__(self, kind, detail="", code=0, wait=0):
@@ -31,6 +33,22 @@ def _is_timeout(exc):
         return True
     reason = getattr(exc, "reason", None)
     return isinstance(reason, (TimeoutError, socket.timeout))
+
+
+def is_cert_error(exc):
+    """The secure connection's certificate couldn't be checked (no certificates found on
+    this system, a wrong clock, or something in between changing the connection)."""
+    for e in (exc, getattr(exc, "reason", None), getattr(exc, "__cause__", None)):
+        if isinstance(e, ssl.SSLCertVerificationError):
+            return True
+    return False
+
+
+def error_text(exc):
+    """A short log text for a network error: type and reason (no address)."""
+    reason = getattr(exc, "reason", None)
+    text = f"{type(exc).__name__}: {reason if reason is not None else exc}"
+    return text[:200]
 
 
 def _rate_limit_wait(code, headers):
@@ -99,6 +117,8 @@ def open_url(url, timeout, headers=None, url_check=None):
     except Exception as e:  # URLError, OSError, ValueError
         if _is_timeout(e):
             raise DownloadError("timeout", url) from e
+        if is_cert_error(e):   # not the connection: no certificates here, or a wrong clock
+            raise DownloadError("certificate", f"{error_text(e)} ({url})") from e
         raise DownloadError("offline", f"{e} ({url})") from e
 
 

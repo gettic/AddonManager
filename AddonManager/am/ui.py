@@ -8,13 +8,12 @@ import queue
 import re
 import threading
 import tkinter as tk
-import webbrowser
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
 from am import (APP_NAME, APP_VERSION, backup, backup_ui, config, errors, gamecheck, github,
                 fileinstall, fileinstall_ui, icon, installer, instance, selfupdate, share_ui,
-                stats, theme, toc, touch, trash, versions, wowpath)
+                stats, sysenv, theme, toc, touch, trash, versions, wowpath)
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -158,7 +157,7 @@ class App:
         self.root = root
         self.app_exe = app_exe
         self.restart = restart
-        self.open_link = open_link or webbrowser.open
+        self.open_link = open_link or sysenv.open_link
         self.app_update = None      # selfupdate.Update offered in the bar
         self.update_mode = None     # None, "offer", "cant", "done"
         self.update_dismissed = False

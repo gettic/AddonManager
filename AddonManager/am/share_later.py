@@ -59,7 +59,7 @@ SCRYPT_MAXMEM = 128 * 1024 * 1024
 
 
 class LaterError(Exception):
-    """kind: offline, timeout, busy, server, cancelled, file."""
+    """kind: offline, timeout, certificate, busy, server, cancelled, file."""
 
     def __init__(self, kind, detail=""):
         super().__init__(f"{kind}: {detail}" if detail else kind)
@@ -355,8 +355,10 @@ class FileKiwi:
         except LaterError:
             raise
         except (OSError, http.client.HTTPException) as e:
+            if download.is_cert_error(e):   # not a blip: never retried
+                raise LaterError("certificate", download.error_text(e)) from e
             raise LaterError("timeout" if download._is_timeout(e) else "offline",
-                             type(e).__name__) from e
+                             download.error_text(e)) from e
         finally:
             conn.close()
 

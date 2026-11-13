@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from am import config, download, github, versions, wowpath
+from am import config, download, github, sysenv, versions, wowpath
 from am import manifest as manifest_mod
 
 log = logging.getLogger(__name__)
@@ -53,7 +53,8 @@ def is_program(head, linux=None):
 
 
 class UpdateError(Exception):
-    """kind: in_wow, read_only, offline, timeout, rate_limited, damaged, locked, failed."""
+    """kind: in_wow, read_only, offline, timeout, certificate, rate_limited, damaged, locked,
+    failed."""
 
     def __init__(self, kind, detail=""):
         super().__init__(f"{kind}: {detail}")
@@ -265,7 +266,7 @@ def fetch(update, exe, allow_local=False, progress=None, min_bytes=MIN_BYTES):
         return new
     except download.DownloadError as e:
         _remove(new)
-        kind = e.kind if e.kind in ("offline", "timeout", "rate_limited") else "damaged"
+        kind = e.kind if e.kind in ("offline", "timeout", "certificate", "rate_limited") else "damaged"
         raise UpdateError(kind, str(e)) from e
     except UpdateError:
         _remove(new)
@@ -398,20 +399,12 @@ def restart_env(environ=None, linux=None, frozen=None):
     """The environment for the new program: a fresh PyInstaller start
     (PYINSTALLER_RESET_ENVIRONMENT instead of reusing this process's unpacked files), no
     AppImage variables of this run, and for the built Linux program the library path from
-    before PyInstaller changed it (LD_LIBRARY_PATH_ORIG; as archive._tar_env)."""
-    env = dict(os.environ if environ is None else environ)
-    linux = os.name != "nt" if linux is None else linux
-    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    before PyInstaller changed it (sysenv.system_env)."""
+    env = sysenv.system_env(environ, linux, frozen)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     for name in ("_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE",
                  "_PYI_PARENT_PROCESS_LEVEL") + APPIMAGE_ENV:
         env.pop(name, None)
-    if linux and frozen:
-        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
-        if orig:
-            env["LD_LIBRARY_PATH"] = orig
-        else:
-            env.pop("LD_LIBRARY_PATH", None)
     return env
 
 

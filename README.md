@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.12.1
+Current version: v0.14.2
 
 ## Get it
 
@@ -39,6 +39,8 @@ It finds WoW Forever installed through Battle.net with Proton (as a non-Steam ga
 For Game Mode, right-click the AppImage and choose **Add to Steam** (or in Steam: **Add a Non-Steam Game**, then **Browse**). This should work, but it is untested on a Deck. Don't force Proton on it: it is a Linux program.
 
 Settings and log are in `~/.config/AddonManager`. On Linux the **Settings** button has no gear symbol, and the main-window bottom row has a shorter label: a **Betas** checkbox (the **Settings** window still says **Show beta versions**).
+
+The app finds the system's security certificates by itself, so Send / Receive, update checks and the addon list work on SteamOS. Links and folders open with the system's own tools. If the certificates still can't be checked, the app says so and asks you to check your date and time, instead of "check your internet". This also goes for addon downloads and the app's own update.
 
 Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Proton/Wine. The Addon Manager only installs addon files. Whether the game runs there is up to Proton/Wine.
 
@@ -172,7 +174,7 @@ This is optional and **off by default**. It uses file.kiwi, a file host run by a
 - **Upload right away:** with the file.kiwi tick on, a second tick, "Upload right away (don't wait 5 min)", appears. Tick it when you know the other PC will pick the backup up later. The backup is uploaded at once, and the status says "Uploading to file.kiwi for later". It starts unticked every time and is not remembered.
 - **Over 500 MB (up to 5 GB):** this only works with the tick on. The backup is uploaded to file.kiwi right away, with no 5-minute wait. With the tick off, the app says the backup is too big and suggests you make a backup and copy it yourself, for example with a USB stick or a cloud folder.
 - **Code time:** "The code works for" 1, 2, 4, 8, 12 or 24 hours (12 by default). The other PC can type the code any time in that time. The code works once.
-- **On the other PC:** click **Receive...**, type the code and click **Download**. Your browser gets the file from file.kiwi. The Addon Manager finds it in your Downloads folder by itself (or click **Open the download...**), checks it and opens the usual Restore window.
+- **On the other PC:** click **Receive...**, type the code and click **Download**. Your browser gets the file from file.kiwi. The download link is also shown with a **Copy link** button, for when the browser doesn't open. The Addon Manager finds it in your Downloads folder by itself (or click **Open the download...**), checks it and opens the usual Restore window.
 - **What file.kiwi sees:** its servers are in the US, and it uses Cloudflare and Google. It sees your IP address, the file's size and when it was sent. The file is encrypted, so they can't open it.
 - **It can't be deleted early.** The file stays on their servers for a few days. Only the code opens it, so keep the code private: anyone who gets it first can open the file.
 - If file.kiwi isn't answering, the app tries again by itself every 5 minutes, for up to 2 hours, as long as the Send window stays open. After that it stops the code and tells you. Closing the window or the app stops it too.

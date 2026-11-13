@@ -1938,6 +1938,32 @@ class WindowShareTests(unittest.TestCase):
         self.assertIn(errors.LATER_GOT, self.texts(rec.win))
         rec.download()
         self.assertEqual(links, [rec.ticket.link])
+        # Copy link: the code is used up, so the link can go into the browser by hand.
+        self.assertIn(errors.LATER_LINK_NOTE, self.texts(rec.win))
+        self.assertEqual(rec.link_var.get(), rec.ticket.link)
+        self.assertIn("readonly", rec.link_entry.state())
+        rec.copy_link()
+        self.assertEqual(self.copied[-1], rec.ticket.link)
+        self.assertEqual(rec.status_var.get(), errors.LATER_LINK_COPIED)
+        rec.win.update_idletasks()
+        self.assertLessEqual(rec.win.winfo_reqwidth(), 420)
+
+        def right(widget):   # right edge inside the window
+            x = widget.winfo_x() + widget.winfo_width()
+            parent = widget.nametowidget(widget.winfo_parent())
+            while parent is not rec.win:
+                x += parent.winfo_x()
+                parent = parent.nametowidget(parent.winfo_parent())
+            return x
+        rec.win.update()
+        self.assertEqual(right(rec.copy_link_button), right(rec.cancel_button))
+        from tkinter import font as tkfont, ttk
+        button_font = ttk.Style(rec.win).lookup("TButton", "font") or "TkDefaultFont"
+        text_px = tkfont.Font(root=rec.win, font=button_font).measure(errors.LATER_COPY_LINK)
+        self.assertLess(text_px, rec.copy_link_button.winfo_reqwidth())   # the text fits
+        app.open_link = lambda u: False                           # no browser started
+        rec.download()
+        self.assertEqual(rec.status_var.get(), errors.LATER_NO_BROWSER)
         name, data = kiwi.download(rec.ticket.link)               # the browser saves it
         with open(os.path.join(downloads, name), "wb") as f:
             f.write(data)

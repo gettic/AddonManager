@@ -26,7 +26,7 @@ _DIGEST_RE = re.compile(r"sha256:([0-9a-f]{64})", re.IGNORECASE)   # used with f
 
 
 class ReleaseError(Exception):
-    """kind: no_release, no_asset, rate_limited, offline, timeout, bad.
+    """kind: no_release, no_asset, rate_limited, offline, timeout, certificate, bad.
     wait: seconds until GitHub's limit resets (rate_limited)."""
 
     def __init__(self, kind, detail="", wait=0):
@@ -120,6 +120,8 @@ def _get_json(url, repo, timeout):
             if url.startswith("file:") and e.kind == "offline":
                 raise ReleaseError("no_release", repo) from e
             raise ReleaseError(e.kind, e.detail) from e
+        if e.kind == "certificate":
+            raise ReleaseError("certificate", e.detail) from e
         raise ReleaseError("bad", e.detail) from e
     try:
         return json.loads(data.decode("utf-8"))

@@ -7,13 +7,12 @@ back through the App's queue as ("backup_size"/"backup_game"/"backup_clouds"/"ba
 import datetime
 import logging
 import os
-import subprocess
 import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
 
-from am import backup, config, errors, theme, versions
+from am import backup, config, errors, sysenv, theme, versions
 
 log = logging.getLogger(__name__)
 
@@ -54,15 +53,9 @@ def game_strip(parent, text=None):
 
 
 def open_folder(path):
-    """Show a folder in Explorer / the file manager. Never raises."""
-    try:
-        if os.name == "nt":
-            os.startfile(path)   # noqa: S606 (a folder the player chose)
-        else:
-            subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-    except Exception:
-        log.exception("Could not open %s", path)
+    """Show a folder in Explorer / the file manager (sysenv: the system's environment on
+    Linux). Never raises."""
+    return sysenv.open_folder(path)
 
 
 def backup_folder(settings):

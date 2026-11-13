@@ -22,7 +22,7 @@ _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 class ManifestError(Exception):
-    """kind: not_set, unreachable, timeout, bad, too_new."""
+    """kind: not_set, unreachable, timeout, certificate, bad, too_new."""
 
     def __init__(self, kind, detail=""):
         super().__init__(f"{kind}: {detail}")
@@ -166,6 +166,7 @@ def load(location, allow_local=False, timeout=20):
     try:
         data = download.fetch_bytes(url, timeout=timeout)
     except download.DownloadError as e:
-        kind = {"timeout": "timeout", "offline": "unreachable"}.get(e.kind, "bad")
+        kind = {"timeout": "timeout", "offline": "unreachable",
+                "certificate": "certificate"}.get(e.kind, "bad")
         raise ManifestError(kind, e.detail) from e
     return parse(data, url, allow_local)

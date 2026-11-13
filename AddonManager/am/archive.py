@@ -15,13 +15,12 @@ import shutil
 import stat
 import struct
 import subprocess
-import sys
 import tempfile
 import time
 import zipfile
 import zlib
 
-from am import installer
+from am import installer, sysenv
 
 log = logging.getLogger(__name__)
 
@@ -219,19 +218,6 @@ def tar_path():
     return shutil.which("bsdtar")
 
 
-def _tar_env():
-    """The system's environment for tar: a PyInstaller build changes LD_LIBRARY_PATH to its
-    own libraries, which can break the system's libarchive (the _ORIG copy is the real one)."""
-    env = dict(os.environ)
-    if getattr(sys, "frozen", False) and os.name != "nt":
-        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
-        if orig is not None:
-            env["LD_LIBRARY_PATH"] = orig
-        else:
-            env.pop("LD_LIBRARY_PATH", None)
-    return env
-
-
 def _no_window():
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
@@ -277,7 +263,7 @@ class TarRunner:
         try:
             done = subprocess.run([self._exe(kind), flag, path], capture_output=True,
                                   stdin=subprocess.DEVNULL, timeout=self.timeout,
-                                  env=_tar_env(), creationflags=_no_window())
+                                  env=sysenv.system_env(), creationflags=_no_window())
         except subprocess.TimeoutExpired as e:
             raise ArchiveError("timeout", "listing") from e
         except OSError as e:
@@ -313,7 +299,7 @@ class TarRunner:
             try:
                 proc = subprocess.Popen([exe, "-xf", path, "-C", dest], stdin=subprocess.DEVNULL,
                                         stdout=subprocess.DEVNULL, stderr=errf,
-                                        env=_tar_env(), creationflags=_no_window())
+                                        env=sysenv.system_env(), creationflags=_no_window())
             except OSError as e:
                 raise ArchiveError("no_tar", f"{kind}: {e}") from e
             start, problem = time.monotonic(), None

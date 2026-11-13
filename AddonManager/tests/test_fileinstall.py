@@ -391,21 +391,23 @@ class TarTests(Base):
         runner = archive.TarRunner(exe=os.path.join(self.tmp, "no-such-tar.exe"))
         self.assertRefused(self.rar_file(), "no_tar", runner)
 
-    def test_linux_env_for_frozen(self):
-        old_frozen = getattr(sys, "frozen", None)
-        sys.frozen = True
-        os.environ["LD_LIBRARY_PATH"], os.environ["LD_LIBRARY_PATH_ORIG"] = "/tmp/_MEI", "/usr/lib"
-        try:
-            env = archive._tar_env()
-        finally:
-            del os.environ["LD_LIBRARY_PATH"], os.environ["LD_LIBRARY_PATH_ORIG"]
-            if old_frozen is None:
-                del sys.frozen
-            else:
-                sys.frozen = old_frozen
-        if os.name != "nt":
-            self.assertEqual(env["LD_LIBRARY_PATH"], "/usr/lib")
-            self.assertNotIn("LD_LIBRARY_PATH_ORIG", env)
+    def test_tar_gets_system_env(self):
+        """tar runs with sysenv.system_env (tests\\test_sysenv.py checks what it does)."""
+        import subprocess
+        from unittest import mock
+        seen = []
+
+        def fake_run(*a, **k):
+            seen.append(k.get("env"))
+            raise subprocess.TimeoutExpired("tar", 1)
+        with mock.patch.object(archive.sysenv, "system_env", return_value={"X": "1"}), \
+                mock.patch.object(archive.subprocess, "run", fake_run):
+            try:
+                archive.TarRunner(exe=os.path.join(self.tmp, "tar")).list(
+                    os.path.join(self.tmp, "a.rar"), "rar")
+            except archive.ArchiveError:
+                pass
+        self.assertEqual(seen, [{"X": "1"}])
 
     def test_windows_tar_full_path(self):
         if os.name == "nt":

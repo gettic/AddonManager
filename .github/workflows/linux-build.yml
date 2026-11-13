@@ -164,6 +164,27 @@ jobs:
               | { grep -o "GLIBC_[0-9.]*" || true; } | sort -uV | tail -n 1
           '
 
+      # Like SteamOS: no Debian certificate folder (/usr/lib/ssl), the bundle only at
+      # /etc/ssl/certs/ca-certificates.crt. The program must find it by itself (sysenv),
+      # and programs it starts must not get its _internal libraries. Throwaway container:
+      # the folder is moved aside as root and put back after.
+      - name: Self-test without Debian's certificate folder (like SteamOS)
+        run: |
+          mv /usr/lib/ssl /usr/lib/ssl.moved
+          runuser -u builder -- bash -euo pipefail -c '
+            cd /home/builder/repo/AddonManager
+            . /home/builder/venv/bin/activate
+            export APPIMAGE_EXTRACT_AND_RUN=1
+            work=$(mktemp -d)
+            mapfile -t data < <(python -m tests.make_selftest_data "$work/selftest")
+            xvfb-run -a /home/builder/out/AddonManager-x86_64.AppImage --selftest \
+                --manifest "${data[0]}" --wow "${data[1]}" --github-api "${data[2]}" \
+                --home "$work/home" --selftest-out "$work/selftest.json" \
+              || { cat "$work/selftest.json" || true; exit 1; }
+            python -c "import json,sys; s={x[\"step\"]: x for x in json.load(open(sys.argv[1]))[\"steps\"]}; c=s[\"certificates\"]; e=s[\"child env\"]; print(\"Certificates:\", c[\"detail\"]); print(\"Child env:\", e[\"detail\"]); sys.exit(0 if c[\"ok\"] and c[\"detail\"].startswith(\"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\") and e[\"ok\"] else 1)" "$work/selftest.json"
+          '
+          mv /usr/lib/ssl.moved /usr/lib/ssl
+
       - name: Package and sha256
         run: |
           mkdir -p out

@@ -703,13 +703,35 @@ class ReceiveDialog(_ShareDialog):
         self.open_button = ttk.Button(line, text=errors.LATER_OPEN, command=self.pick_download)
         self.open_button.pack(side="left", padx=(theme.px(6), 0))
         theme.even_buttons(line)
+        # The code is used up now: if the browser doesn't open, the link can still be
+        # copied into it by hand. Copy link sits at the right, like the window's buttons.
+        ttk.Label(area, text=errors.LATER_LINK_NOTE, style="Muted.TLabel",
+                  wraplength=theme.px(WRAP), justify="left").pack(anchor="w", pady=(8, 0))
+        row = ttk.Frame(area)
+        row.pack(fill="x", pady=(4, 0))
+        self.copy_link_button = ttk.Button(row, text=errors.LATER_COPY_LINK,
+                                           command=self.copy_link,
+                                           width=max(theme.button_chars(row), theme.chars(
+                                               row, [errors.LATER_COPY_LINK])))
+        self.copy_link_button.pack(side="right")
+        self.link_var = tk.StringVar(value=ticket.link)
+        self.link_entry = ttk.Entry(row, textvariable=self.link_var, state="readonly",
+                                    style="Path.TEntry", width=10)
+        self.link_entry.pack(side="left", fill="x", expand=True, padx=(0, theme.px(6)),
+                             ipady=theme.px(1))
         self.go_button.pack_forget()
         self.set_status(errors.LATER_LOOKING)
         self._poll_download()
 
     def download(self):
         if self.ticket is not None and not self.closed:
-            self.app.open_link(self.ticket.link)
+            if self.app.open_link(self.ticket.link) is False:   # no browser started
+                self.set_status(errors.LATER_NO_BROWSER)
+
+    def copy_link(self):
+        if self.ticket is not None and not self.closed:
+            self.app.clipboard(self.ticket.link)
+            self.set_status(errors.LATER_LINK_COPIED)
 
     def _poll_download(self):
         if self.closed or self.ticket is None or self.opening:
@@ -886,7 +908,8 @@ def _receive_worker(q, tag, url, allow_local, code, folder, cancel):
             return
         q.put(("share_received", tag, path, backup.read(path, received=True)))
     except Exception as e:
-        log.warning("Receive failed (%s %s)", type(e).__name__, getattr(e, "kind", ""))
+        log.warning("Receive failed (%s %s %s)", type(e).__name__, getattr(e, "kind", ""),
+                    getattr(e, "detail", ""))
         msg = (errors.share_message(e) if isinstance(e, share.ShareError)
                else errors.backup_message(e))
         q.put(("share_error", tag, msg))
@@ -899,8 +922,8 @@ def _open_later_worker(q, tag, ticket, path, folder, cancel):
                                  progress=lambda d, t: q.put(("share_progress", tag, d, t)))
         q.put(("share_received", tag, final, backup.read(final, received=True)))
     except Exception as e:
-        log.warning("Opening the download failed (%s %s)", type(e).__name__,
-                    getattr(e, "kind", ""))
+        log.warning("Opening the download failed (%s %s %s)", type(e).__name__,
+                    getattr(e, "kind", ""), getattr(e, "detail", ""))
         msg = (errors.share_message(e) if isinstance(e, share.ShareError)
                else errors.backup_message(e))
         q.put(("share_error", tag, msg))
