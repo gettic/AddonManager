@@ -10,7 +10,9 @@ Cloudflare Worker + Durable Object). The relay never sees the file or the code's
   normal Restore window (account pick, safety copy) does the rest.
 - Send later (only when the player ticked it): if nobody joined after 5 minutes, or at once
   for a backup over MAX_SIZE (up to LATER_MAX_SIZE; the relay can't carry it), the backup is
-  uploaded to file.kiwi (am\\share_later.py) and the same code fetches it later, once.
+  uploaded for later and the same code fetches it, once: first to the guild storage on the
+  relay (am\\share_store.py; the receiving app downloads it by itself), else to file.kiwi
+  (am\\share_later.py; the receiver downloads it in the browser).
 No tkinter here: the windows are in am\\share_ui.py. The two packages are imported only
 when a transfer starts (app start stays fast)."""
 
@@ -31,7 +33,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from am import backup, download, share_later
+from am import backup, download, share_later, share_store
 from am.share_words import WORDS
 
 log = logging.getLogger(__name__)
@@ -184,8 +186,8 @@ class Relay:
         self.channel = None
         self._opener = urllib.request.build_opener(_NoRedirect)
 
-    def _once(self, method, path, body=None, max_bytes=MSG_MAX, timeout=None):
-        headers = {"User-Agent": download.USER_AGENT}
+    def _once(self, method, path, body=None, max_bytes=MSG_MAX, timeout=None, headers=None):
+        headers = dict(headers or {}, **{"User-Agent": download.USER_AGENT})
         if self.token:
             headers["X-Token"] = self.token
         if body is not None:
@@ -280,8 +282,8 @@ class Relay:
         """The receiver takes the mailbox (only the first join ever counts; a repeat of
         this same join after a network blip gets the same answer)."""
         self.channel = channel
-        # This app takes sends kept for later (file.kiwi).
-        jid = secrets.token_hex(16) + "|caps=later"
+        # This app takes sends kept for later (file.kiwi and the guild storage).
+        jid = secrets.token_hex(16) + "|caps=later,store"
         try:
             _s, data = self._call("POST", f"/{PROTOCOL}/join/{channel}", jid.encode("ascii"),
                                   ok=(200,))
@@ -327,10 +329,27 @@ class Relay:
                 raise
 
     # ---------- send later ----------
-    def start_later(self, hours, salt_hex, verifier):
-        """Turn the waiting code into a send-later one. False if the other PC joined just
-        now (go on live)."""
-        body = json.dumps({"hours": hours, "salt": salt_hex, "verifier": verifier})
+    def store_open(self, blob, put_hash, get_hash):
+        """Room in the guild storage for a blob: the answer dict {id, piece, slice}. Raises
+        ShareError (busy / too_big / not_found = an older relay / used = joined)."""
+        body = json.dumps({"blob": blob, "put": put_hash, "get": get_hash}).encode("ascii")
+        _s, data = self._call("POST", f"/{PROTOCOL}/{self.channel}/store", body, ok=(200,))
+        return self._json(data)
+
+    def store_drop(self):
+        """Give the guild storage back (going on without it). Never raises."""
+        try:
+            self._call("DELETE", f"/{PROTOCOL}/{self.channel}/store")
+        except ShareError as e:
+            log.info("Could not give the guild storage back (%s)", e.kind)
+
+    def start_later(self, hours, salt_hex, verifier, store=None):
+        """Turn the waiting code into a send-later one (store = the guild storage id it
+        uses). False if the other PC joined just now (go on live)."""
+        later = {"hours": hours, "salt": salt_hex, "verifier": verifier}
+        if store:
+            later["store"] = store
+        body = json.dumps(later)
         try:
             self._call("POST", f"/{PROTOCOL}/{self.channel}/later", body.encode("ascii"))
         except ShareError as e:
@@ -564,32 +583,107 @@ def _later_error(e):
 def _send_later(path, relay, channel, words, size, sha, later, progress, cancel, clock,
                 on_later, show_code=None, reason=None):
     """Nobody came (or the file is too big for the relay, or the player ticked Upload right
-    away): upload to file.kiwi and leave the sealed record for the code. False if the other
-    PC joined at the last moment (the live send goes on). show_code() once the mailbox is a
-    send-later one. reason ("big" / "now" / None = nobody came) goes to on_later."""
+    away): upload it for later and leave the sealed record for the code. First the guild
+    storage on the relay (later["store"], default on; blob <= share_store.STORE_MAX), else
+    or if that fails file.kiwi. False if the other PC joined at the last moment (the live
+    send goes on). show_code() once the mailbox is a send-later one. reason ("big" / "now" /
+    None = nobody came) goes to on_later; on_later("host", "store"/"kiwi") says where to."""
     salt = os.urandom(16)
     rkey, verifier = share_later.record_keys(_password(channel, words), salt)
-    if not relay.start_later(int(later["hours"]), salt.hex(), verifier):
+    file_key, name = os.urandom(32), share_later.random_name()
+    blob = share_later.Blob(path, file_key, size, sha)
+    store = _open_store(relay, blob, later)
+    if not relay.start_later(int(later["hours"]), salt.hex(), verifier,
+                             store.id if store else None):
+        if store:
+            relay.store_drop()
         if show_code:   # nobody had the code yet: can't happen
             raise ShareError("server", "joined before the code was shown")
         return False
     if show_code:
         show_code()
+    record = None
+    if store:
+        if on_later:
+            on_later("host", "store")
+            on_later("uploading", reason)
+        try:
+            _upload_with_pings(relay, lambda stop, moved: share_store.Store(
+                relay, sleep=_nap(relay, stop)).upload(store, blob, stop.is_set, moved),
+                size, progress, cancel, clock)
+            record = {"v": 2, "host": "store", "id": store.id, "get": store.get,
+                      "piece": store.piece, "slice": store.slice, "key": file_key.hex(),
+                      "size": size, "sha256": sha, "blob": blob.total, "name": name}
+        except share_store.StoreError as e:
+            if e.kind == "cancelled":
+                raise ShareError("cancelled") from e
+            log.warning("The guild server upload stopped (%s); trying file.kiwi", e)
+            relay.store_drop()
+        except ShareError:
+            raise
+        except Exception as e:   # the file changed while reading it, ...
+            raise _later_error(e) from e
+    if record is None:
+        if on_later:
+            on_later("host", "kiwi")
+            on_later("uploading", reason)
+        kiwi_key = os.urandom(16)
+
+        def kiwi_upload(stop, moved):
+            kiwi = share_later.FileKiwi(
+                later.get("api") or share_later.API_URL,
+                allow_local=bool(later.get("allow_local")), sleep=_nap(relay, stop),
+                on_wait=(lambda left: on_later("kiwi_down", int(left))) if on_later else None,
+                on_ok=(lambda: on_later("uploading", None)) if on_later else None)
+            return kiwi.upload(blob, name, kiwi_key, stop.is_set, moved)
+        try:
+            link = _upload_with_pings(relay, kiwi_upload, size, progress, cancel, clock)
+        except ShareError:
+            raise
+        except BaseException as e:   # noqa: BLE001 (file.kiwi's errors -> ShareError)
+            raise _later_error(e) from e
+        record = {"v": 1, "link": link, "key": file_key.hex(), "size": size,
+                  "sha256": sha, "blob": blob.total, "name": name}
+    left = relay.put_record(share_later.seal_record(rkey, channel, record))
     if on_later:
-        on_later("uploading", reason)
-    file_key, kiwi_key, name = os.urandom(32), os.urandom(16), share_later.random_name()
-    blob = share_later.Blob(path, file_key, size, sha)
+        on_later("ready", left)
+    return True
+
+
+def _nap(relay, stop):
+    """Waits that end at once on cancel (up to 5 min while a host is down); tests pass
+    their own relay sleep."""
+    return stop.wait if relay.sleep is time.sleep else relay.sleep
+
+
+def _open_store(relay, blob, later):
+    """A StoreInfo when the guild storage takes this blob, else None (file.kiwi then)."""
+    if later.get("store") is False or blob.total > share_store.STORE_MAX:
+        return None
+    put, get = share_store.new_tokens()
+    try:
+        out = relay.store_open(blob.total, share_store._hash(put), share_store._hash(get))
+    except ShareError as e:
+        if e.kind in ("ended", "expired", "wrong_code", "cancelled"):
+            raise
+        log.info("Guild server storage not used (%s %s)", e.kind, e.detail)
+        return None
+    sid, piece, slice_size = out.get("id"), out.get("piece"), out.get("slice")
+    if (not isinstance(sid, str) or not re.fullmatch(share_store.ID_RE, sid)
+            or not share_store.check_layout(blob.total, piece, slice_size)):
+        log.warning("Guild server storage answer not usable")
+        relay.store_drop()
+        return None
+    return share_store.StoreInfo(sid, piece, slice_size, put, get)
+
+
+def _upload_with_pings(relay, work, size, progress, cancel, clock):
+    """work(stop_event, moved) uploads in a thread while this one pings the mailbox (so it
+    stays open, with the progress for the receiver) and watches Cancel. Returns what work
+    returned; its error is raised as is."""
     stop = threading.Event()
-    # file.kiwi's waits (up to 5 min when it is down) end at once on cancel; tests pass
-    # their own relay sleep.
-    nap = stop.wait if relay.sleep is time.sleep else relay.sleep
-    kiwi = share_later.FileKiwi(
-        later.get("api") or share_later.API_URL, allow_local=bool(later.get("allow_local")),
-        sleep=nap,
-        on_wait=(lambda left: on_later("kiwi_down", int(left))) if on_later else None,
-        on_ok=(lambda: on_later("uploading", None)) if on_later else None)
     result = {}
-    seen = [0, blob.total]
+    seen = [0, 1]
 
     def moved(done, total):
         seen[0], seen[1] = done, total
@@ -598,7 +692,7 @@ def _send_later(path, relay, channel, words, size, sha, later, progress, cancel,
 
     def run():
         try:
-            result["link"] = kiwi.upload(blob, name, kiwi_key, stop.is_set, moved)
+            result["ok"] = work(stop, moved)
         except BaseException as e:   # noqa: BLE001 (handed to the main thread)
             result["error"] = e
 
@@ -619,25 +713,74 @@ def _send_later(path, relay, channel, words, size, sha, later, progress, cancel,
         stop.set()
         t.join(10)
     if "error" in result:
-        raise _later_error(result["error"])
-    record = {"v": 1, "link": result["link"], "key": file_key.hex(), "size": size,
-              "sha256": sha, "blob": blob.total, "name": name}
-    left = relay.put_record(share_later.seal_record(rkey, channel, record))
-    if on_later:
-        on_later("ready", left)
-    return True
+        raise result["error"]
+    return result["ok"]
 
 
 @dataclasses.dataclass
 class LaterTicket:
     """What the code unlocked for a send-later: download `link` in the browser (it saves
-    `name`), then open_later() with the file. Kept in memory only."""
+    `name`), then open_later() with the file. Kept in memory only. On the guild storage
+    (`store` set, `link` None) receive() downloads and opens it by itself."""
     link: str
     key: bytes
     size: int
     sha256: str
     blob: int
     name: str
+    store: object = None   # share_store.StoreInfo (id, layout, get token)
+
+
+def _fetch_store(ticket, relay, dest_folder, progress, cancel):
+    """Download a send kept on the guild storage into a hidden .part, open it like a
+    file.kiwi download (open_later: every check), then delete it on the server (always: the
+    code is used up either way). Returns the received backup's path."""
+    info = ticket.store
+    store = share_store.Store(relay)
+    blob_part = None
+    try:
+        os.makedirs(dest_folder, exist_ok=True)
+        try:
+            free = shutil.disk_usage(dest_folder).free
+        except OSError:
+            free = None
+        need = ticket.blob + ticket.size + SPARE_DISK   # the download and the backup at once
+        if free is not None and free < need:   # the code is used up: a new send is needed
+            raise ShareError("disk_full", "store", limit=need)
+        blob_part = os.path.join(dest_folder,
+                                 f"{PART_PREFIX}{secrets.token_hex(4)}{PART_EXT}")
+        stop = cancel.is_set if cancel is not None else None
+        with open(blob_part, "xb") as f:
+            store.download(info, ticket.blob, f, stop, progress)
+        return open_later(ticket, blob_part, dest_folder, cancel=cancel)
+    except ShareError as e:
+        raise _store_used_up(e) from e
+    except share_store.StoreError as e:
+        if e.kind == "certificate":
+            raise ShareError("certificate", e.detail) from e
+        raise _store_used_up(ShareError("cancelled" if e.kind == "cancelled"
+                                        else "store_failed", e.kind)) from e
+    except OSError as e:
+        raise _store_used_up(_file_error(e)) from e
+    finally:
+        if blob_part is not None:
+            try:
+                os.remove(blob_part)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.warning("Could not remove an unfinished download")
+        store.delete(info, info.get)
+
+
+def _store_used_up(e):
+    """A failed guild-storage download: the code is used up and the server copy is deleted,
+    so the message must ask for a new send (detail "store"), never "try again"."""
+    kind = "broken" if e.kind == "later_file" else e.kind   # damaged on the way
+    if kind in ("broken", "cancelled", "disk_full", "file"):
+        return ShareError(kind, "store" if kind == "disk_full" else f"store {e.detail}".strip(),
+                          limit=e.limit)
+    return e
 
 
 def _receive_later(channel, words, relay, cancel, clock, on_later):
@@ -661,6 +804,10 @@ def _receive_later(channel, words, relay, cancel, clock, on_later):
         raise ShareError("broken", "record") from e
     if r["size"] > LATER_MAX_SIZE:
         raise ShareError("too_big", limit=LATER_MAX_SIZE)
+    if r["v"] == 2:   # on the guild storage: this app downloads it by itself
+        return LaterTicket(None, bytes.fromhex(r["key"]), r["size"], r["sha256"], r["blob"],
+                           r["name"], store=share_store.StoreInfo(
+                               r["id"], r["piece"], r["slice"], get=r["get"]))
     return LaterTicket(r["link"], bytes.fromhex(r["key"]), r["size"], r["sha256"], r["blob"],
                        r["name"])
 
@@ -756,7 +903,14 @@ def receive(code, relay, dest_folder, progress=None, cancel=None, clock=time.mon
     from spake2 import SPAKE2_B
     channel, words = parse_code(code)
     if relay.join(channel) == "later":
-        return _receive_later(channel, words, relay, cancel, clock, on_later)
+        ticket = _receive_later(channel, words, relay, cancel, clock, on_later)
+        if ticket.store is None:
+            return ticket
+        if on_start:
+            on_start()
+        if on_later:   # downloading from the guild's server: stopping now deletes the send
+            on_later("store", None)
+        return _fetch_store(ticket, relay, dest_folder, progress, cancel)
     spake = SPAKE2_B(_password(channel, words), idA=ID_A, idB=ID_B)
     msg_b = spake.start()
     part = None

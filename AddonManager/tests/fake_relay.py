@@ -8,7 +8,12 @@ code expiry / idle limit with a clock tests can move, close -> everything delete
 on its way to the receiver) and `hook_msg` (change a message).
 
 Send later (worker.js "Send later"): later / ping progress / record / later state / take, with
-the same one-try rule; `later_idle`, `later_upload` and `later_max_hours` as the Worker's vars."""
+the same one-try rule; `later_idle`, `later_upload` and `later_max_hours` as the Worker's vars.
+
+Guild storage (worker.js StoreLedger / StoreSlice): /v1/<ch>/store, /v1/s/<id>/<slice>/<n>,
+DELETE /v1/s/<id>, with the same caps, token hashes, order and deadlines (`store_*` as the
+Worker's STORE_* vars; `store=False` = an older Worker without it, `store="off"` = STORE_ON 0). `stored_store()` = what it
+still holds; hooks `fail_store_put` / `fail_store_get` (that many 500s) and `hook_store_get`."""
 
 import base64
 import hashlib
@@ -45,6 +50,8 @@ class Box:
         self.closed_at = None
         self.later = None       # send later: hours, salt, verifier, state, started, until, record
         self.later_p = 0        # upload progress (per mille), memory only
+        self.store = None       # guild storage id (worker.js m.store)
+        self.store_end = None
 
     def later_watch(self):
         return self.later["watch"] if self.later else None
@@ -58,7 +65,22 @@ class _QuietServer(ThreadingHTTPServer):
 class FakeRelay:
     def __init__(self, ttl=600, idle=120, max_time=3600, buffer=4, max_bytes=None,
                  channels=499, rate=1000, chunk=1024 * 1024, later_idle=300,
-                 later_upload=21600, later_max_hours=24):
+                 later_upload=21600, later_max_hours=24, store=True, store_piece=64 * 1024,
+                 store_slice=256 * 1024, store_max_send=4_000_000_000,
+                 store_live_cap=4_400_000_000, store_day_cap=20_000_000_000,
+                 store_max_seconds=86400, store_download_seconds=21600, store_rate=1000,
+                 store_start_seconds=300):
+        self.store_start_seconds = store_start_seconds
+        self.store_on = store
+        self.store_piece, self.store_slice = store_piece, store_slice
+        self.store_max_send, self.store_live_cap = store_max_send, store_live_cap
+        self.store_day_cap, self.store_max_seconds = store_day_cap, store_max_seconds
+        self.store_download_seconds, self.store_rate = store_download_seconds, store_rate
+        self.ledger = {}                # id -> entry (worker.js StoreLedger + its slices)
+        self.store_day = 0              # bytes reserved "today" (the fake has one day)
+        self.fail_store_put = 0         # this many piece PUTs answered 500 first
+        self.fail_store_get = 0         # this many piece GETs answered 500 first
+        self.hook_store_get = None      # f(slice, n, data) -> bytes
         self.ttl, self.idle, self.max_time, self.buffer = ttl, idle, max_time, buffer
         self.max_bytes = max_bytes if max_bytes is not None else 520 * 1024 * 1024
         self.channels, self.rate, self.chunk = channels, rate, chunk
@@ -93,7 +115,8 @@ class FakeRelay:
             def _handle(self, method):
                 n = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(n) if n else b""
-                out = relay.handle(method, self.path, body, self.headers.get("X-Token"))
+                out = relay.handle(method, self.path, body, self.headers.get("X-Token"),
+                                   self.headers.get("X-Store-Token"))
                 self._reply(out[0], out[1])
 
             def do_GET(self):
@@ -104,6 +127,9 @@ class FakeRelay:
 
             def do_PUT(self):
                 self._handle("PUT")
+
+            def do_DELETE(self):
+                self._handle("DELETE")
 
         self.server = _QuietServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
@@ -147,6 +173,16 @@ class FakeRelay:
             self._close(box, "expired", now)
 
     def _close(self, box, reason, now):
+        store = None if box.closed else box.store
+        taken = bool(store and reason == "done" and box.later
+                     and box.later.get("store") == store)
+        box.store = None
+        if store:
+            entry = self.ledger.get(store)
+            if entry and taken:
+                entry["deadline"] = min(entry["deadline"], now + self.store_download_seconds)
+            elif entry:
+                self._drop_store(store)
         box.closed, box.closed_at = reason, now
         box.later = None
         box.slots.clear()
@@ -176,7 +212,7 @@ class FakeRelay:
                 return None
             self.cond.wait(min(left, 0.2))
 
-    def handle(self, method, path, body, token):
+    def handle(self, method, path, body, token, store_token=None):
         url = urllib.parse.urlsplit(path)
         q = urllib.parse.parse_qs(url.query)
         wait = float(q.get("wait", ["0"])[0])
@@ -189,6 +225,10 @@ class FakeRelay:
             if parts[:1] != ["v1"]:
                 return 404, {"error": "not_found"}
             now = self.now()
+            self._sweep(now)
+            m = re.fullmatch(r"/v1/s/([0-9a-f]{32})(?:/([0-9])/([0-9]{1,4}))?", url.path)
+            if m:
+                return self._store_route(method, m, body, store_token or "", now)
             if parts[1:] == ["open"] and method == "POST":
                 if not self._rate("open"):
                     return 429, {"error": "rate"}
@@ -207,8 +247,10 @@ class FakeRelay:
                 if box.closed:
                     return 410, {"error": box.closed}
                 if box.later:
-                    return (200, {"later": True, "token": box.later["watch"]}) if (
-                        b"later" in _caps(body)) else (410, {"error": "later"})
+                    caps = _caps(body)
+                    if b"later" not in caps or (box.later.get("store") and b"store" not in caps):
+                        return 410, {"error": "later"}
+                    return 200, {"later": True, "token": box.later["watch"]}
                 jid = hashlib.sha256(body).hexdigest()
                 if box.recv_token is not None:
                     if box.jid == jid:
@@ -259,6 +301,8 @@ class FakeRelay:
                 return 204, b""
             if parts[2:] == ["later"] and method == "POST":
                 return self._start_later(box, side, body, now)
+            if parts[2:] == ["store"] and method in ("POST", "DELETE") and self.store_on:
+                return self._store_open(box, side, method, body, now)
             if parts[2:] == ["record"] and method == "PUT":
                 return self._put_record(box, side, body, now)
             if len(parts) == 4 and parts[2] == "msg":
@@ -267,10 +311,10 @@ class FakeRelay:
                 return self._chunk(box, side, method, _int(parts[3]), body, wait)
             return 404, {"error": "not_found"}
 
-    def _rate(self, kind):
+    def _rate(self, kind, most=None):
         n = self.rate_hits.get(kind, 0) + 1
         self.rate_hits[kind] = n
-        return n <= self.rate
+        return n <= (self.rate if most is None else most)
 
     def _msg(self, box, side, method, slot, body, wait):
         own = SEND_SLOTS if side == "send" else RECV_SLOTS
@@ -359,19 +403,21 @@ class FakeRelay:
         try:
             req = json.loads(body.decode()[:400])
             hours, salt, verifier = req["hours"], req["salt"], req["verifier"]
+            store = req.get("store") or None
         except Exception:
             return 400, {"error": "bad"}
         if (not isinstance(hours, int) or isinstance(hours, bool)
                 or not 1 <= hours <= self.later_max_hours
                 or not isinstance(salt, str) or not re.fullmatch(r"[0-9a-f]{32}", salt)
-                or not isinstance(verifier, str) or not re.fullmatch(r"[0-9a-f]{64}", verifier)):
+                or not isinstance(verifier, str) or not re.fullmatch(r"[0-9a-f]{64}", verifier)
+                or (store is not None and store != box.store)):
             return 400, {"error": "bad"}
         if box.later:
             same = box.later["salt"] == salt and box.later["verifier"] == verifier
             return (204, b"") if same else (409, {"error": "taken"})
         box.later = {"hours": hours, "salt": salt, "verifier": verifier, "state": "uploading",
                      "started": now, "until": None, "record": None,
-                     "watch": secrets.token_hex(16)}
+                     "watch": secrets.token_hex(16), "store": store}
         box.later_p = 0
         self.cond.notify_all()
         return 204, b""
@@ -388,9 +434,15 @@ class FakeRelay:
             if box.later["record"] != rec:
                 return 409, {"error": "taken"}
             return 200, {"left": round(box.later["until"] - now)}
-        box.later.update(state="ready", record=rec, until=now + box.later["hours"] * 3600)
+        until = now + box.later["hours"] * 3600
+        if box.later.get("store") and box.store_end:   # as worker.js: STORE_MARGIN
+            until = min(until, box.store_end - 7200)
+        if until <= now:
+            self._close(box, "expired", now)
+            return 410, {"error": "expired"}
+        box.later.update(state="ready", record=rec, until=until)
         self.cond.notify_all()
-        return 200, {"left": box.later["hours"] * 3600}
+        return 200, {"left": round(until - now)}
 
     def _later_state(self, box, wait):
         if not box.later:
@@ -437,6 +489,137 @@ class FakeRelay:
         record = box.later["record"]
         self._close(box, "done", now)
         return 200, {"record": record}
+
+    # ---------- guild storage (worker.js StoreLedger / StoreSlice) ----------
+    def stored_store(self):
+        """(sends held, bytes held) in the guild storage."""
+        with self.cond:
+            return (len(self.ledger),
+                    sum(len(p) for e in self.ledger.values() for p in e["pieces"].values()))
+
+    def _sweep(self, now):
+        """The alarms: mailboxes and stored sends past their end go."""
+        for box in list(self.boxes.values()):
+            self._expire(box, now)
+        for sid, e in list(self.ledger.items()):
+            if e["deadline"] <= now or (
+                    not e["started"] and e["opened"] + self.store_start_seconds <= now):
+                self._drop_store(sid)
+
+    def _drop_store(self, sid):
+        """Gone; today's count keeps only what was really stored (as worker.js)."""
+        e = self.ledger.pop(sid, None)
+        if e:
+            stored = sum(len(p) for p in e["pieces"].values())
+            self.store_day = max(0, self.store_day - (e["size"] - stored))
+
+    def _store_open(self, box, side, method, body, now):
+        if side != "send":
+            return 403, {"error": "side"}
+        if method == "DELETE":
+            sid, box.store = box.store, None
+            if box.later:
+                box.later["store"] = None
+            if sid:
+                self._drop_store(sid)
+            return 204, b""
+        if not self._rate("store", self.store_rate):
+            return 429, {"error": "rate"}
+        if box.recv_token is not None:
+            return 409, {"error": "joined"}
+        if box.later:
+            return 409, {"error": "order"}
+        try:
+            req = json.loads(body.decode()[:400])
+            size, put, get = req["blob"], req["put"], req["get"]
+        except Exception:
+            return 400, {"error": "bad"}
+        if (not isinstance(size, int) or isinstance(size, bool) or size < 1
+                or not re.fullmatch(r"[0-9a-f]{64}", str(put))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(get)) or put == get):
+            return 400, {"error": "bad"}
+        if box.store:   # a repeat: the first one goes
+            self._drop_store(box.store)
+            box.store = None
+        if self.store_on == "off":
+            return 503, {"error": "busy"}
+        piece = self.store_piece
+        slice_ = max(piece, self.store_slice // piece * piece)
+        slices = -(-size // slice_)
+        if size > self.store_max_send or slices > 10:
+            return 413, {"error": "too_big"}
+        live = sum(e["size"] for e in self.ledger.values())
+        if live + size > self.store_live_cap or self.store_day + size > self.store_day_cap:
+            return 503, {"error": "busy"}
+        sid = secrets.token_hex(16)
+        end = now + self.store_max_seconds
+        self.ledger[sid] = {"size": size, "piece": piece, "slice": slice_, "put": put,
+                            "get": get, "deadline": end, "pieces": {}, "next": {},
+                            "opened": now, "started": False}
+        self.store_day += size
+        box.store, box.store_end = sid, end
+        return 200, {"id": sid, "piece": piece, "slice": slice_}
+
+    def _store_route(self, method, m, body, token, now):
+        if not self.store_on:
+            return 404, {"error": "not_found"}
+        sid, k, n = m.group(1), m.group(2), m.group(3)
+        entry = self.ledger.get(sid)
+        h = hashlib.sha256(token.encode()).hexdigest()
+        if k is None:
+            if method != "DELETE" or entry is None:
+                return 404, {"error": "not_found"}
+            if h not in (entry["put"], entry["get"]):
+                return 403, {"error": "token"}
+            self._drop_store(sid)
+            return 204, b""
+        if len(body) > self.store_piece + 64:
+            return 413, {"error": "too_big"}
+        if entry is None:
+            return 404, {"error": "not_found"}
+        k, n = int(k), int(n)
+        size, piece, slice_ = entry["size"], entry["piece"], entry["slice"]
+        slices = -(-size // slice_)
+        if k >= slices:
+            return 404, {"error": "not_found"}
+        sbytes = min(slice_, size - k * slice_)
+        pieces = -(-sbytes // piece)
+        if n >= pieces:
+            return 404, {"error": "not_found"}
+        nxt = entry["next"].get(k, 0)
+        if method == "PUT":
+            if h != entry["put"]:
+                return 403, {"error": "token"}
+            if self.store_on == "off":   # STORE_ON 0: no more uploads
+                return 410, {"error": "off"}
+            if self.fail_store_put > 0:
+                self.fail_store_put -= 1
+                return 500, {"error": "oops"}
+            want = piece if n < pieces - 1 else sbytes - (pieces - 1) * piece
+            if len(body) != want:
+                return 400, {"error": "length"}
+            if n < nxt:
+                return 204, b""
+            if n != nxt:
+                return 409, {"error": "order"}
+            entry["pieces"][(k, n)] = body
+            entry["next"][k] = n + 1
+            entry["started"] = True
+            return 204, b""
+        if method == "GET":
+            if h != entry["get"]:
+                return 403, {"error": "token"}
+            if self.fail_store_get > 0:
+                self.fail_store_get -= 1
+                return 500, {"error": "oops"}
+            if n >= nxt:
+                return 409, {"error": "order"}
+            data = entry["pieces"][(k, n)]
+            if self.hook_store_get:
+                data = self.hook_store_get(k, n, data)
+            return 200, data
+        return 404, {"error": "not_found"}
+
 
 def _caps(body):
     """What the receiving app can do, from its join body (as worker.js joinCaps)."""

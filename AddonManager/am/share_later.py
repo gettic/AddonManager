@@ -37,8 +37,10 @@ API_URL = "https://api.file.kiwi"
 LINK_PREFIX = "https://file.kiwi/"
 TERMS_URL = "https://file.kiwi/legal/terms"
 PRIVACY_URL = "https://file.kiwi/legal/privacy"
+STORE_TERMS_URL = "https://www.cloudflare.com/terms/"           # the guild's server runs on Cloudflare
+STORE_PRIVACY_URL = "https://www.cloudflare.com/privacypolicy/"   # the guild's server runs on Cloudflare
 LATER_AFTER = 300                    # seconds the code waits for the other PC first
-CONSENT_VERSION = 2                  # the tick's wording (2: also big backups at once); a
+CONSENT_VERSION = 4                  # the tick's wording (2: also big backups at once; 3: the guild's server first; 4: + Cloudflare terms link); a
                                      # tick given under an older wording counts as off
 HOURS = (1, 2, 4, 8, 12, 24)         # how long the code works for a later send
 DEFAULT_HOURS = 12
@@ -271,10 +273,20 @@ def open_record(key, channel, sealed, allow_local=False):
         r = json.loads(data.decode("ascii"))
     except (InvalidTag, ValueError, UnicodeDecodeError) as e:
         raise ValueError("record") from e
-    if not isinstance(r, dict) or r.get("v") != 1:
+    if not isinstance(r, dict) or r.get("v") not in (1, 2):
         raise ValueError("record")
     link, k, name = r.get("link"), r.get("key"), r.get("name")
-    if (not isinstance(link, str) or not link_ok(link, allow_local) or not isinstance(k, str)
+    if r["v"] == 2:   # kept on the guild storage (am\share_store.py): no link
+        from am import share_store
+        sid, get = r.get("id"), r.get("get")
+        if (r.get("host") != "store" or not isinstance(sid, str)
+                or not re.fullmatch(share_store.ID_RE, sid) or not isinstance(get, str)
+                or not re.fullmatch(share_store.ID_RE, get)
+                or not share_store.check_layout(r.get("blob"), r.get("piece"), r.get("slice"))):
+            raise ValueError("record")
+    elif not isinstance(link, str) or not link_ok(link, allow_local):
+        raise ValueError("record")
+    if (not isinstance(k, str)
             or not re.fullmatch(r"[0-9a-f]{64}", k) or not isinstance(r.get("size"), int)
             or not isinstance(r.get("blob"), int) or not isinstance(r.get("sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", r["sha256"]) or not isinstance(name, str)

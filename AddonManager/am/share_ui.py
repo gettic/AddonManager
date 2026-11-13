@@ -189,6 +189,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         settings = config.load_settings()
         self.later_mode = False      # uploading for later (or done)
         self.later_done = False
+        self.later_host = None       # "store" (the guild's server) / "kiwi"
         self.later = None            # the choice when Get code was clicked
         # A tick given under an older wording of the tick counts as off (tos).
         self.later_var = tk.BooleanVar(value=settings.get("send_later") is True and settings.get(
@@ -234,13 +235,22 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         links = ttk.Frame(rest)
         links.pack(anchor="w", pady=(2, 0))
         self.later_links = []
-        for text, url in ((errors.LATER_TERMS, share_later.TERMS_URL),
-                          (errors.LATER_PRIVACY, share_later.PRIVACY_URL)):
-            link = tk.Label(links, text=text, cursor="hand2", background=theme.BG,
-                            foreground=theme.MUTED, font=theme.font("underline", bigger=-1))
-            link.pack(side="left", padx=(0, 10))
-            link.bind("<Button-1>", lambda _e, u=url: self.app.open_link(u))
-            self.later_links.append(link)
+        # "Cloudflare: terms privacy   file.kiwi: terms privacy" (both hosts, one short line)
+        for i, (host, pages) in enumerate((
+                (errors.LATER_CLOUDFLARE, ((errors.LATER_STORE_TERMS, share_later.STORE_TERMS_URL),
+                                           (errors.LATER_STORE_PRIVACY,
+                                            share_later.STORE_PRIVACY_URL))),
+                (errors.LATER_KIWI, ((errors.LATER_TERMS, share_later.TERMS_URL),
+                                     (errors.LATER_PRIVACY, share_later.PRIVACY_URL))))):
+            tk.Label(links, text=host, background=theme.BG, foreground=theme.MUTED,
+                     font=theme.font(bigger=-1)).pack(side="left",
+                                                      padx=(theme.px(12) if i else 0, 3))
+            for text, url in pages:
+                link = tk.Label(links, text=text, cursor="hand2", background=theme.BG,
+                                foreground=theme.MUTED, font=theme.font("underline", bigger=-1))
+                link.pack(side="left", padx=(0, 4))
+                link.bind("<Button-1>", lambda _e, u=url: self.app.open_link(u))
+                self.later_links.append(link)
         ttk.Label(rest, text=errors.LATER_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP - 24),
                   justify="left").pack(anchor="w", pady=(2, 0))
         self._later_state()
@@ -294,7 +304,9 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         return {"hours": int(self.hours_var.get()),
                 "api": getattr(self.app, "later_api", None) or share_later.API_URL,
                 "allow_local": self.app.allow_local,
-                "now": bool(self.now_var.get())}
+                "now": bool(self.now_var.get()),
+                # the guild's server first (tests: False = straight to file.kiwi)
+                "store": getattr(self.app, "later_store", True) is not False}
 
     def pick(self):
         if self.active or self.closed:
@@ -372,6 +384,7 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         self.started = False
         self.later_mode = False
         self.later_done = False
+        self.later_host = None
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
         self.progress.pack_forget()
@@ -549,18 +562,19 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                 self.ends_var.set("")
             self.set_progress(msg[2], msg[3])
             left = self.speed.left(msg[2], msg[3])
-            self.set_status(errors.later_uploading(msg[2], msg[3], left) if self.later_mode
+            self.set_status(errors.later_uploading(msg[2], msg[3], left, self.later_host)
+                            if self.later_mode
                             else errors.sending(msg[2], msg[3], left))
         elif kind == "share_later":
             self.started = True
             if self.code:
                 self.ends_var.set("")
-            if msg[2] == "uploading":
+            if msg[2] == "host":   # where it goes: the guild's server or file.kiwi
+                self.later_host = msg[3]
+            elif msg[2] == "uploading":
                 self.later_mode = True
                 self.speed = Speed()
-                self.set_status(errors.LATER_UPLOADING_BIG if msg[3] == "big"
-                                else errors.LATER_UPLOADING_NOW if msg[3] == "now"
-                                else errors.LATER_UPLOADING)
+                self.set_status(errors.later_uploading_text(msg[3], self.later_host))
             elif msg[2] == "kiwi_down":   # file.kiwi isn't answering: it tries again by itself
                 until = time.strftime("%H:%M", time.localtime(time.time() + (msg[3] or 0)))
                 self.set_status(errors.later_kiwi_down(until))
@@ -629,6 +643,7 @@ class ReceiveDialog(_ShareDialog):
         self.entry.state(["disabled"])
         self.go_button.state(["disabled"])
         self.active = True
+        self.store_download = False
         self.tag = object()
         self.speed = Speed()
         self.cancel_event = threading.Event()
@@ -650,6 +665,8 @@ class ReceiveDialog(_ShareDialog):
             self.set_progress(msg[2], msg[3])
             self.set_status(errors.receiving(msg[2], msg[3], self.speed.left(msg[2], msg[3]))
                             if msg[2] < msg[3] else errors.RECEIVE_CHECKING)
+        elif kind == "share_later" and msg[2] == "store":   # downloading from the guild's
+            self.store_download = True                     # server: closing asks first
         elif kind == "share_later":   # the other PC is still uploading it for later
             self.set_progress(msg[3] or 0, 1000)
             self.set_status(errors.later_waiting(msg[3] or 0))
@@ -674,6 +691,25 @@ class ReceiveDialog(_ShareDialog):
             self.active = False
             self.entry.state(["!disabled"])
             self.go_button.state(["!disabled"])
+
+    store_download = False   # downloading a send kept on the guild's server
+    asking = False
+
+    def close(self):
+        """Cancel/Esc/X. While a guild-server download runs, stopping deletes that send for
+        good, so ask first (only a yes stops it)."""
+        if self.active and self.store_download and not self.closed:
+            if self.asking:
+                return
+            self.asking = True
+            try:
+                ok = self.app.ask(errors.RECEIVE_STOP_TITLE, errors.RECEIVE_STOP_TEXT,
+                                  errors.RECEIVE_STOP_OK, errors.RECEIVE_STOP_KEEP)
+            finally:
+                self.asking = False
+            if not ok or self.closed:   # kept on, or it finished while the question was up
+                return
+        super().close()
 
     # ---------- send later: download in the browser, then open it here ----------
     ticket = None

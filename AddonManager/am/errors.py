@@ -439,6 +439,12 @@ RECEIVE_NOTE = ("Only use a code from yourself or someone you trust. You'll see 
 RECEIVE_OK = "Receive"
 RECEIVE_CONNECTING = "Connecting..."
 RECEIVE_CHECKING = "Checking the file..."
+# Closing Receive while it downloads from the guild's server (the send can't come back).
+RECEIVE_STOP_TITLE = "Stop receiving?"
+RECEIVE_STOP_TEXT = ("Are you sure? The send will be deleted and can't be received again: "
+                     "the other PC would have to send it again.")
+RECEIVE_STOP_OK = "Stop and delete"
+RECEIVE_STOP_KEEP = "Keep receiving"
 USE_CODE = "Use a code..."
 RESTORE_CHOOSE = "Choose..."
 RESTORE_CHOOSE_FIRST = "Choose which of your accounts gets these settings, or choose (skip)."
@@ -465,25 +471,49 @@ def received_addons(not_listed, different):
     return " ".join(parts)
 
 
-# Send later (am\share_later.py): file.kiwi, only when the player ticks it. Plain, honest
-# texts (tos conditions): another company's service, what it sees, can't be deleted early.
-LATER_TICK = ("Upload to file.kiwi (a third-party host) when the other PC isn't ready in "
-              "5 min, or right away if the backup is over 500 MB, so it can get it later")
-LATER_NOTE = ("file.kiwi (servers in the US, with Cloudflare and Google) sees your IP "
-              "address, the file's size and when it's sent. The file is encrypted, so they "
-              "can't open it. It can't be deleted early: it stays on their servers a few days, "
-              "but only this code opens it.")
-LATER_TERMS = "file.kiwi terms"
-LATER_PRIVACY = "Privacy"
+# Send later (am\share_later.py, am\share_store.py): only when the player ticks it. Plain,
+# honest texts (tos conditions): every host in the order tried, what each sees, how long it
+# stays. Changing LATER_TICK/LATER_NOTE needs a new share_later.CONSENT_VERSION.
+STORE_HOST = "the guild's server"
+KIWI_HOST = "file.kiwi"
+LATER_TICK = ("Keep it online for later if the other PC isn't ready in 5 min (at once if "
+              "over 500 MB): on the guild's server, else file.kiwi (a third-party host)")
+LATER_NOTE = ("It's encrypted here first: only this code opens it. First the guild's server "
+              "(on Cloudflare): deleted once downloaded, or after 24 h. If that's full or down: "
+              "file.kiwi (another company, US, with Cloudflare and Google): can't be deleted "
+              "early, stays a few days. Both see your IP address, the file's size and when "
+              "it's sent.")
+# The links line: "Cloudflare: terms privacy   file.kiwi: terms privacy"
+LATER_CLOUDFLARE = "Cloudflare:"
+LATER_KIWI = "file.kiwi:"
+LATER_STORE_TERMS = "terms"
+LATER_STORE_PRIVACY = "privacy"
+LATER_TERMS = "terms"
+LATER_PRIVACY = "privacy"
 LATER_KEEP = "The code works for:"
-LATER_UPLOADING = ("The other PC isn't here, so it's being uploaded to file.kiwi for later. "
-                   "Keep this window open until it's done.")
-LATER_UPLOADING_BIG = ("This backup is over 500 MB, so it's being uploaded to file.kiwi. The "
-                       "other PC can type the code any time. Keep this window open until "
-                       "it's done.")
 LATER_NOW_TICK = "Upload right away (don't wait 5 min)"
-LATER_UPLOADING_NOW = ("Uploading to file.kiwi now. The other PC can type the code in "
-                       "Receive... any time. Keep this window open until it's done.")
+
+
+def _host(host):
+    return STORE_HOST if host == "store" else KIWI_HOST
+
+
+def later_uploading_text(reason, host=None):
+    """The status when an upload for later starts (reason big / now / None = nobody came)."""
+    where = _host(host)
+    if reason == "big":
+        return (f"This backup is over 500 MB, so it's being uploaded to {where}. The other "
+                "PC can type the code any time. Keep this window open until it's done.")
+    if reason == "now":
+        return (f"Uploading to {where} now. The other PC can type the code in Receive... any "
+                "time. Keep this window open until it's done.")
+    return (f"The other PC isn't here, so it's being uploaded to {where} for later. Keep "
+            "this window open until it's done.")
+
+
+LATER_UPLOADING = later_uploading_text(None)
+LATER_UPLOADING_BIG = later_uploading_text("big")
+LATER_UPLOADING_NOW = later_uploading_text("now")
 LATER_GOT = ("The other PC uploaded it to file.kiwi. Click Download to get it in your "
              "browser. I then find it in your Downloads by myself; if I don't, click Open "
              "the download... and pick it.")
@@ -508,8 +538,8 @@ def later_in(seconds):
             "it's uploaded for later.")
 
 
-def later_uploading(done, total, left=None):
-    return _with_left(f"Uploading to file.kiwi for later: {size_text(done)} of "
+def later_uploading(done, total, left=None, host=None):
+    return _with_left(f"Uploading to {_host(host)} for later: {size_text(done)} of "
                       f"{size_text(total)}...", left)
 
 
@@ -522,7 +552,7 @@ def later_ready(until_text, hours):
 def later_waiting(permille):
     percent = max(0, min(100, permille // 10))
     if percent == 0:
-        return ("The other PC is still uploading it (0 %), or waiting for file.kiwi. Keep "
+        return ("The other PC is still uploading it (0 %), or waiting for the server. Keep "
                 "this window open.")
     return f"The other PC is still uploading it ({percent} %). Keep this window open."
 
@@ -617,6 +647,17 @@ SHARE_CERTIFICATE = ("Can't make a safe connection to the send service. Check th
                      "happening, tell a guild officer.")
 
 
+# A failed download from the guild's server: the send is deleted there and the code is used
+# up, so these never say "try again" or "nothing was changed".
+STORE_NEW_CODE = (" The code works only once, so the send was deleted. Make a new code on the "
+                  "other PC.")
+STORE_USED_UP = {
+    "cancelled": "Stopped.",
+    "broken": "The file arrived damaged or cut off, so it was thrown away.",
+    "file": "The file couldn't be saved on this PC.",
+}
+
+
 def share_message(exc, fresh=False):
     """Sending or receiving didn't work (nothing on this PC was changed).
     fresh: the backup was made just now for this send (a failed check isn't the player's
@@ -625,6 +666,8 @@ def share_message(exc, fresh=False):
             and str(getattr(exc, "detail", "")).startswith("check ")):
         return NEW_BACKUP_CHECK
     kind = getattr(exc, "kind", "")
+    if kind in STORE_USED_UP and str(getattr(exc, "detail", "")).startswith("store"):
+        return STORE_USED_UP[kind] + STORE_NEW_CODE   # guild server: the code is used up
     if kind == "bad_format":
         return "That doesn't look like a code. Codes look like 37-amber-lamp-river."
     if kind == "wrong_code":
@@ -648,10 +691,10 @@ def share_message(exc, fresh=False):
     if kind == "too_big":
         limit = getattr(exc, "limit", None) or 500 * 1024 * 1024
         if getattr(exc, "detail", "") == "later_off":
-            return (f"That backup is over {limit_text(limit)}, too big to send through the "
-                    "Addon Manager's own service. The file.kiwi option below (a third-party "
-                    "host) can send it, or make a backup and copy it yourself with a USB stick "
-                    "or cloud folder.")
+            return (f"That backup is over {limit_text(limit)}, too big to send live. The "
+                    "\"Keep it online for later\" option below (the guild's server, or file.kiwi, "
+                    "a third-party host) can send it, or make a backup and copy it yourself with "
+                    "a USB stick or cloud folder.")
         return (f"That backup is too big to send ({limit_text(limit)} at most). Use a cloud "
                 "folder or USB stick.")
     if kind == "later_failed":
@@ -660,6 +703,8 @@ def share_message(exc, fresh=False):
                     "later with a new code, or use a USB stick or cloud folder.")
         return ("Uploading to file.kiwi didn't work, so the code was stopped. Try again with "
                 "a new code, or use a USB stick or cloud folder.")
+    if kind == "store_failed":
+        return "The download from the guild's server stopped." + STORE_NEW_CODE
     if kind == "later_file":
         return ("That isn't the finished download for this code (or it is damaged). Download "
                 "it again, then pick it.")
@@ -669,6 +714,9 @@ def share_message(exc, fresh=False):
         return "That file isn't a backup that can be sent (or it is damaged)."
     if kind == "disk_full":
         need = getattr(exc, "limit", None)
+        if need and getattr(exc, "detail", "") == "store":   # guild server: the code is used up
+            return (f"Not enough free disk space: about {limit_text(need)} is needed. The code "
+                    "works only once, so free some space and ask the other PC for a new send.")
         if need:
             return (f"Not enough free disk space: about {limit_text(need)} is needed. Free "
                     "some space and try again.")

@@ -13,7 +13,7 @@ import unittest
 import zipfile
 from unittest import mock
 
-from am import backup, download, share, share_later
+from am import backup, download, share, share_later, share_store
 from am.share import ShareError
 from am.share_words import WORDS
 from tests import fixtures
@@ -462,9 +462,10 @@ class PrecheckTests(unittest.TestCase):
 class LaterSender(Sender):
     """A sender with send later ticked; .states gets ("uploading"/"ready", value)."""
 
-    def __init__(self, path, url, kiwi_url, hours=12, **kw):
+    def __init__(self, path, url, kiwi_url, hours=12, store=False, **kw):
         self.states = queue.Queue()
-        self._later = {"hours": hours, "api": kiwi_url, "allow_local": True}
+        # store=False: straight to file.kiwi (StoreTests turn the guild storage on)
+        self._later = {"hours": hours, "api": kiwi_url, "allow_local": True, "store": store}
         super().__init__(path, url, **kw)
 
     def _run(self, path, args):
@@ -799,7 +800,7 @@ class LaterTests(unittest.TestCase):
         s.join()
         self.assertIsNone(s.error)
         states = [st for st, _v in self.all_states(s)]
-        self.assertEqual(states, ["uploading", "kiwi_down", "uploading", "ready"])
+        self.assertEqual(states, ["host", "uploading", "kiwi_down", "uploading", "ready"])
         self.assertIn(share_later.KIWI_DOWN_EVERY, self.clients[-1].naps)
         ticket = share.receive(code, self.receiver(), self.inbox)    # the code still works
         path = share.open_later(ticket, self.browser_download(ticket), self.inbox)
@@ -819,7 +820,7 @@ class LaterTests(unittest.TestCase):
         from am import errors
         self.assertIn("2 hours", errors.share_message(s.error))
         self.assertIn("until 21:30", errors.later_kiwi_down("21:30"))
-        self.assertIn("waiting for file.kiwi", errors.later_waiting(0))
+        self.assertIn("waiting for the server", errors.later_waiting(0))
         self.assertNotIn("file.kiwi", errors.later_waiting(500))
 
     def test_kiwi_refuses_fails_at_once(self):
@@ -938,6 +939,333 @@ class LaterTests(unittest.TestCase):
                          os.path.join(self.downloads, "0a1b2c3d (1).amsend"))
 
 
+class StoreTests(unittest.TestCase):
+    """Send later through the guild storage on the relay (am\\share_store.py; the fake
+    relay mirrors worker.js StoreLedger/StoreSlice with 64 KiB pieces and 256 KiB slices,
+    so a ~2 MiB backup crosses several slices). file.kiwi (fake) is the fallback."""
+
+    def setUp(self):
+        fast(self)
+        for mod, name, value in ((share_later, "LATER_AFTER", 1), (share, "PING_EVERY", 1)):
+            p = mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        self.base = fixtures.temp_dir("share_store_")
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.path = big_backup(os.path.join(self.base, "backups"), 2 * share.CHUNK + 999)
+        self.inbox = os.path.join(self.base, "inbox")
+        self.downloads = os.path.join(self.base, "Downloads")
+        os.makedirs(self.downloads)
+        self.kiwi = FakeKiwi()
+        self.addCleanup(self.kiwi.stop)
+        self.use_relay(FakeRelay())
+
+    def use_relay(self, relay):
+        self.relay = relay
+        self.addCleanup(relay.stop)
+
+    def receiver(self, cls=share.Relay):
+        return cls(self.relay.url, allow_local=True, sleep=lambda s: None)
+
+    def send(self, hours=12, **kw):
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url, hours=hours, store=True, **kw)
+        return s, s.code()
+
+    def store_paths(self):
+        return [p for _m, p in self.relay.calls if p.startswith("/v1/s/")]
+
+    def assert_empty(self):
+        self.assertEqual(self.relay.stored_store(), (0, 0))
+        self.assertEqual(self.relay.stored(), {})
+
+    def test_round_trip_over_slices(self):
+        s, code = self.send()
+        left = s.wait_state("ready")
+        s.join()
+        self.assertIsNone(s.error)
+        self.assertEqual(left, 12 * 3600)
+        self.assertEqual(s.progress[-1][0], s.progress[-1][1])
+        self.assertEqual(self.relay.stored_store()[0], 1)
+        slices = {p.split("/")[4] for p in self.store_paths()}
+        self.assertGreater(len(slices), 2)                        # several StoreSlices
+        got, started = [], []
+        path = share.receive(code, self.receiver(), self.inbox,
+                             progress=lambda d, t: got.append((d, t)),
+                             on_start=lambda: started.append(1))
+        self.assertIsInstance(path, str)                          # no browser step
+        self.assertTrue(same_entries(path, self.path))
+        self.assertTrue(backup.is_received(path))
+        self.assertEqual(os.listdir(self.inbox), [os.path.basename(path)])   # no .part left
+        self.assertEqual(got[-1][0], got[-1][1])
+        self.assertEqual(started, [1])
+        self.assertEqual(self.kiwi.calls, [])                     # file.kiwi never used
+        self.assert_empty()                                       # deleted after download
+        self.assertTrue(any(m == "DELETE" for m, p in self.relay.calls if p.startswith("/v1/s/")))
+        with self.assertRaises(ShareError) as cm:                 # the code worked once
+            share.receive(code, self.receiver(), self.inbox)
+        self.assertEqual(cm.exception.kind, "not_found")
+
+    def test_big_backup_goes_to_the_store_at_once(self):
+        with mock.patch.object(share, "MAX_SIZE", 1000), \
+                mock.patch.object(share_later, "LATER_AFTER", 3600):
+            s, code = self.send()
+            self.assertEqual(s.wait_state("uploading", timeout=10), "big")
+            s.wait_state("ready")
+            s.join()
+            self.assertIsNone(s.error)
+            path = share.receive(code, self.receiver(), self.inbox)
+        self.assertTrue(same_entries(path, self.path))
+        self.assert_empty()
+
+    def kiwi_round_trip(self, s, code):
+        """The sender has finished through file.kiwi; the browser way works. Returns the
+        hosts the sender named, in order."""
+        s.join()
+        self.assertIsNone(s.error)
+        states = []
+        while not s.states.empty():
+            states.append(s.states.get())
+        self.assertIn("ready", [st for st, _v in states])
+        ticket = share.receive(code, self.receiver(), self.inbox)
+        self.assertIsInstance(ticket, share.LaterTicket)
+        self.assertIsNone(ticket.store)
+        name, data = self.kiwi.download(ticket.link)
+        blob = os.path.join(self.downloads, name)
+        with open(blob, "wb") as f:
+            f.write(data)
+        self.assertTrue(same_entries(share.open_later(ticket, blob, self.inbox), self.path))
+        self.assert_empty()
+        return [v for st, v in states if st == "host"]
+
+    def test_falls_back_to_file_kiwi(self):
+        cases = (("full", dict(store_live_cap=1000)), ("day cap", dict(store_day_cap=1000)),
+                 ("too big", dict(store_max_send=1000)), ("switched off", dict(store="off")),
+                 ("older relay", dict(store=False)), ("per-IP limit", dict(store_rate=0)))
+        for why, kw in cases:
+            with self.subTest(why):
+                self.use_relay(FakeRelay(**kw))
+                s, code = self.send()
+                self.assertEqual(self.kiwi_round_trip(s, code), ["kiwi"])
+
+    def test_store_dies_mid_upload(self):
+        self.relay.fail_store_put = 10 ** 6
+        with mock.patch.object(share_store, "MAX_TRIES", 3):
+            s, code = self.send()
+            hosts = self.kiwi_round_trip(s, code)                 # file.kiwi took over
+        self.assertEqual(hosts, ["store", "kiwi"])
+        self.assertTrue(any(m == "DELETE" and p.endswith("/store") for m, p in self.relay.calls))
+
+    def test_unused_reservation_is_dropped_and_given_back(self):   # security review #1
+        r = self.receiver()
+        r.open()
+        out = r.store_open(10 ** 6, "a" * 64, "b" * 64)
+        self.assertRegex(out["id"], "^[0-9a-f]{32}$")
+        self.assertEqual((self.relay.stored_store()[0], self.relay.store_day), (1, 10 ** 6))
+        self.relay.advance(299)
+        r.ping()
+        self.assertEqual(self.relay.stored_store()[0], 1)
+        self.relay.advance(2)                      # no piece within STORE_START_SECONDS
+        r.ping()
+        self.assertEqual(self.relay.stored_store(), (0, 0))
+        self.assertEqual(self.relay.store_day, 0)  # the day's count keeps only stored bytes
+        r.close("cancel")
+
+    def test_switched_off_mid_upload_goes_on_with_file_kiwi(self):   # security review #2
+        real = self.relay._store_route
+
+        def route(method, m, body, token, now):
+            out = real(method, m, body, token, now)
+            if method == "PUT":
+                self.relay.store_on = "off"        # STORE_ON = "0" after the first piece
+            return out
+        self.relay._store_route = route
+        s, code = self.send()
+        self.assertEqual(self.kiwi_round_trip(s, code), ["store", "kiwi"])
+
+    def test_live_first_uses_no_storage(self):
+        share_later.LATER_AFTER = 20   # (patched back by setUp's cleanup)
+        s, code = self.send()
+        path = share.receive(code, self.receiver(), self.inbox)   # live, as before
+        s.join()
+        self.assertIsNone(s.error)
+        self.assertTrue(same_entries(path, self.path))
+        self.assertFalse(any(p.endswith("/store") for _m, p in self.relay.calls))
+        self.assert_empty()
+
+    def test_wrong_code_deletes_it(self):
+        s, code = self.send()
+        s.wait_state("ready")
+        s.join()
+        ch, words = share.parse_code(code)
+        other = [w for w in WORDS if w != words[0]][0]
+        with self.assertRaises(ShareError) as cm:
+            share.receive(share.format_code(ch, [other] + words[1:]), self.receiver(),
+                          self.inbox)
+        self.assertEqual(cm.exception.kind, "wrong_code")
+        self.assert_empty()
+
+    def test_sender_cancel_deletes_it(self):
+        cancel = threading.Event()
+        self.relay.fail_store_put = 10 ** 6       # never gets anywhere: cancel stops it
+        with mock.patch.object(share_store, "MAX_TRIES", 10 ** 6), \
+                mock.patch.object(share_store, "RETRY_FOR", 10 ** 6):
+            s, _code = self.send(cancel=cancel)
+            s.wait_state("uploading")
+            cancel.set()
+            s.join()
+        self.assertEqual(s.error.kind, "cancelled")
+        self.assert_empty()
+        self.assertEqual(self.kiwi.calls, [])
+
+    def test_ends_with_its_code_and_after_the_download_window(self):
+        s, code = self.send(hours=1)
+        s.wait_state("ready")
+        s.join()
+        self.relay.advance(3601)                                  # the code ran out
+        with self.assertRaises(ShareError):
+            share.receive(code, self.receiver(), self.inbox)
+        self.assert_empty()
+        # Taken but never downloaded: gone after STORE_DOWNLOAD_SECONDS.
+        s, code = self.send(hours=24)
+        self.assertLessEqual(s.wait_state("ready"), 22 * 3600)   # 24 h hard end - 2 h
+        s.join()
+        ch, words = share.parse_code(code)
+        r = self.receiver()
+        self.assertEqual(r.join(ch), "later")
+        ticket = share._receive_later(ch, words, r, None, time.monotonic, None)
+        self.assertIsNotNone(ticket.store)
+        self.assertEqual(self.relay.stored_store()[0], 1)
+        self.relay.advance(21601)
+        self.assertEqual(self.relay.stored_store()[0], 1)   # (the alarm runs on the next call)
+        with self.assertRaises(ShareError) as cm:
+            share._fetch_store(ticket, self.receiver(), self.inbox, None, None)
+        self.assertEqual(cm.exception.kind, "store_failed")
+        self.assert_empty()
+        self.assertFalse(os.listdir(self.inbox))
+
+    def ready_store(self):
+        s, code = self.send()
+        s.wait_state("ready")
+        s.join()
+        return code, next(iter(self.relay.ledger))
+
+    def test_tokens_and_paths(self):
+        _code, sid = self.ready_store()
+        r = self.receiver()
+        for method, path, token, status in (
+                ("GET", f"/v1/s/{sid}/0/0", "", 403),
+                ("GET", f"/v1/s/{sid}/0/0", "a" * 32, 403),
+                ("PUT", f"/v1/s/{sid}/0/0", "a" * 32, 403),
+                ("GET", f"/v1/s/{'0' * 32}/0/0", "a" * 32, 404),
+                ("GET", f"/v1/s/{sid}/9/0", "a" * 32, 404),
+                ("DELETE", f"/v1/s/{sid}", "a" * 32, 403),
+                ("GET", f"/v1/s/{sid}/x/0", "a" * 32, 404)):
+            got, _d = r._once(method, path, b"x" if method == "PUT" else None,
+                              headers={"X-Store-Token": token})
+            self.assertEqual(got, status, (method, path))
+        self.assertEqual(self.relay.stored_store()[0], 1)
+
+    def test_receiver_blips_and_damage(self):
+        code, _sid = self.ready_store()
+        self.relay.fail_store_get = 2                             # network blips: asked again
+        path = share.receive(code, self.receiver(), self.inbox)
+        self.assertTrue(same_entries(path, self.path))
+        os.remove(path)
+        for why, hook in (("changed", lambda k, n, d: d[:10] + bytes([d[10] ^ 1]) + d[11:]),
+                          ("cut", lambda k, n, d: d[:-1])):
+            with self.subTest(why):
+                code, _sid = self.ready_store()
+                self.relay.hook_store_get = lambda k, n, d, h=hook: h(k, n, d) if k == 1 else d
+                with self.assertRaises(ShareError) as cm:
+                    share.receive(code, self.receiver(), self.inbox)
+                self.assertIn(cm.exception.kind, ("broken", "store_failed"))
+                self.assert_used_up(cm.exception)
+                self.relay.hook_store_get = None
+                self.assertEqual(os.listdir(self.inbox), [])     # nothing kept
+                self.assert_empty()                               # deleted on the server
+
+    def assert_used_up(self, exc):
+        """The code is used up and the send deleted: never "try again" (tester M1)."""
+        from am import errors
+        text = errors.share_message(exc)
+        self.assertIn("Make a new code on the other PC", text)
+        self.assertNotIn("try again", text.lower())
+        self.assertNotIn("nothing was changed", text.lower())
+
+    def test_receiver_cancel_mid_download(self):   # tester M1
+        code, _sid = self.ready_store()
+        cancel = threading.Event()
+        with self.assertRaises(ShareError) as cm:
+            share.receive(code, self.receiver(), self.inbox, cancel=cancel,
+                          progress=lambda d, t: cancel.set() if d else None)
+        self.assertEqual(cm.exception.kind, "cancelled")
+        self.assert_used_up(cm.exception)
+        self.assertEqual(os.listdir(self.inbox), [])
+        self.assert_empty()
+
+    def test_disk_fills_during_the_download(self):   # tester L1
+        code, _sid = self.ready_store()
+        calls = []
+
+        def usage(_path):
+            calls.append(1)
+            return mock.Mock(free=10 ** 12 if len(calls) == 1 else 1000)
+        with mock.patch.object(share.shutil, "disk_usage", usage):
+            with self.assertRaises(ShareError) as cm:
+                share.receive(code, self.receiver(), self.inbox)
+        self.assertEqual((cm.exception.kind, cm.exception.detail), ("disk_full", "store"))
+        self.assertGreater(len(calls), 1)
+        from am import errors
+        self.assertIn("ask the other PC for a new send", errors.share_message(cm.exception))
+        self.assertEqual(os.listdir(self.inbox), [])
+        self.assert_empty()
+
+    def test_no_room_on_disk(self):
+        code, _sid = self.ready_store()
+        with mock.patch.object(share.shutil, "disk_usage",
+                               return_value=mock.Mock(free=1000)):
+            with self.assertRaises(ShareError) as cm:
+                share.receive(code, self.receiver(), self.inbox)
+        self.assertEqual((cm.exception.kind, cm.exception.detail), ("disk_full", "store"))
+        from am import errors
+        self.assertIn("ask the other PC for a new send", errors.share_message(cm.exception))
+        self.assertFalse(os.listdir(self.inbox))
+        self.assert_empty()
+
+    def test_older_receiver_gets_no_store_send(self):
+        code, _sid = self.ready_store()
+        r = self.receiver()
+        ch = share.parse_code(code)[0]
+        status, kind = r._once("POST", f"/v1/join/{ch}", b"0" * 32 + b"|caps=later")
+        self.assertEqual((status, kind), (410, "later"))
+        self.assertEqual(self.relay.stored_store()[0], 1)          # still there for a new app
+        self.assertIsInstance(share.receive(code, self.receiver(), self.inbox), str)
+
+    def test_layout(self):
+        parts = share_store.layout(10, 3, 6)
+        self.assertEqual(parts, [(0, 0, 0, 3), (0, 1, 3, 6), (1, 0, 6, 9), (1, 1, 9, 10)])
+        self.assertEqual(share_store.layout(6, 3, 6), [(0, 0, 0, 3), (0, 1, 3, 6)])
+        self.assertTrue(share_store.check_layout(4_000_000_000, 4194304, 943718400))
+        for bad in ((10, 3, 7), (10, 0, 6), (share_store.STORE_MAX + 1, 4194304, 943718400),
+                    (10, share_store.PIECE_MAX * 2, share_store.PIECE_MAX * 2),
+                    (100, 1, 5), (10, True, 6)):
+            self.assertFalse(share_store.check_layout(*bad), bad)
+
+    def test_store_record(self):
+        rkey, _v = share_later.record_keys(b"AM1:37:amber-lamp-river", b"s" * 16)
+        rec = {"v": 2, "host": "store", "id": "a" * 32, "get": "b" * 32, "piece": 4194304,
+               "slice": 943718400, "key": "c" * 64, "size": 5, "sha256": "d" * 64,
+               "blob": 70, "name": "0a1b2c3d.amsend"}
+        self.assertEqual(share_later.open_record(rkey, 37, share_later.seal_record(rkey, 37, rec)),
+                         rec)
+        for change in ({"host": "kiwi"}, {"id": "A" * 32}, {"get": "x"}, {"piece": 7},
+                       {"slice": 10 ** 10}, {"blob": share_store.STORE_MAX + 1}, {"v": 3},
+                       {"name": "Player.amsend"}):
+            with self.assertRaises(ValueError, msg=change):
+                share_later.open_record(rkey, 37, share_later.seal_record(rkey, 37,
+                                                                          dict(rec, **change)))
+
+
 class LaterCryptoTests(unittest.TestCase):
     def test_ece_round_trip_and_sizes(self):
         key = os.urandom(16)
@@ -1024,7 +1352,8 @@ class LocalWorkerTests(ShareTests):
         self.base = fixtures.temp_dir("p2p_worker_")
         self.addCleanup(shutil.rmtree, self.base, True)
         self.root, self.addons, self.client = make_pc(os.path.join(self.base, "pc1"))
-        self.path, _s, _c = backup.make(self.addons, os.path.join(self.base, "backups"))
+        self.path, _s, _c = backup.make(self.addons, os.path.join(self.base, "backups"), others={
+            "OtherAddon": {"name": "Other", "version": "2", "file": "o.zip"}})   # as ShareTests
         self.inbox = os.path.join(self.base, "inbox")
         self.relay = mock.Mock(url=LIVE_URL, stored=lambda: {})
 
@@ -1110,6 +1439,44 @@ class LocalLaterWorkerTests(unittest.TestCase):
         for t in threads:
             t.join()
         self.assertEqual(len([g for g in got if g in (200, 400, 403)]), 1, got)
+
+    def test_guild_storage_round_trip(self):
+        """The real StoreLedger/StoreSlice: upload, the app's own download, deleted after;
+        tokens checked. (Run with small STORE_PIECE/STORE_SLICE vars to cross slices.)"""
+        base = fixtures.temp_dir("share_store_worker_")
+        self.addCleanup(shutil.rmtree, base, True)
+        path = big_backup(os.path.join(base, "backups"), 2 * share.CHUNK + 999)
+        s = LaterSender(path, LIVE_URL, "http://127.0.0.1:9", store=True)
+        s._later["now"] = True
+        code = s.code()
+        s.join()
+        self.assertIsNone(s.error)
+        hosts = []
+        while not s.states.empty():
+            st, v = s.states.get()
+            if st == "host":
+                hosts.append(v)
+        self.assertEqual(hosts, ["store"])
+        ch, words = share.parse_code(code)
+        r = share.Relay(LIVE_URL, allow_local=True)
+        self.assertEqual(r.join(ch), "later")
+        ticket = share._receive_later(ch, words, r, None, time.monotonic, None)
+        info = ticket.store
+        for method, token, status in (("GET", "", 403), ("GET", "a" * 32, 403),
+                                      ("PUT", info.get, 403), ("DELETE", "a" * 32, 403)):
+            p = f"/v1/s/{info.id}" + ("" if method == "DELETE" else "/0/0")
+            got, _d = r._once(method, p, b"x" if method == "PUT" else None,
+                              headers={"X-Store-Token": token})
+            self.assertEqual(got, status, (method, token))
+        inbox = os.path.join(base, "inbox")
+        got = share._fetch_store(ticket, share.Relay(LIVE_URL, allow_local=True), inbox,
+                                 None, None)
+        self.assertTrue(same_entries(got, path))
+        status, _d = r._once("GET", f"/v1/s/{info.id}/0/0",
+                             headers={"X-Store-Token": info.get})
+        self.assertEqual(status, 404)                       # deleted after the download
+        status, _d = r._once("GET", f"/v1/s/{'0' * 32}/0/0", headers={"X-Store-Token": "x"})
+        self.assertEqual(status, 404)
 
     def test_body_without_length_is_capped(self):
         import http.client
@@ -1833,6 +2200,7 @@ class WindowShareTests(unittest.TestCase):
         backup.make(self.addons, backup.default_folder())
         app = self.make_app()
         app.later_api = kiwi.url
+        app.later_store = False   # file.kiwi's own path (the guild storage: StoreWindowTests)
         app.open_link = lambda u: None
         app.open_backup_window(show=False)
         dlg = app.open_send(show=False)
@@ -1874,6 +2242,73 @@ class WindowShareTests(unittest.TestCase):
                             timeout=30)
         self.assertEqual(len(opens), 2)
 
+    def test_receive_asks_before_stopping_a_guild_download(self):   # tester L2
+        from am import errors
+        app = self.make_app()
+        app.open_backup_window(show=False)
+        rec = app.open_receive(show=False)
+        rec.active, rec.store_download = True, True     # as after ("share_later", "store")
+        asked = []
+        app.confirm = lambda title, text, ok, cancel: asked.append((title, ok)) or False
+        rec.close()                                     # Keep receiving
+        self.assertEqual(asked, [(errors.RECEIVE_STOP_TITLE, errors.RECEIVE_STOP_OK)])
+        self.assertFalse(rec.closed)
+        self.assertFalse(rec.cancel_event.is_set())
+        app.confirm = lambda *a: True                   # Stop and delete
+        rec.close()
+        self.assertTrue(rec.closed)
+        self.assertTrue(rec.cancel_event.is_set())
+        other = app.open_receive(show=False)            # no guild download: closes at once
+        app.confirm = lambda *a: self.fail("asked")
+        other.close()
+        self.assertTrue(other.closed)
+
+    def test_send_later_window_guild_server(self):
+        """Send later through the guild's server (the default with the tick): the status
+        names it, the consent links include Cloudflare's privacy page, and Receive downloads
+        by itself straight into Restore (no browser step); nothing is left on the server."""
+        from am import errors
+        for mod, name, value in ((share_later, "LATER_AFTER", 3600), (share, "PING_EVERY", 1)):
+            p = mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        backup.make(self.addons, backup.default_folder())
+        app = self.make_app()
+        app.later_api = "http://127.0.0.1:9"     # file.kiwi is never needed here
+        links = []
+        app.open_link = links.append
+        app.open_backup_window(show=False)
+        dlg = app.open_send(show=False)
+        dlg.toggle_later()
+        for text in (errors.LATER_CLOUDFLARE, errors.LATER_KIWI, errors.LATER_STORE_TERMS,
+                     errors.LATER_STORE_PRIVACY):
+            self.assertIn(text, self.texts(dlg.win))
+        self.assertEqual([link.cget("text") for link in dlg.later_links],
+                         [errors.LATER_STORE_TERMS, errors.LATER_STORE_PRIVACY,
+                          errors.LATER_TERMS, errors.LATER_PRIVACY])
+        dlg.toggle_now()
+        dlg.win.update_idletasks()
+        self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
+        said = []
+        real_status = dlg.set_status
+        dlg.set_status = lambda text: (said.append(text), real_status(text))
+        self.assertTrue(dlg.start())
+        self.pump_until(app, lambda: dlg.later_done, timeout=60)
+        self.assertEqual(dlg.later_host, "store")
+        self.assertIn(errors.later_uploading_text("now", "store"), said)
+        self.assertIn("the guild's server now", errors.later_uploading_text("now", "store"))
+        self.assertFalse(any("file.kiwi" in t for t in said))
+        code = dlg.code
+        self.pump_until(app, lambda: not dlg.active)
+        dlg.close()
+        rec = app.open_receive(show=False)
+        rec.code_var.set(code)
+        rec.start()
+        self.pump_until(app, lambda: type(app.backup_dialog).__name__ == "RestoreDialog",
+                        timeout=60)
+        self.assertIsNone(rec.ticket)
+        self.assertEqual(self.relay.stored_store(), (0, 0))
+
     def test_send_later_window(self):
         """Send later: off by default and remembered, honest text, then the whole way:
         upload (fake file.kiwi), Receive -> Download -> found in Downloads -> Restore."""
@@ -1892,6 +2327,7 @@ class WindowShareTests(unittest.TestCase):
         backup.make(self.addons, backup.default_folder())
         app = self.make_app()
         app.later_api = kiwi.url
+        app.later_store = False   # file.kiwi's own path (the guild storage: StoreWindowTests)
         links = []
         app.open_link = links.append
         app.open_backup_window(show=False)
@@ -1928,6 +2364,11 @@ class WindowShareTests(unittest.TestCase):
         old = config.load_settings()                               # ticked under the old
         old.pop("send_later_v")                                    # wording: counts as off
         config.save_settings(old)
+        again = app.open_send(show=False)
+        self.assertFalse(again.later_var.get())
+        again.close()
+        self.assertEqual(share_later.CONSENT_VERSION, 4)           # + Cloudflare terms link
+        config.save_settings(dict(old, send_later_v=3))            # the v3 wording: off too
         again = app.open_send(show=False)
         self.assertFalse(again.later_var.get())
         again.close()
@@ -1985,6 +2426,7 @@ class WindowShareTests(unittest.TestCase):
         backup.make(self.addons, backup.default_folder())
         app = self.make_app()
         app.later_api = kiwi.url
+        app.later_store = False   # file.kiwi's own path (the guild storage: StoreWindowTests)
         app.open_backup_window(show=False)
         dlg = app.open_send(show=False)
         texts = self.texts(dlg.win)

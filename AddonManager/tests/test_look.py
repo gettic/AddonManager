@@ -479,6 +479,12 @@ class LookWindowTests(unittest.TestCase):
                                    errors.REMOVE_CANCEL, False, lambda ok: None)
         self.check_dialog(parts["win"], "confirm")
         parts["win"].destroy()
+        # Receive: stop a guild-server download? (the send would be deleted)
+        parts = app._confirm_parts(errors.RECEIVE_STOP_TITLE, errors.RECEIVE_STOP_TEXT,
+                                   errors.RECEIVE_STOP_OK, errors.RECEIVE_STOP_KEEP, False,
+                                   lambda ok: None)
+        self.check_dialog(parts["win"], "confirm (stop receiving)")
+        parts["win"].destroy()
         # Add from file
         pack = os.path.join(self.work, "pack.zip")
         with zipfile.ZipFile(pack, "w") as z:
