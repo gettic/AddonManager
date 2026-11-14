@@ -38,6 +38,8 @@ _LINK_TAGS = (0xA000000C, 0xA0000003)   # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG
 def own_name(name):
     """True for a file name this app writes for backups and safety copies."""
     low = os.path.basename(name).lower()
+    if low.endswith(backup.LOCKED_EXT):   # a locked kept copy of a received backup
+        return low.startswith(backup.BACKUP_PREFIX)
     return low.endswith(".zip") and low.startswith((backup.BACKUP_PREFIX, *backup.SAFETY_PREFIXES))
 
 
@@ -179,8 +181,17 @@ def delete_one(f, places, addons_dir, trash_api, for_good=()):
 
 
 def delete(items, places, addons_dir, trash_api, for_good=()):
-    """[(FoundBackup, kind)], one file at a time; one failure never stops the rest."""
-    return [(f, delete_one(f, places, addons_dir, trash_api, for_good)) for f in items]
+    """[(FoundBackup, kind)], one file at a time; one failure never stops the rest. A locked
+    kept copy that went also takes its remembered code (by name + size: no file is opened)."""
+    out = [(f, delete_one(f, places, addons_dir, trash_api, for_good)) for f in items]
+    for f, kind in out:
+        if kind in DONE and getattr(f, "locked", False):
+            try:
+                from am import codes
+                codes.forget_named(os.path.basename(f.path), f.size)
+            except Exception as e:   # noqa: BLE001
+                log.info("Code of a deleted locked backup not forgotten (%s)", type(e).__name__)
+    return out
 
 
 def but_newest(found):

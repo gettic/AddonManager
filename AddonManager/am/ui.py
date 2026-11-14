@@ -11,7 +11,8 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
-from am import (APP_NAME, APP_VERSION, backup, backup_ui, config, errors, gamecheck, github,
+from am import (APP_NAME, APP_VERSION, backup, backup_lock, backup_ui, config, errors,
+                gamecheck, github,
                 fileinstall, fileinstall_ui, icon, installer, instance, selfupdate, share_ui,
                 stats, sysenv, theme, toc, touch, trash, versions, wowpath)
 from am import manifest as manifest_mod
@@ -72,9 +73,9 @@ BETA_TEXT = "Show beta versions"
 # The main window's box: shorter on Linux, whose fonts are wider (keeps the bottom row
 # inside the smallest window). The Settings window always says BETA_TEXT.
 BETA_MAIN_TEXT = BETA_TEXT if os.name == "nt" else "Betas"
-BETA_NOTE = ("Also offer test (beta) versions of addons when they are newer than the normal "
-             "version. Install all and Update all then install them too. To go back, switch "
-             "this off and click the addon's \"Use v...\" button.")
+BETA_NOTE = ("Also offer test (beta) versions when newer than the normal one; Install all "
+             "and Update all include them. To go back, switch this off and click the addon's "
+             "\"Use v...\" button.")
 SHARE_TEXT = "Share anonymous counts"
 SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and whether "
               "they're up to date. No name, account or ID. Only the app's maker sees the totals.")
@@ -196,6 +197,7 @@ class App:
         # file/folder pickers + "Open folder" (tests swap these; no dialog opens there).
         self.backup_dialog = None
         self.ask_backup_file = self._ask_backup_file_dialog
+        self.ask_save_zip = self._ask_save_zip_dialog
         self.ask_backup_folder = self._ask_backup_folder_dialog
         self.open_folder = backup_ui.open_folder
         # Add from file (am\fileinstall_ui.py): button, drag and drop, "Other addons" rows.
@@ -1503,11 +1505,18 @@ class App:
             win.grab_set()
         return win
 
+    def _dialog_busy(self):
+        """A backup/restore runs, or Save zip... copies: its window stays until done."""
+        d = self.backup_dialog
+        return d is not None and (d.running or getattr(d, "saving", False))
+
     def close_settings(self):
         if self.backup_dialog is not None:
-            if self.backup_dialog.running:
+            if self._dialog_busy():
                 return   # a backup/restore is running: its window stays until it's done
             self.backup_dialog.close()   # the Licences window
+            if self.backup_dialog is not None:
+                return   # it stayed open (stopping something first)
         win, self.settings_win = self.settings_win, None
         self.beta_check = self.share_check = None
         if win is not None:
@@ -1531,9 +1540,13 @@ class App:
 
     def close_backup_window(self):
         if self.backup_dialog is not None:
-            if self.backup_dialog.running:
-                return   # a backup/restore is running: its window stays until it's done
+            if self._dialog_busy():
+                if getattr(self.backup_dialog, "saving", False):
+                    self.backup_dialog.close()   # Save zip...: stop the copy; windows stay
+                return   # a backup/restore/save is running: its window stays until it's done
             self.backup_dialog.close()
+            if self.backup_dialog is not None:
+                return   # it stayed open (stopping something first): so does this window
         hub, self.backup_win = self.backup_win, None
         if hub is not None:
             hub.destroy()
@@ -1550,7 +1563,27 @@ class App:
         return filedialog.askopenfilename(
             parent=parent, title=errors.RESTORE_PICK_FILE,
             initialdir=start if os.path.isdir(start) else None,
-            filetypes=[("Backup", "*.zip"), ("All files", "*.*")])
+            filetypes=[("Backup", ("*.zip", "*" + backup.LOCKED_EXT)), ("All files", "*.*")])
+
+    def _ask_save_zip_dialog(self, name):
+        """Save zip...: where to save the plain backup zip (the dialog asks before
+        replacing a file). Starts in the last folder used, else Documents."""
+        parent = (self.backup_dialog.win if self.backup_dialog is not None
+                  else backup_ui.owner_window(self))
+        settings = config.load_settings()
+        start = settings.get("save_zip_folder") or backup.documents_dir() or ""
+        if os.name != "nt":
+            _show_hidden_folders(self.root)
+        path = filedialog.asksaveasfilename(
+            parent=parent, title=errors.SAVE_ZIP_TITLE, initialfile=name,
+            initialdir=start if start and os.path.isdir(start) else None,
+            defaultextension=".zip", confirmoverwrite=True,
+            filetypes=[("Zip", "*.zip"), ("All files", "*.*")])
+        if path:
+            settings = config.load_settings()
+            settings["save_zip_folder"] = os.path.dirname(path)
+            config.save_settings(settings)
+        return path
 
     def _ask_backup_folder_dialog(self, start):
         parent = (self.backup_dialog.win if self.backup_dialog is not None
@@ -1601,8 +1634,10 @@ class App:
         if self.busy or not self.addons_dir or self.backup_dialog is not None:
             return None
         self._backup_note("")
-        if not path:
+        if not path or backup_lock.is_locked(path):
             self.backup_dialog = backup_ui.BackupListDialog(self, show=show)
+            if path:   # a locked kept copy: opened (or its code asked) like a picked row
+                self.backup_dialog.pick(path)
             return self.backup_dialog
         if self.backup_win is not None and show:
             try:
@@ -1632,6 +1667,11 @@ class App:
             dialog.handle(msg)
         elif kind in ("backup_error", "restore_error"):
             self.set_message(msg[1])
+        if kind in ("restore_opened", "restore_unlocked") and len(msg) > 3:
+            # A locked backup opened for a window that is gone: its plain copy goes now.
+            now = self.backup_dialog
+            if getattr(now, "kept", None) is not msg[3] or not now.alive():
+                msg[3].discard()
         if not final:
             return
         if kind == "restore_done":
@@ -1745,10 +1785,12 @@ class App:
         if self.closed:
             return
         try:
-            while True:
+            while not self.closed:   # a message may close the app (Save zip stopped on close)
                 self._handle(self.queue.get_nowait())
         except queue.Empty:
             pass
+        if self.closed:
+            return
         self._polls += 1
         lock = self.instance_lock
         if lock is not None and self._polls % 5 == 0:
@@ -1926,11 +1968,21 @@ class App:
                                stats.day(), stats.week())).start()
 
     def close(self):
-        if self.backup_dialog is not None and self.backup_dialog.running:
+        if self._dialog_busy():
+            if getattr(self.backup_dialog, "saving", False):
+                # stop the Save zip... copy (its hidden part is removed); the app closes
+                # once the copy has stopped (RestoreDialog._save_event)
+                self.close_pending = True
+                self.backup_dialog.close()
             return   # never stop a backup/restore half-way; it finishes in seconds
         if self.files.running:
             return   # an install from a file finishes first (it can't stop half-way safely)
         self._save_geometry()
+        if self.backup_dialog is not None and getattr(self.backup_dialog, "kept", None):
+            try:   # a Restore window of a locked backup: its hidden plain copy goes now
+                self.backup_dialog.close()
+            except Exception:   # noqa: BLE001 (closing anyway; the next start cleans it)
+                log.info("Restore window not closed cleanly")
         self.closed = True
         self.files.close()
         self.root.destroy()

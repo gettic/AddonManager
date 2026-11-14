@@ -49,6 +49,7 @@ Optional for players and off by default. If the other PC hasn't joined after 5 m
 
 - **What the Worker keeps:** the record (at most 4 KB, unreadable without the code), a random salt and a hash used to check the code. It never holds the file.
 - **Fetching the record:** `take` gives it out once and counts as a code try (the same per-IP limits as join). A wrong code deletes it.
+- **Picked up yet? (Codes... in the app):** `GET /v1/<ch>/status` with the sender's token answers uploading / ready / taken / stopped / burned / ended; anything else gets the same 404. After a send-later code closes, only its state and the sender's token hash stay until the code's own end (no record, no IP). Limit `HARD_STATUS` per IP (RateBox, memory only). An app on a Worker without this route just shows "not known".
 - **Limits** (`[vars]`): `LATER_IDLE` 300 s without the sender while uploading, `LATER_UPLOAD_SECONDS` 6 h of uploading at most, `LATER_MAX_HOURS` 24 (the player picks 1-24 h).
 - **Nothing to set up** in Cloudflare or at file.kiwi: no account and no key. The PCs talk to file.kiwi directly. This Worker never contacts file.kiwi.
 - **Can't be deleted early:** file.kiwi deletes files on its own schedule (a few days). Once the code ends, the stored file can't be opened.

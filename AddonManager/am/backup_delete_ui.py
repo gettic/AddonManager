@@ -28,6 +28,8 @@ def row_text(f):
     text = errors.found_row(backup_ui.found_date(f.mtime), f.size, f.place, f.online)
     if backup.is_received(f.path):
         text += f" · {errors.DELETE_RECEIVED}"
+    if getattr(f, "locked", False):
+        text += f" · {errors.FOUND_LOCKED}"
     return text
 
 

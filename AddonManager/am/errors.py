@@ -7,7 +7,7 @@ from am.installer import InstallError
 from am.manifest import ManifestError
 
 # Where the details are: the folder path's right-click menu has Open log folder.
-DETAILS = " (Details are in the log: right-click the folder path > Open log folder.)"
+DETAILS = " (Details: right-click the folder path > Open log folder.)"
 SYSTEM = "Windows" if os.name == "nt" else "Your system"
 THIS_PC = "this PC" if os.name == "nt" else "this computer"
 YOUR_PC = "your PC" if os.name == "nt" else "your computer"
@@ -80,9 +80,8 @@ def release_message(exc, name):
     kind = getattr(exc, "kind", "")
     if kind == "rate_limited":
         minutes = max(1, (int(getattr(exc, "wait", 0) or 0) + 59) // 60)
-        return ("Can't check now", f"GitHub is limiting update checks from {THIS_PC}. "
-                "Try again "
-                f"in {minutes} minute{'s' if minutes != 1 else ''}.")
+        return ("Can't check now", f"Too many update checks from {THIS_PC} for now. "
+                f"Try again in {minutes} minute{'s' if minutes != 1 else ''}.")
     if kind == "offline":
         return ("Can't check now",
                 "Can't reach the internet. Check your connection and click Check again.")
@@ -91,7 +90,7 @@ def release_message(exc, name):
     if kind == "certificate":
         return ("Can't check now", CERTIFICATE)
     if kind == "no_release":
-        return ("No release yet", f"{name} has no release to download yet.")
+        return ("Not out yet", f"{name} has no release to download yet.")
     if kind == "no_asset":
         return ("No download yet", f"{name}'s newest release has no download yet. "
                 "Try again later, or tell a guild officer.")
@@ -172,7 +171,7 @@ def app_update_message(exc):
     if kind == "certificate":
         return CERTIFICATE
     if kind == "rate_limited":
-        return f"GitHub is limiting downloads from {THIS_PC}. Try again in a few minutes."
+        return f"Too many downloads from {THIS_PC} for now. Try again in a few minutes."
     if kind == "damaged":
         return ("The update download was damaged or doesn't match, so nothing was changed. "
                 "Try again later.")
@@ -234,7 +233,7 @@ ALL_INSTALL = "Install all"
 ALL_UPDATE = "Update all"
 # Tooltips on the main window's buttons while they are greyed out: why.
 NOTHING_TO_DO_TIP = "Nothing to install or update."
-BUSY_TIP = "Please wait until the current job is finished."
+BUSY_TIP = "Wait for the current job to finish."
 NO_FOLDER_TIP = "Choose your WoW Forever folder first (Choose folder above)."
 BACKUP_NO_FOLDER_TIP = ("Choose your WoW Forever folder first (Choose folder in the main "
                         "window).")
@@ -252,16 +251,19 @@ def list_summary(updates, missing):
     return " ".join(parts) or "All addons are up to date."
 
 
-def remove_text(name, where, needed_by=()):
-    """The question before removing. where: "bin"/"trash" or None (deleted for good)."""
+def remove_text(name, where, needed_by=(), from_file=False):
+    """The question before removing. where: "bin"/"trash" or None (deleted for good).
+    from_file: an addon installed with Add file... (it has no Install button)."""
     if where:
-        first = f"The {name} folder is moved to the {BIN_NAME}."
+        first = f"{name} goes to the {BIN_NAME}."
     else:
-        first = (f"This drive has no {BIN_NAME}, so the {name} folder will be deleted "
-                 "for good.")
-    text = (f"{first} Your settings for it in the game are kept, so if you install it again "
-            f"later, it is set up like before. {ALL_INSTALL} and {ALL_UPDATE} won't put it back; use its "
-            "Install button if you want it again.")
+        first = f"This drive has no {BIN_NAME}, so {name} will be deleted for good."
+    text = f"{first} Its in-game settings are kept for if you install it again."
+    if from_file:
+        text += " To get it back, use Add file... again."
+    else:
+        text += (f" {ALL_INSTALL} and {ALL_UPDATE} will skip it; use its Install button to "
+                 "get it back.")
     if needed_by:
         names = ", ".join(needed_by)
         verb = "needs" if len(needed_by) == 1 else "need"
@@ -286,8 +288,8 @@ def remove_message(exc, name):
                 f"{YOUR_PC}.")
     if kind == "partly":
         return (f"{name} was only partly deleted: some of its files couldn't be deleted. "
-                "WoW won't load what's left, and I'll try to delete the rest the next time "
-                "I start.")
+                "WoW won't load what's left, and the rest is deleted next time the app "
+                "starts.")
     if kind == "link":
         return (f"The {name} folder is a link to somewhere else (a developer setup), "
                 "so I left it alone.")
@@ -317,8 +319,7 @@ def installed_list(names):
 BACKUP_HEADING = "Backup"          # the main window's button and the Backup window's title
 BACKUP_BUTTON = "Make a backup..."
 RESTORE_BUTTON = "Restore a backup..."
-BACKUP_NOTE = ("Your addons and their settings in one file: to keep safe or to use on "
-               "another PC. Close WoW first.")
+BACKUP_NOTE = "Your addons and their settings in one file, to keep safe or use on another PC."
 BACKUP_THIS_PC = "This PC"
 BACKUP_OTHER_PC = "Another PC"
 BACKUP_LAST_LOOKING = "Last backup: looking..."
@@ -426,7 +427,7 @@ SEND_FOLDED = "Sending:"
 SEND_FOLDED_NEW = "a new backup"
 SEND_PRIVATE = ("This file has your account and character names and data your addons saved "
                 "about other players. Only give the code to yourself or someone you trust.")
-SEND_SAFE = "It is sent encrypted. The code works once, for 10 minutes."
+SEND_SAFE = "Sent encrypted. The code works once, for 10 minutes."
 SEND_GET_CODE = "Get code"
 SEND_TRY_AGAIN = "Try again"   # the Get code button after an error a new try can fix
 SEND_MAKING = "Making the backup..."
@@ -445,8 +446,8 @@ RECEIVE_CONNECTING = "Connecting..."
 RECEIVE_CHECKING = "Checking the file..."
 # Closing Receive while it downloads from a Send server (the send can't come back).
 RECEIVE_STOP_TITLE = "Stop receiving?"
-RECEIVE_STOP_TEXT = ("Are you sure? The send will be deleted and can't be received again: "
-                     "the other PC would have to send it again.")
+RECEIVE_STOP_TEXT = ("The backup is deleted from the host and can't be received again; the "
+                     "other PC must send it again.")
 RECEIVE_STOP_OK = "Stop and delete"
 RECEIVE_STOP_KEEP = "Keep receiving"
 USE_CODE = "Use a code..."
@@ -482,12 +483,12 @@ def received_addons(not_listed, different):
 KIWI_HOST = "file.kiwi"
 SEND_HOSTS = {"adminforge": "adminForge's Send server", "visee": "send.vis.ee"}
 LATER_TICK = ("Keep it online for later if the other PC isn't ready in 5 min (at once if "
-              "over 500 MB), on the first that works:")
+              "over 500 MB), on the first host below that works:")
 # Measured: the Send window at Linux 150 % stays at 953 of 960 px with this length; the rest of
 # the tos points (operators, may vanish sooner, not the only copy) are in the README.
 LATER_NOTE = ("Encrypted here: only this code opens it. The guild keeps no copy and doesn't "
-              "run these hosts; they weren't asked and guarantee nothing. 1-2 delete it once "
-              "downloaded, else in 32 hours; file.kiwi (uses Cloudflare, Google) keeps it days. "
+              "run these hosts; they weren't asked and guarantee nothing. Hosts 1-2 delete it once "
+              "downloaded or after 32 hours; file.kiwi (uses Cloudflare, Google) keeps it days. "
               "All see your IP, size and time.")
 # The hosts, in the order tried: one row each, its pages as small links at the right.
 LATER_TERMS = "terms"
@@ -524,8 +525,8 @@ LATER_UPLOADING = later_uploading_text(None)
 LATER_UPLOADING_BIG = later_uploading_text("big")
 LATER_UPLOADING_NOW = later_uploading_text("now")
 LATER_GOT = ("The other PC uploaded it to file.kiwi. Click Download to get it in your "
-             "browser. I then find it in your Downloads by myself; if I don't, click Open "
-             "file... and pick it.")
+             "browser. I'll find it in your Downloads; if not, click Open file... and pick "
+             "it.")
 LATER_KEEP_OPEN = "Keep this window open until it's restored: the code works only once."
 LATER_DOWNLOAD = "Download"
 LATER_OPEN = "Open file..."   # short: it shares the row with Download (half each)
@@ -544,7 +545,7 @@ def later_hours(hours):
 
 def later_in(seconds):
     seconds = max(0, int(seconds))
-    return (f"Works once. If the other PC hasn't joined in {seconds // 60}:{seconds % 60:02d}, "
+    return (f"Works once. If the other PC hasn't typed it in {seconds // 60}:{seconds % 60:02d}, "
             "it's uploaded for later.")
 
 
@@ -659,8 +660,8 @@ SHARE_CERTIFICATE = ("Can't make a safe connection to the send service. Check th
 
 # A failed download from a Send server: the send is deleted there and the code is used up,
 # so these never say "try again" or "nothing was changed".
-STORE_NEW_CODE = (" The code works only once, so the send was deleted. Make a new code on the "
-                  "other PC.")
+STORE_NEW_CODE = (" The code works only once, so the backup was deleted from the host. Make a "
+                  "new code on the other PC.")
 STORE_USED_UP = {
     "cancelled": "Stopped.",
     "broken": "The file arrived damaged or cut off, so it was thrown away.",
@@ -701,10 +702,9 @@ def share_message(exc, fresh=False):
     if kind == "too_big":
         limit = getattr(exc, "limit", None) or 500 * 1024 * 1024
         if getattr(exc, "detail", "") == "later_off":
-            return (f"That backup is over {limit_text(limit)}, too big to send live. The "
-                    "\"Keep it online for later\" option below (on a public file host) can "
-                    "send it, or make a backup and copy it yourself with a USB stick or cloud "
-                    "folder.")
+            return (f"Over {limit_text(limit)} is too big to send directly. The \"Keep it "
+                    "online for later\" option below (a public file host) can send it, or copy "
+                    "the backup with a USB stick or cloud folder.")
         return (f"That backup is too big to send ({limit_text(limit)} at most). Use a cloud "
                 "folder or USB stick.")
     if kind == "later_failed":
@@ -730,7 +730,7 @@ def share_message(exc, fresh=False):
         need = getattr(exc, "limit", None)
         if need and getattr(exc, "detail", "") == "store":   # Send server: the code is used up
             return (f"Not enough free disk space: about {limit_text(need)} is needed. The code "
-                    "works only once, so free some space and ask the other PC for a new send.")
+                    "works only once, so free some space and ask the other PC to send it again.")
         if need:
             return (f"Not enough free disk space: about {limit_text(need)} is needed. Free "
                     "some space and try again.")
@@ -826,8 +826,8 @@ DELETE_MORE = "Only the newest {n} are listed."
 DELETING = "Deleting..."
 DELETE_OK_BIN = f"Move to {BIN_NAME}"
 DELETE_OK_GOOD = "Delete for good"
-DELETE_TO_BIN = f"Moved to the {BIN_NAME} (you can get them back from there):"
-DELETE_FOR_GOOD = f"No {BIN_NAME} on that drive, so these are deleted for good:"
+DELETE_TO_BIN = f"These go to the {BIN_NAME} (you can get them back):"
+DELETE_FOR_GOOD = f"No {BIN_NAME} on that drive, so these will be deleted for good:"
 DELETE_CLOUD = ("Backups in {clouds} are deleted on your other PCs too (the cloud keeps "
                 "them in its own bin for a while).")
 DELETE_SAFETY_LINE = "Safety copies let you undo a restore or an install from a file."
@@ -915,3 +915,170 @@ def backup_message(exc):
                     f"{limit_text(need)} is needed. Free some space and try again.")
         return "The disk is full, so nothing was changed. Free some space and try again."
     return "That didn't work, so nothing was changed. Try again." + DETAILS
+
+
+# Locked kept copies of received backups, Save zip, Unlock, Your codes
+# (am\backup_lock.py, am\codes.py, am\codes_ui.py).
+SAVE_ZIP = "Save zip..."
+SAVE_ZIP_TITLE = "Save the backup as a zip"
+KEPT_LOCKED = "Kept here, locked. This PC remembers the code."
+if os.name != "nt":
+    KEPT_LOCKED = "Kept here, locked. This computer remembers the code."
+STOPPING = "Stopping..."
+SAVE_ZIP_STOPPED = "Not saved."
+FOUND_LOCKED = "locked"
+
+
+def kept_failed(kind=None):
+    """The locked copy couldn't be made after receiving: the backup is only here for now
+    (why is in the log)."""
+    return ("Couldn't keep a copy here. Restore it or use Save zip... before closing this "
+            "window.")
+
+
+def receive_locking(percent):
+    return f"Locking the backup... {percent} %"
+
+
+def save_zip_saving(percent):
+    return f"Saving the zip... {percent} %"
+
+
+def zip_saved(name, removed=True):
+    if removed:
+        return f"Saved as a normal zip: {name}. The locked copy was removed."
+    return (f"Saved as a normal zip: {name}. The locked copy couldn't be removed; "
+            "delete it in Old backups....")
+
+
+def save_zip_message(exc):
+    kind = getattr(exc, "kind", "")
+    if kind == "same_file":
+        return "That's the backup itself: pick another name or folder."
+    if kind == "inside_game":
+        return "Can't save in the WoW folder. Pick another folder."
+    if kind == "disk_full":
+        need = getattr(exc, "need", None)
+        return ("Not enough room there" + (f" (it needs {size_text(need)})" if need else "")
+                + ". Pick another drive or free some space.")
+    if kind == "too_big_for_drive":
+        return ("That drive can't hold files over 4 GB (many USB sticks can't). Pick "
+                "another drive.")
+    if kind == "cancelled":
+        return SAVE_ZIP_STOPPED
+    return "Couldn't save it there. Pick another folder." + DETAILS
+
+
+def unlocking(percent):
+    return f"Unlocking... {percent} %"
+
+
+UNLOCK_TITLE = "Unlock backup"
+UNLOCK_TEXT = ("This backup is locked. Type the code it was sent with; " + THIS_PC
+               + " remembers it after that.")
+UNLOCK_EXAMPLE = RECEIVE_EXAMPLE   # one example code everywhere
+UNLOCK_OK = "Unlock"
+UNLOCK_WRONG = "That code doesn't open this backup. Check it and try again."
+UNLOCK_CHECKING = "Checking the code..."
+UNLOCK_NOT_CODE = "That doesn't look like a code."
+
+
+def unlock_from(name):
+    return f"Backup: {name}"
+
+
+def unlock_message(exc):
+    """Opening a locked kept copy didn't work (nothing was changed)."""
+    kind = getattr(exc, "kind", "")
+    if kind == "wrong_code":
+        return UNLOCK_WRONG
+    if kind == "newer":
+        return "This locked backup was made by a newer Addon Manager: update this app first."
+    if kind in ("damaged", "not_locked"):
+        return "This locked backup is damaged. Send it again from the other PC."
+    if kind == "disk_full":
+        need = getattr(exc, "need", None)
+        return ("Not enough room to open it" + (f" (it needs {size_text(need)})" if need else "")
+                + ". Free some space and try again.")
+    if kind == "cancelled":
+        return "Stopped."
+    if isinstance(exc, Exception) and type(exc).__name__ == "BackupError":
+        return backup_message(exc)
+    return "Couldn't open this locked backup." + DETAILS
+
+
+CODES_BUTTON = "Codes..."
+CODES_TITLE = "Your codes"
+CODES_SENT = "Sent for later"
+CODES_LOCKED = "Locked backups"
+CODES_STOP = "Stop"
+CODES_SHOW = "Show code"
+CODES_HIDE = "Hide code"
+CODES_FORGET = "Forget this code"   # the right-click entry
+CODES_FORGET_BUTTON = "Forget"       # the row button (Steam Deck: no right-click)
+CODES_NONE = "No codes are kept on " + THIS_PC + "."
+CODES_NOTE = ("Kept only on this PC, for your Windows account. Sent codes are removed once "
+              "they stop working.")
+if os.name != "nt":
+    CODES_NOTE = ("Kept only on this computer, for your account. Sent codes are removed once "
+                  "they stop working.")
+CODES_STOP_TITLE = "Stop this code?"
+def codes_stop_text(host):
+    """The Stop question; host = the code's host key ("kiwi" = file.kiwi)."""
+    text = "The code stops working and the backup is deleted from its site."
+    if host == "kiwi":
+        text += " file.kiwi keeps a locked copy until it expires."
+    return text
+CODES_STOP_OK = "Stop it"
+CODES_STOPPED = "Stopped. The code doesn't work any more."
+CODES_STOP_FAILED = ("Couldn't reach the host. Try again later; the code stops by "
+                     "itself when its time is up.")
+CODES_FORGET_TITLE = "Forget this code?"
+CODES_FORGET_TEXT = "After this, the backup opens only by typing its code. Write it down first."
+CODES_FORGET_OK = "Forget it"
+def codes_head(text, count, shown):
+    """A group heading in Your codes; "(3 of 5, newest)" when not every row fits."""
+    return f"{text} ({shown} of {count}, newest)" if count > shown else text
+
+
+HOST_NAMES = {"adminforge": "adminForge", "visee": "send.vis.ee", "kiwi": "file.kiwi"}
+
+
+def _hours_minutes(seconds):
+    minutes = max(0, int(seconds) // 60)
+    h, m = divmod(minutes, 60)
+    return f"{h} h {m} min" if h else f"{m} min"
+
+
+def codes_line(active, left, locked_count):
+    """The Backup window's line beside Codes...: active sent codes (+ the soonest time left),
+    else the locked backups this PC knows the code of."""
+    if active:
+        what = "1 code still works" if active == 1 else f"{active} codes still work"
+        return f"{what} ({_hours_minutes(left)} left)" if left is not None else what
+    if locked_count:
+        return ("1 locked backup" if locked_count == 1
+                else f"{locked_count} locked backups")
+    return ""
+
+
+def code_state(state, left, when=None):
+    """One sent code's second line: where it is and what happened."""
+    when = f" {when}" if when else ""
+    if state == "taken":
+        return f"Picked up{when}"
+    if state == "stopped":
+        return "Stopped"
+    if state == "burned":
+        return "Stopped: a wrong code was typed"
+    if state == "ended":
+        return "Ended"
+    if state == "uploading":
+        return "Still uploading"
+    base = f"{_hours_minutes(left)} left" if left is not None else "Works"
+    return base + (", not picked up yet" if state == "ready" else "")
+
+
+def locked_line(saved_text, known):
+    return (f"Received {saved_text}" if known else
+            "Code not kept on " + THIS_PC)

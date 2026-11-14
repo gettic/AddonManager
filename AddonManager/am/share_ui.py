@@ -15,7 +15,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from am import backup, backup_ui, config, errors, share, share_later, share_send, theme
+from am import (backup, backup_lock, backup_ui, codes, config, errors, share, share_later,
+                share_send, theme)
 from am.backup_ui import WRAP
 
 log = logging.getLogger(__name__)
@@ -685,11 +686,15 @@ class ReceiveDialog(_ShareDialog):
             self.set_status(errors.later_waiting(msg[3] or 0))
         elif kind == "share_ticket":
             self.show_ticket(msg[2])
+        elif kind == "share_locking":   # the locked kept copy is being written
+            self.set_progress(msg[2], msg[3])
+            self.set_status(errors.receive_locking(int(self.progress.cget("value"))))
         elif kind == "share_received":
             app, show = self.app, self.shown
             self.active = False
             super().close()
-            app.backup_dialog = backup_ui.RestoreDialog(app, msg[3], show=show)
+            app.backup_dialog = backup_ui.RestoreDialog(
+                app, msg[3], show=show, kept=msg[4] if len(msg) > 4 else None)
         elif kind == "share_error":
             self.progress.pack_forget()
             self.set_status(msg[2])
@@ -823,7 +828,7 @@ class ReceiveDialog(_ShareDialog):
         threading.Thread(target=_open_later_worker, daemon=True,
                          args=(self.app.queue, self.tag, self.ticket, path,
                                backup_ui.backup_folder(config.load_settings()),
-                               self.cancel_event)).start()
+                               self.cancel_event, self.code_var.get())).start()
 
 
 MAX_CLIPBOARD = 80   # characters: anything longer is not a code
@@ -914,6 +919,23 @@ def retry_helps(exc, fresh=False):
     return kind not in _NO_RETRY_BACKUP
 
 
+def _later_hook(q, tag):
+    """on_later for a send: "kept" (what Stop and "picked up?" need) goes into this PC's
+    encrypted codes file (am/codes.py), never into the queue or the log; the rest is
+    posted as ("share_later", tag, state, value)."""
+    def on_later(state, value):
+        if state == "kept":
+            try:
+                codes.add_sent(value["code"], value["channel"], value["token"], value["host"],
+                               time.time() + (value["left"] or 0), value["hours"],
+                               value["parts"])
+            except Exception as e:   # noqa: BLE001 (Your codes is a help, never a blocker)
+                log.warning("Could not remember the sent code (%s)", type(e).__name__)
+            return
+        q.put(("share_later", tag, state, value))
+    return on_later
+
+
 def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow_local, cancel,
                  later=None, fresh=None):
     """fresh: the backup is made for this send (None = when no path is given). A retry
@@ -940,7 +962,7 @@ def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow
             made = path
         share.send(path, relay, lambda code, ttl: q.put(("share_code", tag, code, ttl)),
                    progress=lambda d, t: q.put(("share_progress", tag, d, t)), cancel=cancel,
-                   later=later, on_later=lambda s, v: q.put(("share_later", tag, s, v)))
+                   later=later, on_later=_later_hook(q, tag))
         q.put(("share_sent", tag))
     except Exception as e:
         log.warning("Send failed (%s %s %s)", type(e).__name__, getattr(e, "kind", ""),
@@ -954,17 +976,35 @@ def _send_worker(q, tag, check_game, addons_dir, folder, flags, path, url, allow
         q.put(("share_error", tag, msg, retry_helps(e, fresh), keep))
 
 
+def _kept_received(q, tag, path, code, cancel):
+    """The received backup is kept LOCKED with its code (am/backup_lock.py; this PC
+    remembers the code in am/codes.py); its plain copy stays hidden while the Restore
+    window shows it. Posts "share_received" with the backup.read info and the Kept."""
+    kept = backup_lock.keep(
+        path, code, remember=codes.remember_lock,
+        progress=backup_ui.progress_poster(lambda d, t: q.put(("share_locking", tag, d, t))))
+    try:
+        if cancel is not None and cancel.is_set():   # the window was closed meanwhile
+            raise share.ShareError("cancelled")
+        info = backup.read(kept.plain, received=True)
+    except BaseException:
+        kept.discard()
+        raise
+    q.put(("share_received", tag, kept.plain, info, kept))
+
+
 def _receive_worker(q, tag, url, allow_local, code, folder, cancel):
     try:
         relay = share.Relay(url, allow_local=allow_local)
         path = share.receive(code, relay, folder, cancel=cancel,
                              progress=lambda d, t: q.put(("share_progress", tag, d, t)),
                              on_start=lambda: q.put(("share_matched", tag)),
-                             on_later=lambda s, p: q.put(("share_later", tag, s, p)))
+                             on_later=lambda s, p: q.put(("share_later", tag, s, p)),
+                             hidden=True)
         if isinstance(path, share.LaterTicket):   # uploaded for later: browser step next
             q.put(("share_ticket", tag, path))
             return
-        q.put(("share_received", tag, path, backup.read(path, received=True)))
+        _kept_received(q, tag, path, code, cancel)
     except Exception as e:
         log.warning("Receive failed (%s %s %s)", type(e).__name__, getattr(e, "kind", ""),
                     getattr(e, "detail", ""))
@@ -973,12 +1013,16 @@ def _receive_worker(q, tag, url, allow_local, code, folder, cancel):
         q.put(("share_error", tag, msg))
 
 
-def _open_later_worker(q, tag, ticket, path, folder, cancel):
+def _open_later_worker(q, tag, ticket, path, folder, cancel, code=None):
     """Open the downloaded send-later file into the backup folder (then Restore)."""
     try:
         final = share.open_later(ticket, path, folder, cancel=cancel,
-                                 progress=lambda d, t: q.put(("share_progress", tag, d, t)))
-        q.put(("share_received", tag, final, backup.read(final, received=True)))
+                                 progress=lambda d, t: q.put(("share_progress", tag, d, t)),
+                                 hidden=bool(code))
+        if code:
+            _kept_received(q, tag, final, code, cancel)
+        else:   # no code known (tests calling the worker by hand): kept as the plain zip
+            q.put(("share_received", tag, final, backup.read(final, received=True)))
     except Exception as e:
         log.warning("Opening the download failed (%s %s %s)", type(e).__name__,
                     getattr(e, "kind", ""), getattr(e, "detail", ""))

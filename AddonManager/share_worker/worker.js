@@ -29,6 +29,12 @@
 //                                                verifier closes it too (bad_code)
 // A new app joins with "<id>|caps=later"; an app without "later" gets 410 "later".
 // The record is sealed with a key from the code (scrypt on the PCs); the verifier is a hash.
+//   GET  /v1/<ch>/status  (the SENDER's token)   -> {state, left}: uploading / ready / taken /
+//                                                stopped / burned (a wrong code) / ended.
+//        Anything else (no such channel, another token) is the same 404 "not_found", so it
+//        tells nobody else anything. Rate-limited per IP (RateBox: memory only, nothing
+//        written). When a send-later mailbox closes, only {sender's token hash, state, until}
+//        stays (a few bytes, no record, no IP) until the code's own end, then it goes.
 //
 // The guild storage (v0.15.0-v0.16.x: /v1/<ch>/store and /v1/s/...) is gone: those paths
 // answer 404, and older apps then upload to their other hosts. Migration v4 deleted its
@@ -40,7 +46,10 @@ const REASONS = new Set(["done", "cancel", "bad_code"]);
 const MSG_MAX = 4096;
 const MAX_WAIT = 20;          // seconds a poll is held
 const TOMBSTONE = 300;        // seconds a closed mailbox still answers "closed"
-const BOX_ROUTES = new Set(["msg", "chunk", "close", "ping", "later", "record", "take"]);
+const BOX_ROUTES = new Set(["msg", "chunk", "close", "ping", "later", "record", "take",
+  "status"]);
+// What the sender's /status says after a send-later mailbox closed, by close reason.
+const OUTCOME = { done: "taken", bad_code: "burned", cancel: "stopped", expired: "ended" };
 const RECORD_MAX = 4096;
 
 // What the receiving app can do, from its join body ("<id>|caps=later").
@@ -115,7 +124,8 @@ async function allowed(env, request, kind) {
   if (!env.RATE) return true;
   const day = new Date().toISOString().slice(0, 10);
   const key = await sha256hex(`am-share|${day}|${ip}`);
-  const max = num(env, kind === "open" ? "HARD_OPEN" : "HARD_JOIN", 20);
+  const max = kind === "status" ? num(env, "HARD_STATUS", 120)
+    : num(env, kind === "open" ? "HARD_OPEN" : "HARD_JOIN", 20);
   const window = num(env, "HARD_WINDOW", 600);
   const r = await env.RATE.get(env.RATE.idFromName(key))
     .fetch(`https://rate/?kind=${kind}&max=${max}&window=${window}`, { method: "POST" });
@@ -130,7 +140,7 @@ export class RateBox {
   async fetch(request) {
     const url = new URL(request.url);
     const asked = url.searchParams.get("kind");
-    const kind = asked === "join" ? asked : "open";
+    const kind = asked === "join" || asked === "status" ? asked : "open";
     const max = Number(url.searchParams.get("max")) || 20;
     const window = (Number(url.searchParams.get("window")) || 600) * 1000;
     const now = Date.now();
@@ -186,6 +196,8 @@ export default {
     if (rest !== "join" && !BOX_ROUTES.has(rest.split("/")[0])) return err(404, "not_found");
     // Taking a send-later record is a code try: the same per-IP limits as join.
     if (rest === "take" && !(await allowed(env, request, "join"))) return err(429, "rate");
+    // The sender asking "picked up yet?": its own small limit (never the code tries').
+    if (rest === "status" && !(await allowed(env, request, "status"))) return err(429, "rate");
     const headers = new Headers();
     if (token) headers.set("X-Token", token);
     return stub.fetch(`https://box/${rest}${url.search}`, {
@@ -262,14 +274,41 @@ export class ShareBox {
 
   async close(reason) {
     const now = Date.now();
+    const old = this.meta;
+    // A send-later mailbox keeps only what its sender's /status needs, until its own end.
+    const outcome = old && old.later && !old.closed && old.sendHash
+      ? { sendHash: old.sendHash, state: OUTCOME[reason] || "ended",
+        until: Math.max(now, old.later.until || 0) }
+      : null;
     this.slots.clear();
     this.chunks.clear();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     this.meta = { closed: reason, closedAt: now, last: now };
+    if (outcome) this.meta.outcome = outcome;
     this.saveMeta();
-    await this.ctx.storage.setAlarm(now + TOMBSTONE * 1000);
+    await this.ctx.storage.setAlarm(this.forgetAt(this.meta) + 1000);
     this.notify();
+  }
+
+  // When a closed mailbox is forgotten: after the tombstone, or a send-later's own end.
+  forgetAt(m) {
+    return Math.max(m.closedAt + TOMBSTONE * 1000, m.outcome ? m.outcome.until : 0);
+  }
+
+  // GET /status with the sender's token. Anything that isn't that (no mailbox, another
+  // token, not a send-later) gets the same 404, so the route tells nobody else anything.
+  async status(token) {
+    const m = this.meta;
+    const owner = !m ? null : m.closed ? (m.outcome ? m.outcome.sendHash : null)
+      : m.later ? m.sendHash : null;
+    const hash = await sha256hex(token);
+    // (this.meta !== m: the mailbox changed while hashing; answer "not known" like the rest)
+    if (!owner || hash !== owner || this.meta !== m) return err(404, "not_found");
+    if (m.closed) return json(200, { state: m.outcome.state, left: 0 });
+    const left = m.later.until ? Math.max(0, Math.round((m.later.until - Date.now()) / 1000))
+      : null;
+    return json(200, { state: m.later.state === "taking" ? "ready" : m.later.state, left });
   }
 
   async forget() {
@@ -287,7 +326,7 @@ export class ShareBox {
     if (!m) return true;
     const now = Date.now();
     if (m.closed) {
-      if (now - m.closedAt > TOMBSTONE * 1000) { await this.forget(); return true; }
+      if (now >= this.forgetAt(m)) { await this.forget(); return true; }
       return false;
     }
     if (m.later ? now > this.laterDeadline(m)
@@ -300,7 +339,9 @@ export class ShareBox {
   async alarm() {
     await this.expire();
     const m = this.meta;
-    if (m && !m.closed) {
+    if (m && m.closed) {   // still a tombstone / a send-later's outcome: check again then
+      await this.ctx.storage.setAlarm(Math.max(this.forgetAt(m), Date.now()) + 1000);
+    } else if (m) {
       const next = m.later ? this.laterDeadline(m)
         : m.recvHash ? this.deadline(m) : m.created + this.ttl;
       await this.ctx.storage.setAlarm(Math.max(next, Date.now()) + 1000);
@@ -329,6 +370,10 @@ export class ShareBox {
     }
 
     const m = this.meta;
+    if (parts[0] === "status") {
+      if (request.method !== "GET") return err(404, "not_found");
+      return this.status(request.headers.get("X-Token") || "");
+    }
     if (!m) return err(404, "not_found");
     if (m.closed) return err(410, m.closed);
 

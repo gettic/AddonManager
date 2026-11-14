@@ -168,7 +168,7 @@ In the **Backup** window, click **Send to another PC...**. Choose a new backup (
 
 ### If the other PC isn't ready (send later)
 
-This is optional and **off by default**. Tick "Keep it online for later if the other PC isn't ready in 5 min (at once if over 500 MB), on the first that works:". The backup is encrypted first. It goes to the first host in this list that works:
+This is optional and **off by default**. Tick "Keep it online for later if the other PC isn't ready in 5 min (at once if over 500 MB), on the first host below that works:". The backup is encrypted first. It goes to the first host in this list that works:
 
 | Order | Host | Who runs it | Size | How long it keeps the file |
 | --- | --- | --- | --- | --- |
@@ -202,6 +202,25 @@ A file received this way is handled with extra care:
 - You always pick which of your accounts gets the settings. Nothing is picked for you.
 - `Config.wtf`, chat logs and the saved chat history of chat addons are never sent. A received file that holds them is refused.
 - The app keeps a "received" mark in the file, so it is never offered as **Newest backup** to send on.
+
+### The kept copy of a received backup
+
+After a receive, the app keeps the backup on your PC as a locked file (`.amlocked`), together with the code it came with.
+
+- **The same PC** opens it without asking.
+- **Another PC** shows the **Unlock backup** window. Type the code once; that PC remembers it after that.
+- **Save zip...** (in the Restore window) saves it as a normal zip anywhere. The locked copy is then removed.
+- If the app can't keep a copy, the Restore window says so. Restore it or use **Save zip...** before you close it.
+
+### Your codes
+
+When this PC has send-later codes that may still work, or locked backups, the **Backup** window shows **Codes...** with a short line beside it. It opens **Your codes**:
+
+- **Sent for later:** each code with its time left and whether it was picked up yet. **Stop** makes the code stop working and deletes the backup from its site (file.kiwi keeps a locked copy until it expires).
+- **Locked backups:** **Show code** (and **Hide code**), and **Forget**. After **Forget**, the backup opens only by typing its code, so write the code down first. Do this too before you restore on another PC.
+- Each group shows the 3 newest; the heading says "(3 of 5, newest)" when there are more.
+
+The codes are kept in one encrypted file in the settings folder. On Windows it is tied to your Windows account. On Linux it is tied to this PC and your user: a copy of the file is no use on another PC or for another user. This is weaker than on Windows, and it only keeps the codes from casual reading.
 
 ## Adding an addon from a file
 

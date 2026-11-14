@@ -372,6 +372,41 @@ class Relay:
         except (TypeError, ValueError) as e:
             raise ShareError("server", "bad record") from e
 
+    STATUS_STATES = ("uploading", "ready", "taken", "stopped", "burned", "ended")
+
+    @classmethod
+    def for_sender(cls, url, channel, token, allow_local=False):
+        """A relay client for a send-later code this PC sent earlier (Your codes)."""
+        relay = cls(url, allow_local=allow_local)
+        relay.channel, relay.token = int(channel), token
+        return relay
+
+    def status(self):
+        """The sender's view of its send-later code: {"state", "left"}. None = the relay
+        doesn't know it (gone, never ours, or an older relay without this route)."""
+        status, data = self._once("GET", f"/{PROTOCOL}/{self.channel}/status")
+        if status == 404:
+            return None
+        if status != 200:
+            raise self._error(status, data)
+        out = self._json(data)
+        left = out.get("left")
+        if out.get("state") not in self.STATUS_STATES:
+            raise ShareError("server", "bad status")
+        return {"state": out["state"],
+                "left": left if type(left) is int and left >= 0 else None}
+
+    def stop(self):
+        """Your codes > Stop: close this send-later code now. True when the relay says it
+        is closed (or already gone); False when it couldn't be reached. Never raises."""
+        try:
+            status, _d = self._once("POST", f"/{PROTOCOL}/{self.channel}/close",
+                                    json.dumps({"reason": "cancel"}).encode("ascii"),
+                                    timeout=10)
+        except Exception:
+            return False
+        return status in (204, 403, 404, 410)   # 403: that channel is someone else's now
+
     def close(self, reason):
         """Tell the relay to delete the mailbox now. Never raises."""
         if not self.token or self.channel is None:
@@ -613,6 +648,12 @@ def _send_later(path, relay, channel, words, size, sha, later, progress, cancel,
             sent[0].delete_all(sent[1])
         raise
     if on_later:
+        # For "Your codes" (am\codes.py, encrypted): what Stop and "picked up?" need.
+        on_later("kept", {"code": format_code(channel, words), "channel": channel,
+                          "token": relay.token, "left": left, "hours": int(later["hours"]),
+                          "host": record.get("site") if record.get("v") == 3 else "kiwi",
+                          "parts": [{"id": p.id, "owner": p.owner} for p in sent[1]]
+                          if sent else []})
         on_later("ready", left)
     return True
 
@@ -715,7 +756,18 @@ class LaterTicket:
     send: object = None    # (share_send.SITES key, [share_send.Part]) on a Send server
 
 
-def _fetch_send(ticket, relay, dest_folder, progress, cancel):
+def _final_path(dest_folder, hidden):
+    """Where a checked received backup goes: "... received.zip", or (hidden=True, the app's
+    windows) a hidden ".AddonManager unlocked <hex>.part" that backup_lock.keep locks next:
+    no plain zip is ever visible, even if the app stops in between (the next start cleans
+    the hidden part away)."""
+    if hidden:
+        from am import backup_lock   # imported here: it imports this module
+        return backup_lock._hidden_part(dest_folder, backup_lock.UNLOCKED_PREFIX)
+    return backup.received_path(dest_folder)
+
+
+def _fetch_send(ticket, relay, dest_folder, progress, cancel, hidden=False):
     """Download a send kept on a Send server (its fixed address from share_send.SITES, never
     one from the record) into a hidden .part, taking Send's layer off on the way, open it
     like any send-later file (open_later: every check), then delete it there with the owner
@@ -743,7 +795,7 @@ def _fetch_send(ticket, relay, dest_folder, progress, cancel):
         stop = cancel.is_set if cancel is not None else None
         with open(blob_part, "xb") as f:
             client.download(parts, f, stop, progress)
-        return open_later(ticket, blob_part, dest_folder, cancel=cancel)
+        return open_later(ticket, blob_part, dest_folder, cancel=cancel, hidden=hidden)
     except ShareError as e:
         raise _store_used_up(e) from e
     except share_send.SendError as e:
@@ -814,7 +866,7 @@ def _receive_later(channel, words, relay, cancel, clock, on_later):
                        r["name"])
 
 
-def open_later(ticket, blob_path, dest_folder, progress=None, cancel=None):
+def open_later(ticket, blob_path, dest_folder, progress=None, cancel=None, hidden=False):
     """Open the file downloaded from file.kiwi with the ticket's key: the backup goes to
     dest_folder ("... received.zip") after the same checks as a live send. Returns the
     path. The downloaded file itself is left alone."""
@@ -859,7 +911,7 @@ def open_later(ticket, blob_path, dest_folder, progress=None, cancel=None):
         if info.kind != "backup":
             raise ShareError("not_backup", "safety copy")
         backup.mark_received(part)
-        final = backup.received_path(dest_folder)
+        final = _final_path(dest_folder, hidden)
         os.rename(part, final)
         part = None
         return final
@@ -895,7 +947,7 @@ def _header(cipher, box):
 
 
 def receive(code, relay, dest_folder, progress=None, cancel=None, clock=time.monotonic,
-            on_start=None, on_later=None):
+            on_start=None, on_later=None, hidden=False):
     """Receive a backup into dest_folder ("AddonManager backup <date> received.zip").
     progress(done, total) while receiving; on_start() once the code matched. The file is
     written to a hidden .part first and kept only if every check passes, including
@@ -912,7 +964,7 @@ def receive(code, relay, dest_folder, progress=None, cancel=None, clock=time.mon
             on_start()
         if on_later:   # downloading by itself: stopping now deletes the send
             on_later("store", "send")
-        return _fetch_send(ticket, relay, dest_folder, progress, cancel)
+        return _fetch_send(ticket, relay, dest_folder, progress, cancel, hidden)
     spake = SPAKE2_B(_password(channel, words), idA=ID_A, idB=ID_B)
     msg_b = spake.start()
     part = None
@@ -968,7 +1020,7 @@ def receive(code, relay, dest_folder, progress=None, cancel=None, clock=time.mon
         if info.kind != "backup":
             raise ShareError("not_backup", "safety copy")
         backup.mark_received(part)   # still "received" if the file is renamed later
-        final = backup.received_path(dest_folder)
+        final = _final_path(dest_folder, hidden)
         os.rename(part, final)
         part = None
     except BaseException as e:

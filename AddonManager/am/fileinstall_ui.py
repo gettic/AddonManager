@@ -45,13 +45,13 @@ FOUND = "Addons found in the file:"
 NOTE_NEW = "New"
 NOTE_SAME = "Same version (installs again)"
 NOTE_HAND = "Replaces a copy that was put there by hand"
-NOTE_GUILD = "Guild addon: kept. It comes from the guild list."
+NOTE_GUILD = "Guild addon: not replaced (the main list updates it)."
 NOTE_NOT_FOREVER = "Not made for WoW Forever: WoW won't load it"
 NOTE_OTHER_VERSION = ("Made for another WoW version: WoW may list it as out of date (tick "
                       "Load out of date AddOns in the game)")
 SKIP_BLIZZARD = "{name}: a game folder, never installed"
 SKIP_BAD_NAME = "{name}: a name WoW can't use, not installed"
-SAFETY_NOTE = ("Addons that are already there are saved first in your backups folder "
+SAFETY_NOTE = ("Addons that are already there are saved first in your backup folder "
                "(to put them back: Backup > Restore a backup..., tick Show safety copies).")
 SYSTEM = "Windows" if sys.platform == "win32" else "Your system"
 RELOAD = "Type /reload in WoW (or restart it)"   # = errors.RELOAD (one wording everywhere)
@@ -142,17 +142,17 @@ def message(exc, name=""):
                    "first (with 7-Zip, for example), then right-click Add file... > "
                    "Install from a folder..., or ask for a .zip."
                    if sys.platform == "win32" else
-                   "This system can't open .rar or .7z files (bsdtar is missing). Unpack it "
+                   "This system can't open .rar or .7z files. Unpack it "
                    "first, then right-click Add file... > Install from a folder..., or ask for "
                    "a .zip."),
         "timeout": "Reading this file took too long. Nothing was installed.",
         "empty": "No WoW addon was found in this file.",
-        "ambiguous": "This file holds the same addon twice or more than one addon in one "
-                     "place, so it isn't clear what to install. Nothing was installed.",
+        "ambiguous": "This file has the same addon twice, or two addons in one place, so "
+                     "it's unclear what to install. Nothing was installed.",
         "in_game": "Pick the folder you unpacked, not the game's own folders.",
         "not_allowed": f"{detail} can't be installed from a file. Nothing was installed.",
         "safety": "The safety copy of the addons already there couldn't be saved, so "
-                  "nothing was installed. Check your backups folder in the Backup window.",
+                  "nothing was installed. Check your backup folder in the Backup window.",
         "locked": "A file is in use. Close WoW and try again.",
         "permission": SYSTEM + " didn't allow the change, so nothing was changed for that "
                       "addon.",
@@ -766,7 +766,7 @@ class FileAddons:
         names.update({r.folder: r.title for r in self.rows})
         needs = [names.get(f, f) for f in needs]
         if not app.confirm(errors.remove_title(row.title),
-                           errors.remove_text(row.title, where, needs),
+                           errors.remove_text(row.title, where, needs, from_file=True),
                            errors.REMOVE_OK if where else errors.DELETE_OK,
                            errors.REMOVE_CANCEL):
             return False

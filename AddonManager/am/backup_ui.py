@@ -181,8 +181,20 @@ class BackupWindow:
                 frame, errors.BACKUP_OTHER_PC, (errors.SEND_BUTTON, app.open_send, False),
                 (errors.RECEIVE_BUTTON, app.open_receive, False)))
         self.last_var = tk.StringVar(value=errors.BACKUP_LAST_LOOKING)
-        ttk.Label(frame, textvariable=self.last_var, wraplength=theme.px(WRAP), justify="left").pack(
-            anchor="w", pady=(theme.px(12), 0))
+        self.last_label = ttk.Label(frame, textvariable=self.last_var,
+                                    wraplength=theme.px(WRAP), justify="left")
+        self.last_label.pack(anchor="w", pady=(theme.px(12), 0))
+        # Codes...: this PC's send-later codes and locked kept backups (am/codes_ui.py),
+        # with a short line beside it; packed only while there are any (refresh_codes).
+        self.codes_row = ttk.Frame(frame)
+        self.codes_button = self._pair_button(self.codes_row, errors.CODES_BUTTON,
+                                              self.open_codes, False)
+        self._cell(self.codes_button, 0)
+        self.codes_var = tk.StringVar()
+        self.codes_label = ttk.Label(self.codes_row, textvariable=self.codes_var,
+                                     style="Muted.TLabel", justify="left",
+                                     wraplength=theme.px(WRAP) // 2)
+        self.codes_label.grid(row=0, column=1, sticky="w", padx=(theme.px(8), 0))
         # Open folder + Old backups...: a pair row under the last-backup line, packed only
         # once something is found (Open folder: an own backup; Old backups...: any file,
         # safety copies too). Old backups... opens am\backup_delete_ui.py's window.
@@ -266,7 +278,8 @@ class BackupWindow:
         width in pixels (no stretching, so 1 px font rounding can never make two buttons
         differ). The pair rows are at least as wide as the text lines, so Close (packed
         right) ends where the pair rows end."""
-        buttons = [*self.buttons(), self.open_button, self.old_button, self.close_button]
+        buttons = [*self.buttons(), self.open_button, self.old_button, self.codes_button,
+                   self.close_button]
         style = str(buttons[1].cget("style")) or "TButton"
         width = max(theme.button_chars(self.win, style),
                     theme.chars(self.win, [b.cget("text") for b in buttons], style))
@@ -283,6 +296,7 @@ class BackupWindow:
                 b.master.columnconfigure(0, minsize=column, weight=0)
                 b.master.columnconfigure(1, minsize=column, weight=0)
         self.column_px = column
+        self.codes_label.configure(wraplength=max(40, column - theme.px(11)))
 
     def buttons(self):
         return [self.make_button, self.restore_button, *self.share_buttons]
@@ -297,11 +311,13 @@ class BackupWindow:
             tip = self.tips.get(b)
             if tip is not None:
                 tip.text = why or (errors.DELETE_OPEN_TIP if b is self.old_button else "")
+        self.codes_button.state(["disabled"] if self.app.busy else ["!disabled"])
 
     def refresh(self):
         """Look for the newest own backup again (in a thread)."""
         if self.closed:
             return
+        self.refresh_codes()
         self._looking += 1
         threading.Thread(target=_last_worker, daemon=True,
                          args=(self.app.queue, self._looking,
@@ -333,6 +349,26 @@ class BackupWindow:
                 self.found_row.pack(anchor="w", pady=(theme.px(6), 0), before=below)
         except tk.TclError:
             pass   # the window is closing
+
+    def refresh_codes(self):
+        """The Codes... row: shown while this PC keeps a code that may still work, or the
+        code of a locked backup (read from the encrypted codes file)."""
+        from am import codes_ui   # imported here: it imports this module
+        active, left, locked = codes_ui.summary()
+        text = errors.codes_line(active, left, locked)
+        self.codes_var.set(text)
+        try:
+            if not text:
+                self.codes_row.pack_forget()
+            elif not self.codes_row.winfo_manager():
+                self.codes_row.pack(anchor="w", fill="x", pady=(theme.px(6), 0),
+                                    before=self.last_label)
+        except tk.TclError:
+            pass   # the window is closing
+
+    def open_codes(self):
+        from am import codes_ui   # imported here: it imports this module
+        return codes_ui.open_codes(self.app, show=self.shown)
 
     def open_result(self):
         if self.last is not None:
@@ -991,8 +1027,10 @@ class BackupListDialog(_Dialog):
 
     def _row(self, f):
         when = found_date(f.mtime)
-        b = ttk.Button(self.rows, style="Row.TButton",
-                       text=errors.found_row(when, f.size, f.place, f.online),
+        text = errors.found_row(when, f.size, f.place, f.online)
+        if getattr(f, "locked", False):   # a received backup kept locked with its code
+            text += " · " + errors.FOUND_LOCKED
+        b = ttk.Button(self.rows, style="Row.TButton", text=text,
                        command=lambda: self.pick(f.path, f.online))
         b.pack(fill="x", pady=(0, theme.px(4)))
         if self.opening:
@@ -1053,15 +1091,120 @@ class BackupListDialog(_Dialog):
             if self.found is None:
                 self.found = msg[1]
                 self.render()
+        elif kind == "restore_unlocking" and msg[1] == self.opening:
+            self.set_progress(msg[2], msg[3])
+            self.set_status(errors.unlocking(int(self.progress.cget("value"))))
+        elif kind == "restore_need_code" and msg[1] == self.opening:
+            app, show = self.app, self.shown   # this PC doesn't know the code: ask for it
+            self.opening = None
+            self.close()
+            app.backup_dialog = UnlockDialog(app, msg[1], show=show)
         elif kind == "restore_opened" and msg[1] == self.opening:
             app, show = self.app, self.shown
             self.opening = None
             self.close()
-            app.backup_dialog = RestoreDialog(app, msg[2], show=show, back=True)
+            app.backup_dialog = RestoreDialog(app, msg[2], show=show, back=True,
+                                              kept=msg[3] if len(msg) > 3 else None)
         elif kind == "restore_open_error" and msg[1] == self.opening:
             self.opening = None
+            self.progress.pack_forget()
             for w in (*self.row_buttons, self.browse_button, self.safety_check,
                   *([self.code_button] if self.code_button else [])):
+                w.state(["!disabled"])
+            self.set_status(msg[2])
+
+
+class UnlockDialog(_Dialog):
+    """A locked kept copy this PC doesn't know the code of (another PC, or the codes file
+    is gone): type the code it was received with. A right code is remembered here."""
+
+    def __init__(self, app, path, show=True):
+        super().__init__(app, errors.UNLOCK_TITLE, show)
+        self.path = path
+        self.cancel_event = None
+        name = os.path.splitext(os.path.basename(path))[0]
+        from_label = ttk.Label(self.frame, text=errors.unlock_from(name),
+                               wraplength=theme.px(WRAP), justify="left")
+        from_label.pack(anchor="w", pady=(theme.px(6), 0))
+        ttk.Label(self.frame, text=errors.UNLOCK_TEXT, style="Muted.TLabel",
+                  wraplength=theme.px(WRAP), justify="left").pack(
+            anchor="w", pady=(theme.px(6), 0))
+        self.code_var = tk.StringVar()
+        from am import share_ui   # imported here: share_ui imports this module
+        self.entry = ttk.Entry(self.frame, textvariable=self.code_var, width=24,
+                               font=share_ui.code_font())
+        self.entry.pack(anchor="w", fill="x", pady=(theme.px(8), 0))
+        self.entry.bind("<Return>", lambda _e: self.start())
+        ttk.Label(self.frame, text=errors.UNLOCK_EXAMPLE, style="Muted.TLabel").pack(
+            anchor="w", pady=(theme.px(2), 0))
+        self._status_area(collapse=True)
+        self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
+        self.cancel_button.pack(side="right")
+        self.go_button = ttk.Button(self.buttons, text=errors.UNLOCK_OK,
+                                    style="Accent.TButton", command=self.start)
+        self.go_button.pack(side="right", padx=(0, theme.px(6)))
+        self.back_button = ttk.Button(self.buttons, text=errors.BACK, command=self.back)
+        self.back_button.pack(side="left")
+        self._show(self.entry)
+
+    def start(self):
+        if self.closed or self.cancel_event is not None:
+            return False
+        from am import backup_lock
+        code = backup_lock.normal_code(self.code_var.get())
+        if not code:
+            self.set_status(errors.UNLOCK_NOT_CODE)
+            return False
+        self.cancel_event = threading.Event()
+        for w in (self.entry, self.go_button, self.back_button):
+            w.state(["disabled"])
+        self.set_status(errors.UNLOCK_CHECKING)
+        threading.Thread(target=_unlock_worker, daemon=True,
+                         args=(self.app.queue, self.path, code,
+                               backup_folder(config.load_settings()),
+                               self.cancel_event)).start()
+        return True
+
+    def back(self):
+        if self.closed or self.cancel_event is not None:
+            return None
+        app, show = self.app, self.shown
+        self.close()
+        return app.open_restore(show=show)
+
+    def close(self):
+        if self.cancel_event is not None and not self.closed:   # unlocking: stop it first
+            if not self.cancel_event.is_set():
+                self.cancel_event.set()
+                self.set_status(errors.STOPPING)
+            return
+        super().close()
+
+    def handle(self, msg):
+        kind = msg[0]
+        if len(msg) < 2 or msg[1] != self.path or self.cancel_event is None:
+            return
+        if kind == "restore_unlocking":
+            self.set_progress(msg[2], msg[3])
+            if not self.cancel_event.is_set():
+                self.set_status(errors.unlocking(int(self.progress.cget("value"))))
+        elif kind == "restore_unlocked":
+            app, show = self.app, self.shown
+            stopped = self.cancel_event.is_set()
+            self.cancel_event = None
+            self.close()
+            if stopped:
+                msg[3].discard()
+                return
+            app.backup_dialog = RestoreDialog(app, msg[2], show=show, back=True, kept=msg[3])
+        elif kind == "restore_unlock_error":
+            stopped = self.cancel_event.is_set()
+            self.cancel_event = None
+            if stopped:
+                self.close()
+                return
+            self.progress.pack_forget()
+            for w in (self.entry, self.go_button, self.back_button):
                 w.state(["!disabled"])
             self.set_status(msg[2])
 
@@ -1069,10 +1212,16 @@ class BackupListDialog(_Dialog):
 class RestoreDialog(_Dialog):
     """Restore a backup: what it holds, which account gets the settings, what to restore."""
 
-    def __init__(self, app, info, show=True, back=False):
-        """back: opened from the Backups found list (Back / Esc go back there)."""
+    def __init__(self, app, info, show=True, back=False, kept=None):
+        """back: opened from the Backups found list (Back / Esc go back there).
+        kept: a received backup kept locked (backup_lock.Kept): the Save zip... row, and its
+        hidden plain copy (info.path) is removed when this window closes."""
         super().__init__(app, errors.RESTORE_TITLE, show)
         self.info = info
+        self.kept = kept
+        self.saving = False
+        self.save_cancel = None
+        self.save_button = None
         self.result = None
         self.menu_buttons = []   # the account picks (greyed while restoring)
         from_label = ttk.Label(self.frame, text=errors.backup_from(info),
@@ -1153,6 +1302,8 @@ class RestoreDialog(_Dialog):
                              wraplength=theme.px(WRAP), justify="left")
             note.pack(anchor="w", pady=(theme.px(6), 0))
             even_wrap(note)
+        if kept is not None:
+            self._save_row(kept)
         self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
         self.cancel_button.pack(side="right")
@@ -1164,12 +1315,85 @@ class RestoreDialog(_Dialog):
             self.back_button = ttk.Button(self.buttons, text=errors.BACK, command=self.back)
             self.back_button.pack(side="left")
             self.win.bind("<Escape>", lambda _e: self.back())
-        self._show(self.restore_button)
+        self._show(self.restore_button, extra=(errors.SAVE_ZIP,) if kept is not None else ())
+        if self.save_button is not None:   # as wide as Cancel (its right edge is Cancel's)
+            self.save_button.configure(width=self.cancel_button.cget("width"),
+                                       style=self.cancel_button.cget("style") or "TButton")
+
+    def _save_row(self, kept):
+        """A note at the left (kept locked here / couldn't be locked) and Save zip... at the
+        right (row-button width, right edge = Cancel's)."""
+        row = self.save_row = ttk.Frame(self.frame)
+        row.pack(fill="x", pady=(theme.px(10), 0))
+        self.save_button = ttk.Button(
+            row, text=errors.SAVE_ZIP, command=self.save_zip,
+            width=max(theme.button_chars(row), theme.chars(row, [errors.SAVE_ZIP])))
+        self.save_button.pack(side="right", anchor="n")
+        text = (errors.KEPT_LOCKED if kept.locked else
+                errors.kept_failed(getattr(kept.lock_error, "kind", "")))
+        # Starts narrow, then fit_wrap gives it the width it really gets: never widens.
+        self.kept_label = ttk.Label(row, text=text, style="Muted.TLabel", justify="left",
+                                    wraplength=theme.px(WRAP) // 2)
+        self.kept_label.pack(side="left", fill="x", expand=True, anchor="w",
+                             padx=(0, theme.px(8)))
+        fit_wrap(self.kept_label)
+
+    def _lock_widgets(self, busy):
+        for w in (self.restore_button, *self.menu_buttons,
+                  *([self.save_button] if self.save_button else []),
+                  *([self.back_button] if self.back_button else [])):
+            w.state(["disabled"] if busy else ["!disabled"])
+        for key, c in self.checks.items():
+            if busy:
+                c.state(["disabled"])
+            elif key == "addons" and self.info.addons:
+                c.state(["!disabled"])
+            elif key != "addons" and self.local and (
+                    self.info.settings_files if key == "settings" else self.info.binding_files):
+                c.state(["!disabled"])
+
+    def save_zip(self):
+        """Save the backup as a normal zip where the player picks; once it is saved and
+        checked, the locked kept copy is removed (only the plain zip remains)."""
+        if (self.kept is None or self.saving or self.running or self.closed
+                or not self.kept.plain):
+            return False
+        name = os.path.splitext(os.path.basename(self.kept.locked or ""))[0]
+        if not name:
+            name = os.path.splitext(os.path.basename(backup.received_path(
+                backup_folder(config.load_settings()))))[0]
+        target = self.app.ask_save_zip(name + ".zip")
+        self.grab()
+        if not target:
+            return False
+        if not target.lower().endswith(".zip"):
+            target += ".zip"
+        self.saving = True
+        self.save_cancel = threading.Event()
+        self._lock_widgets(True)
+        self.set_status(errors.save_zip_saving(0))
+        self.set_progress(0, 1)
+        threading.Thread(target=_save_worker, daemon=True,
+                         args=(self.app.queue, self.kept.plain, target, self.kept.locked,
+                               self.kept.file_id, self.app.addons_dir,
+                               getattr(self.app, "trash", None), self.save_cancel)).start()
+        return True
+
+    def close(self):
+        if self.saving:   # Cancel / Esc / X while saving: stop the copy, the window stays
+            if self.save_cancel is not None and not self.save_cancel.is_set():
+                self.save_cancel.set()
+                self.set_status(errors.STOPPING)
+            return
+        was_open = not self.closed
+        super().close()
+        if self.closed and was_open and self.kept is not None:
+            self.kept.discard()   # the hidden plain copy goes with the window
 
     def back(self):
         """Close this window and show the Backups found list again (not while restoring,
         and not after a restore: then Close/Esc just close)."""
-        if self.running or self.closed:
+        if self.running or self.closed or self.saving:
             return None
         if self.result is not None:
             self.close()
@@ -1186,7 +1410,7 @@ class RestoreDialog(_Dialog):
         return out
 
     def start(self):
-        if self.running or self.app.busy or not self.app.addons_dir:
+        if self.running or self.saving or self.app.busy or not self.app.addons_dir:
             return False
         flags = dict(addons=bool(self.addons_var.get()), settings=bool(self.settings_var.get()),
                      bindings=bool(self.bindings_var.get()))
@@ -1212,7 +1436,8 @@ class RestoreDialog(_Dialog):
         if not ok:
             return False
         for w in (self.restore_button, self.cancel_button, *self.checks.values(),
-                  *self.menu_buttons, *([self.back_button] if self.back_button else [])):
+                  *self.menu_buttons, *([self.back_button] if self.back_button else []),
+                  *([self.save_button] if self.save_button else [])):
             w.state(["disabled"])
         self._begin(errors.RESTORING)
         threading.Thread(target=_restore_worker, daemon=True,
@@ -1222,6 +1447,9 @@ class RestoreDialog(_Dialog):
 
     def handle(self, msg):
         kind = msg[0]
+        if kind in ("restore_save_progress", "restore_saved", "restore_save_error"):
+            self._save_event(msg)
+            return
         if kind not in ("restore_progress", "restore_done", "restore_error"):
             return   # a late message from a Backup or Backups found window
         if kind == "restore_progress":
@@ -1232,6 +1460,8 @@ class RestoreDialog(_Dialog):
             return
         self._end()
         self.cancel_button.state(["!disabled"])
+        if self.save_button is not None:
+            self.save_button.state(["!disabled"])
         if kind == "restore_done":
             self.result = msg[1]
             self.set_progress(1, 1)
@@ -1251,6 +1481,38 @@ class RestoreDialog(_Dialog):
                 elif key != "addons" and self.local and (
                         self.info.settings_files if key == "settings" else self.info.binding_files):
                     c.state(["!disabled"])
+
+
+    def _save_event(self, msg):
+        kind = msg[0]
+        if not self.saving:
+            return
+        if self.closed:   # (can't happen: the windows stay while saving) never touch widgets
+            self.saving = kind == "restore_save_progress"
+            return
+        if kind == "restore_save_progress":
+            self.set_progress(msg[1], msg[2])
+            if not self.save_cancel.is_set():
+                self.set_status(errors.save_zip_saving(int(self.progress.cget("value"))))
+            return
+        self.saving = False
+        self.progress.pack_forget()
+        self._lock_widgets(False)
+        if self.result is not None:   # restored already: nothing to restore again
+            self.restore_button.state(["disabled"])
+        if kind == "restore_saved":
+            target, removed = msg[1], msg[2]
+            if removed:
+                self.kept.locked = None
+                try:
+                    self.kept_label.configure(text="")
+                except tk.TclError:
+                    pass
+            self.set_status(errors.zip_saved(os.path.basename(target), removed))
+        else:
+            self.set_status(msg[1])
+        if getattr(self.app, "close_pending", False):   # the app was closed while saving:
+            self.app.close()                             # the copy stopped, now it closes
 
 
 def not_guild_addons(info, rows):
@@ -1362,8 +1624,46 @@ def _last_worker(q, number, chosen):
     q.put(("backup_last", number, newest_made(found), bool(found)))
 
 
+def _open_locked(q, path, code=None, cancel=None, kinds=("restore_opened", "restore_open_error")):
+    """A locked kept copy: unlock it with the remembered code (or the one typed), check it as
+    a received backup (backup_lock.open_locked), and post (ok kind, path, info, Kept).
+    No code known here: ("restore_need_code", path)."""
+    from am import backup_lock, codes
+    ok_kind, error_kind = kinds
+    typed = code is not None
+    try:
+        fid = backup_lock.read_header(path)[0]["id"]
+        code = code or codes.lock_code(fid)
+        if not code:
+            q.put(("restore_need_code", path))
+            return
+        plain, info = backup_lock.open_locked(
+            path, code, backup_folder(config.load_settings()), cancel=cancel,
+            progress=progress_poster(lambda d, t: q.put(("restore_unlocking", path, d, t))))
+        if typed:   # a right code: this PC remembers it from now on
+            codes.remember_lock(fid, os.path.basename(path), os.path.getsize(path), code)
+        q.put((ok_kind, path, info, backup_lock.Kept(path, plain, None, fid)))
+    except backup_lock.LockError as e:
+        if e.kind == "wrong_code" and code is not None and not typed:
+            q.put(("restore_need_code", path))   # the remembered code doesn't open it
+            return
+        log.warning("Locked backup not opened (%s %s)", e.kind, e.detail)
+        q.put((error_kind, path, errors.unlock_message(e)))
+    except Exception as e:
+        log.warning("Locked backup not usable (%s)", type(e).__name__)
+        q.put((error_kind, path, errors.unlock_message(e)))
+
+
+def _unlock_worker(q, path, code, folder, cancel):
+    _open_locked(q, path, code, cancel, kinds=("restore_unlocked", "restore_unlock_error"))
+
+
 def _open_worker(q, path):
     try:
+        from am import backup_lock
+        if backup_lock.is_locked(path):
+            _open_locked(q, path)
+            return
         q.put(("restore_opened", path, backup.read(path)))
     except Exception as e:
         log.warning("Not a usable backup (%s)", type(e).__name__)
@@ -1421,6 +1721,38 @@ def _backup_worker(q, check_game, addons_dir, folder, addons, settings, leave_ou
         else:
             log.exception("Backup failed")
         q.put(("backup_error", errors.backup_message(e)))
+
+
+def _save_worker(q, plain, target, locked, file_id, addons_dir, trash_api, cancel):
+    """Save zip: copy the plain backup to target (checked), then remove the locked kept
+    copy (bin when there is one) and forget its code. The locked copy is removed only
+    after the plain copy is complete and checked; on any failure it stays."""
+    from am import backup_lock, codes, trash
+    try:
+        backup_lock.save_copy(
+            plain, target, cancel=cancel,
+            progress=progress_poster(lambda d, t: q.put(("restore_save_progress", d, t))),
+            game_check=(lambda folder: backup.in_game_folder(folder, addons_dir))
+            if addons_dir else None)
+    except Exception as e:
+        log.warning("Save zip failed (%s %s)", type(e).__name__, getattr(e, "kind", ""))
+        q.put(("restore_save_error", errors.save_zip_message(e)))
+        return
+    removed = True
+    if locked and os.path.lexists(locked):
+        removed = False
+        api = trash_api or trash
+        try:
+            if api.available(locked):
+                api.send(locked)
+            else:
+                os.remove(locked)
+            removed = not os.path.lexists(locked)
+        except Exception as e:
+            log.warning("The locked copy couldn't be removed (%s)", type(e).__name__)
+    if removed and file_id:
+        codes.forget_lock(file_id)
+    q.put(("restore_saved", target, removed))
 
 
 def _restore_worker(q, check_game, path, addons_dir, safety, flags, account_map):

@@ -259,7 +259,7 @@ class Basics(unittest.TestCase):
     def test_messages(self):
         self.assertIn("3 minutes", errors.release_message(github.ReleaseError("rate_limited", wait=150), "X")[1])
         self.assertEqual(errors.release_message(github.ReleaseError("no_release"), "X")[0],
-                         "No release yet")
+                         "Not out yet")
 
 
 class WithServer(unittest.TestCase):

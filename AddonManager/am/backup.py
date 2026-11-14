@@ -506,6 +506,10 @@ class FoundBackup:
     mtime: float
     safety: bool    # a "Before restore" safety copy
     online: bool    # online-only cloud file: opening it downloads it first
+    locked: bool = False   # a locked kept copy of a received backup (LOCKED_EXT)
+
+
+LOCKED_EXT = ".amlocked"   # received backups are kept locked with their code (backup_lock)
 
 
 def online_only(st):
@@ -527,8 +531,9 @@ def find_backups(places):
     """Backups in the given [(place label, folder)], newest first: [FoundBackup].
     Only the folder listing is used (name, size, date, attributes): no file is opened,
     so online-only cloud files are never downloaded just to list them. Only names this
-    app writes ("AddonManager backup ....zip", "Before restore ....zip") are listed;
-    the same folder or file reached twice is listed once (first place wins)."""
+    app writes ("AddonManager backup ....zip", "Before restore ....zip", and the locked
+    kept copies "AddonManager backup ... received.amlocked") are listed; the same folder or
+    file reached twice is listed once (first place wins)."""
     found, seen_dirs, seen_files = [], set(), set()
     for label, folder in places:
         if not folder:
@@ -541,9 +546,10 @@ def find_backups(places):
             with os.scandir(folder) as entries:
                 for e in entries:
                     low = e.name.lower()
-                    if not low.endswith(".zip"):
+                    locked = low.endswith(LOCKED_EXT) and low.startswith(BACKUP_PREFIX)
+                    if not (low.endswith(".zip") or locked):
                         continue
-                    safety = low.startswith(SAFETY_PREFIXES)
+                    safety = not locked and low.startswith(SAFETY_PREFIXES)
                     if not (safety or low.startswith(BACKUP_PREFIX)):
                         continue
                     try:
@@ -557,18 +563,18 @@ def find_backups(places):
                         continue
                     seen_files.add(fkey)
                     found.append(FoundBackup(e.path, label, st.st_size, st.st_mtime,
-                                             safety, online_only(st)))
+                                             safety, online_only(st), locked))
         except OSError:
             continue
     found.sort(key=lambda f: f.mtime, reverse=True)
     return found
 
 
-def _unique(folder, stem):
-    path = os.path.join(folder, stem + ".zip")
+def _unique(folder, stem, ext=".zip"):
+    path = os.path.join(folder, stem + ext)
     n = 2
     while os.path.lexists(path) or os.path.lexists(path + ".part"):
-        path = os.path.join(folder, f"{stem} ({n}).zip")
+        path = os.path.join(folder, f"{stem} ({n}){ext}")
         n += 1
     return path
 
@@ -600,11 +606,11 @@ def has_received_mark(zip_path):
         return False
 
 
-def received_path(folder, now=None):
+def received_path(folder, now=None, ext=".zip"):
     """<folder>\\AddonManager backup 2026-11-10 received.zip (a backup that came from
-    another PC with a send code; see is_received)."""
+    another PC with a send code; see is_received). ext=LOCKED_EXT: its locked kept copy."""
     now = now or datetime.datetime.now()
-    return _unique(folder, f"{BACKUP_APP} backup {now:%Y-%m-%d}{RECEIVED_TAG}")
+    return _unique(folder, f"{BACKUP_APP} backup {now:%Y-%m-%d}{RECEIVED_TAG}", ext)
 
 
 def is_received(path):

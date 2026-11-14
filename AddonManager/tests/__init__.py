@@ -41,6 +41,11 @@ from am import share_send  # noqa: E402
 REAL_SEND_URLS = {k: s.url for k, s in share_send.SITES.items()}
 for _site in share_send.SITES.values():
     _site.url = ""
+# ...and a Linux PC without a machine id keeps its codes key in the temp home, not in
+# ~/.local/share (am\codes.py; the codes file itself is in ADDONMANAGER_HOME already).
+from am import codes  # noqa: E402
+
+codes.KEYS.key_folder = os.path.join(os.environ["ADDONMANAGER_HOME"], "codes_key")
 
 
 # A test that hangs ends the run with its name and every thread's stack (instead of the

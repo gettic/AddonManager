@@ -38,10 +38,11 @@ LINK_PREFIX = "https://file.kiwi/"
 TERMS_URL = "https://file.kiwi/legal/terms"
 PRIVACY_URL = "https://file.kiwi/legal/privacy"
 LATER_AFTER = 300                    # seconds the code waits for the other PC first
-CONSENT_VERSION = 7                  # the tick's wording (2: also big backups at once; 3: the guild's server first; 4: + Cloudflare terms link;
+CONSENT_VERSION = 8                  # the tick's wording (2: also big backups at once; 3: the guild's server first; 4: + Cloudflare terms link;
                                      # 5: + adminForge and Chapril Send, the hosts as a numbered list; 6: the
                                      # guild's server gone, adminForge first; 7: send.vis.ee replaces Chapril,
-                                     # new note); a tick given under an older wording counts as off
+                                     # new note; 8: "first host below", "Hosts 1-2 ... or after"); a tick given under an
+                                     # older wording counts as off
 HOURS = (1, 2, 4, 8, 12, 24)         # how long the code works for a later send
 DEFAULT_HOURS = 12
 EXT = ".amsend"

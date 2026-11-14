@@ -86,6 +86,7 @@ SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": st
                  "send_later_hours": int,
                  "send_later_v": int,   # the tick's wording it was given under
                  "backup_spoken": str,  # "skip" / "keep" the Spoken addons in backups
+                 "save_zip_folder": str,   # Save zip...'s last folder (never a code)
                  "window": str}         # main window "WxH+X+Y" (ui.App.restore_geometry)
 
 

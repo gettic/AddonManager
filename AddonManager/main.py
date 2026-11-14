@@ -380,6 +380,22 @@ def _clean_partials():
         log.info("Start-up clean-up of unfinished downloads failed (%s)", type(e).__name__)
 
 
+def _clean_locked_parts():
+    """At start, only in the one open window (instance lock): hidden plain copies of locked
+    backups (shown by a Restore window when the app was closed or killed) and half-written
+    locked copies. Never raises."""
+    try:
+        from am import backup, backup_lock, backup_ui
+        settings = config.load_settings()
+        backup_lock.clean_parts([backup_ui.backup_folder(settings), backup.default_folder()])
+        # a Save zip... cut off by a crash/power loss: its hidden part in the last folder
+        if isinstance(settings.get("save_zip_folder"), str) and settings["save_zip_folder"]:
+            backup_lock.clean_parts([settings["save_zip_folder"]],
+                                    prefixes=(backup_lock.SAVING_PREFIX,))
+    except Exception as e:
+        log.info("Start-up clean-up of temporary backup files failed (%s)", type(e).__name__)
+
+
 def _clean_file_temp():
     """At start: old Add from file temp folders (%TEMP%\\AddonManager_file_*, over 2 hours)
     left by a run that was closed or killed while reading a file. Never raises."""
@@ -417,6 +433,7 @@ def main(argv=None):
             return 0
     if lock.held:   # only the one open window cleans up (never another run's open files)
         threading.Thread(target=_clean_file_temp, daemon=True).start()
+        _clean_locked_parts()
     from am import selfupdate
     # Leftover AddonManager.exe.old/.new from an update (the old exe may still be closing).
     selfupdate.cleanup_later(selfupdate.exe_path())

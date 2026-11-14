@@ -443,7 +443,7 @@ class PrecheckTests(unittest.TestCase):
         self.assertIn("500 MB at most", errors.share_message(ShareError("too_big")))
         hint = errors.share_message(ShareError("too_big", "later_off", limit=500 * 1024 ** 2))
         self.assertIn("public file host", hint)                      # tos: neutral hint
-        self.assertIn("copy it yourself", hint)
+        self.assertIn("copy the backup with a USB stick", hint)
         self.assertNotIn("recommend", hint.lower())
         self.assertIn("about 2 GB is needed",
                       errors.share_message(ShareError("disk_full", limit=2 * gib)))
@@ -800,7 +800,9 @@ class LaterTests(unittest.TestCase):
         s.join()
         self.assertIsNone(s.error)
         states = [st for st, _v in self.all_states(s)]
-        self.assertEqual(states, ["host", "uploading", "kiwi_down", "uploading", "ready"])
+        # "kept": the sender's code + token for Codes... (am\codes.py), never shown
+        self.assertEqual(states, ["host", "uploading", "kiwi_down", "uploading", "kept",
+                                  "ready"])
         self.assertIn(share_later.KIWI_DOWN_EVERY, self.clients[-1].naps)
         ticket = share.receive(code, self.receiver(), self.inbox)    # the code still works
         path = share.open_later(ticket, self.browser_download(ticket), self.inbox)
@@ -2019,7 +2021,7 @@ class WindowShareTests(unittest.TestCase):
         self.assertFalse(any("cloudflare" in u for u in urls))
         self.assertFalse(any("donat" in u or "spende" in u.lower() for u in urls))
         self.assertNotIn("store", dlg.later_choice())
-        self.assertEqual(share_later.CONSENT_VERSION, 7)
+        self.assertEqual(share_later.CONSENT_VERSION, 8)
         dlg.toggle_now()
         dlg.win.update_idletasks()
         self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
@@ -2067,7 +2069,7 @@ class WindowShareTests(unittest.TestCase):
         self.assertLessEqual(dlg.win.winfo_reqwidth(), 420)
         self.assertTrue(dlg.start())
         self.pump_until(app, lambda: dlg.code is not None)
-        self.assertTrue(dlg.ends_var.get().startswith("Works once. If the other PC hasn't joined in "))
+        self.assertTrue(dlg.ends_var.get().startswith("Works once. If the other PC hasn't typed it in "))
         self.pump_until(app, lambda: dlg.later_done, timeout=60)
         self.assertTrue(dlg.status_var.get().startswith("Uploaded."))
         code = dlg.code
@@ -2082,7 +2084,7 @@ class WindowShareTests(unittest.TestCase):
         again = app.open_send(show=False)
         self.assertFalse(again.later_var.get())
         again.close()
-        self.assertEqual(share_later.CONSENT_VERSION, 7)           # send.vis.ee, new note
+        self.assertEqual(share_later.CONSENT_VERSION, 8)           # 8: "first host below"
         for older in (5, 6):                                       # older wordings: off too
             config.save_settings(dict(old, send_later_v=older))
             again = app.open_send(show=False)
@@ -2189,7 +2191,7 @@ class WindowShareTests(unittest.TestCase):
         self.assertIn("file.kiwi now", errors.LATER_UPLOADING_NOW)
         self.assertTrue(all(t.startswith("Uploading to file.kiwi for later: ")
                             for t in said[said.index(errors.LATER_UPLOADING_NOW) + 1:-1]))
-        self.assertEqual(set(ends), {""})                          # no "hasn't joined in 5:00" countdown
+        self.assertEqual(set(ends), {""})                          # no "hasn't typed it in 5:00" countdown
         self.assertTrue(dlg.status_var.get().startswith("Uploaded."))
         self.pump_until(app, lambda: not dlg.active)
         dlg._after_error(True)                                     # as after a failed try

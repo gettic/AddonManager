@@ -6,6 +6,7 @@ import datetime
 import gc
 import os
 import re
+import shutil
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -494,6 +495,7 @@ class LookWindowTests(unittest.TestCase):
         d.win.update_idletasks()
         self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), "restore with Back")
         d.close()
+        self.check_locked_windows(app, made)
         app.close_backup_window()
         # the yes/no question
         parts = app._confirm_parts("Uninstall Taxi Time?", "text", errors.REMOVE_OK,
@@ -524,6 +526,100 @@ class LookWindowTests(unittest.TestCase):
         self.assertFalse(fd.status.winfo_manager())
         fd.close()
         app.closed = True
+
+    def check_locked_windows(self, app, made):
+        """A received backup kept locked: Restore with Save zip... (locked / couldn't lock,
+        with Back), the Backups found row, the Unlock window, Codes... and Your codes."""
+        from unittest import mock
+        from am import backup_lock, backup_ui, codes, codes_ui, share
+        from am.share_words import WORDS
+        code = share.format_code(12, WORDS[:3])
+        for p in (codes.store_path(), codes.store_path() + ".old"):
+            if os.path.exists(p):
+                os.remove(p)
+        self.addCleanup(lambda: os.path.exists(codes.store_path())
+                        and os.remove(codes.store_path()))
+        folder = os.path.dirname(made)
+        locked = os.path.join(folder, "AddonManager backup 2026-11-14 received.amlocked")
+        for kept_args, name in (((locked,), "restore (kept locked)"),
+                                ((None,), "restore (couldn't lock)")):
+            plain = os.path.join(folder, backup_lock.UNLOCKED_PREFIX + "look.part")
+            shutil.copyfile(made, plain)
+            kept = backup_lock.Kept(kept_args[0], plain, code, "a" * 32,
+                                    None if kept_args[0] else backup_lock.LockError("disk_full"))
+            for back in (False, True):
+                d = app.backup_dialog = backup_ui.RestoreDialog(
+                    app, backup.read(plain, received=True), show=False, back=back, kept=kept)
+                self.check_dialog(d.win, f"{name}{' with Back' if back else ''}")
+                d.win.update_idletasks()
+                self.assertLessEqual(d.win.winfo_reqwidth(), theme.px(420), name)
+                # Save zip... at the right, as wide as Cancel (its right edge = Cancel's is
+                # checked in the off-screen renders: a withdrawn window is never laid out)
+                self.assertEqual(str(d.save_button.pack_info()["side"]), "right")
+                self.assertGreaterEqual(width(d.save_button), width(d.cancel_button), name)
+                if back:
+                    d.close()
+                else:
+                    d.kept = None          # keep the plain copy for the With Back round
+                    d.close()
+        # Backups found with a locked row, and the Unlock window
+        with open(locked, "wb") as f:
+            f.write(b"x" * 1000)
+        lst = app.open_restore(show=False)
+        now = time.time()
+        found = [backup.FoundBackup(locked, "Documents", 41 * 2 ** 20, now, False, False,
+                                    locked=True),
+                 backup.FoundBackup(made, "OneDrive", 41 * 2 ** 20, now - 86400, False, False)]
+        lst.found = None
+        lst.handle(("restore_found", found))
+        self.assertTrue(any(str(b.cget("text")).endswith(errors.FOUND_LOCKED)
+                            for b in lst.row_buttons))
+        self.check_dialog(lst.win, "restore list (locked row)")
+        lst.close()
+        u = app.backup_dialog = backup_ui.UnlockDialog(app, locked, show=False)
+        self.check_dialog(u.win, "unlock")
+        u.win.update_idletasks()
+        self.assertLessEqual(u.win.winfo_reqwidth(), theme.px(420), "unlock width")
+        u.status_var.set(errors.UNLOCK_WRONG)
+        self.check_dialog(u.win, "unlock (wrong code)")
+        u.close()
+        # Codes...: the Backup window's row and Your codes (no status asked: no relay here)
+        codes.add_sent(code, 12, "f" * 32, "adminforge", now + 3 * 3600, 4)
+        codes.add_sent(share.format_code(7, WORDS[3:6]), 7, "e" * 32, "kiwi", now + 600, 1)
+        codes.remember_lock("a" * 32, os.path.basename(locked), 1000, code)
+        hub = app.backup_win
+        hub.refresh()
+        self.assertTrue(hub.codes_row.winfo_manager())
+        self.check_dialog(hub.win, "backup window (codes)")
+        self.assertLessEqual(hub.win.winfo_reqwidth(), theme.px(420), "backup window codes")
+        self.assertEqual(width(hub.codes_button), width(hub.make_button))
+        with mock.patch.object(codes_ui, "_status_worker", lambda *a, **k: None):
+            cd = hub.open_codes()
+            self.check_dialog(cd.win, "your codes")
+            cd.win.update_idletasks()
+            self.assertLessEqual(cd.win.winfo_reqwidth(), theme.px(420), "your codes width")
+            show = [b for b in cd.row_buttons if str(b.cget("text")) == errors.CODES_SHOW]
+            show[0].invoke()
+            self.check_dialog(cd.win, "your codes (code shown)")
+            self.assertLessEqual(cd.win.winfo_reqwidth(), theme.px(420), "your codes shown")
+            cd.close()
+            # every row shown (3 + 3 of 4 + 4) and a status line: still fits a small screen
+            for i in (8, 9):
+                codes.add_sent(share.format_code(i, WORDS[i:i + 3]), i, f"{i}" * 32, "visee",
+                               now + 7200, 2)
+            for i in (1, 2, 3):
+                codes.remember_lock(f"{i}" * 32, f"AddonManager backup 2026-11-0{i} "
+                                    "received.amlocked", 10, code)
+            cd = hub.open_codes()
+            self.check_dialog(cd.win, "your codes (full)")
+            cd.set_status(errors.CODES_STOP_FAILED)
+            self.assertFalse(cd.note.winfo_manager())       # the status takes the note's place
+            self.check_dialog(cd.win, "your codes (full, status line)")
+            self.assertLessEqual(cd.win.winfo_reqwidth(), theme.px(420), "your codes full")
+            cd.set_status("")
+            self.assertTrue(cd.note.winfo_manager())
+            cd.close()
+        os.remove(locked)
 
     def test_buttons_100(self):
         self.run_checks()

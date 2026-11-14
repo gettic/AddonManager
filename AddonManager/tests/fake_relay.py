@@ -9,7 +9,10 @@ on its way to the receiver) and `hook_msg` (change a message).
 
 Send later (worker.js "Send later"): later / ping progress / record / later state / take, with
 the same one-try rule; `later_idle`, `later_upload` and `later_max_hours` as the Worker's vars.
-No guild storage (removed from worker.js): /v1/<ch>/store and /v1/s/... answer 404."""
+No guild storage (removed from worker.js): /v1/<ch>/store and /v1/s/... answer 404.
+
+The sender's GET /v1/<ch>/status (worker.js): its own token only, the same 404 for anything
+else; a closed send-later box keeps only its outcome (state, until) for that route."""
 
 import base64
 import hashlib
@@ -25,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 SEND_SLOTS = {"pakeA", "confA", "header"}
 RECV_SLOTS = {"pakeB", "confB", "done"}
 REASONS = {"done", "cancel", "bad_code"}
+OUTCOME = {"done": "taken", "bad_code": "burned", "cancel": "stopped", "expired": "ended"}
 
 
 class Box:
@@ -46,6 +50,7 @@ class Box:
         self.closed_at = None
         self.later = None       # send later: hours, salt, verifier, state, started, until, record
         self.later_p = 0        # upload progress (per mille), memory only
+        self.outcome = None     # a closed send-later box: {"state", "until"} for /status
 
     def later_watch(self):
         return self.later["watch"] if self.later else None
@@ -65,6 +70,7 @@ class FakeRelay:
         self.channels, self.rate, self.chunk = channels, rate, chunk
         self.later_idle, self.later_upload = later_idle, later_upload
         self.later_max_hours = later_max_hours
+        self.status_rate = 1000         # GET /status per test (worker.js HARD_STATUS)
         self.offset = 0.0               # tests move the clock with advance()
         self.boxes = {}
         self.calls = []                 # (method, path) of every request
@@ -138,7 +144,8 @@ class FakeRelay:
 
     def _expire(self, box, now):
         if box.closed:
-            if now - box.closed_at > 300:
+            until = box.outcome["until"] if box.outcome else 0
+            if now >= max(box.closed_at + 300, until):
                 self.boxes.pop(box.ch, None)
             return
         if box.later:
@@ -151,6 +158,9 @@ class FakeRelay:
             self._close(box, "expired", now)
 
     def _close(self, box, reason, now):
+        if box.later and not box.closed:   # kept for the sender's /status, until its end
+            box.outcome = {"state": OUTCOME.get(reason, "ended"),
+                           "until": max(now, box.later["until"] or 0)}
         box.closed, box.closed_at = reason, now
         box.later = None
         box.slots.clear()
@@ -227,6 +237,11 @@ class FakeRelay:
                 return 200, {"token": box.recv_token}
             if len(parts) < 3:
                 return 404, {"error": "not_found"}
+            if parts[2:] == ["status"]:
+                if not self._rate("status", self.status_rate):
+                    return 429, {"error": "rate"}
+                box = self._box(_int(parts[1]))
+                return self._status(box, token, method)
             box = self._box(_int(parts[1]))
             if box is None:
                 return 404, {"error": "not_found"}
@@ -445,6 +460,17 @@ class FakeRelay:
         record = box.later["record"]
         self._close(box, "done", now)
         return 200, {"record": record}
+
+    def _status(self, box, token, method):
+        """The sender's view; the same 404 for no box, another token or a live box."""
+        if (method != "GET" or box is None or not token or token != box.send_token
+                or (box.closed and not box.outcome) or (not box.closed and not box.later)):
+            return 404, {"error": "not_found"}
+        if box.closed:
+            return 200, {"state": box.outcome["state"], "left": 0}
+        until = box.later["until"]
+        return 200, {"state": "ready" if box.later["state"] == "taking" else box.later["state"],
+                     "left": max(0, round(until - self.now())) if until else None}
 
     def _sweep(self, now):
         """The alarms: mailboxes past their end go."""
