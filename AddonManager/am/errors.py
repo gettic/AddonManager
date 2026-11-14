@@ -6,8 +6,8 @@ from am.download import DownloadError
 from am.installer import InstallError
 from am.manifest import ManifestError
 
-# Where the details are: the folder path's right-click menu has Open log folder.
-DETAILS = " (Details: right-click the folder path > Open log folder.)"
+# Where the details are: Settings has an Open log folder link (no right-click needed).
+DETAILS = " (Details: Settings > Open log folder.)"
 SYSTEM = "Windows" if os.name == "nt" else "Your system"
 THIS_PC = "this PC" if os.name == "nt" else "this computer"
 YOUR_PC = "your PC" if os.name == "nt" else "your computer"
@@ -211,6 +211,8 @@ def go_back_text(name, beta_text, normal_text):
 BIN_NAME = "Recycle Bin" if os.name == "nt" else "Trash"
 REMOVE_TIP = "Uninstall this addon."
 REMOVE_RIGHT_CLICK = "Right-click the row to uninstall."
+if os.name != "nt":   # a touch screen: the row's name opens the menu with press-and-hold
+    REMOVE_RIGHT_CLICK = "Right-click the row (or press and hold its name) to uninstall."
 REMOVED = "Uninstalled"
 REMOVING = "Uninstalling..."
 REMOVE_OK = "Uninstall"
@@ -326,8 +328,26 @@ BACKUP_LAST_LOOKING = "Last backup: looking..."
 BACKUP_LAST_NONE = "Last backup: none yet"
 
 
-def backup_last(when, place):
-    return f"Last backup: {when} ({place})"
+def days_ago(then, now=None):
+    """'today', 'yesterday', '4 days ago' (calendar days, local time); '' for a date in
+    the future or one that can't be read."""
+    import datetime
+    import time as _time
+    try:
+        a = datetime.date.fromtimestamp(then)
+        b = datetime.date.fromtimestamp(_time.time() if now is None else now)
+    except (OSError, ValueError, OverflowError, TypeError):
+        return ""
+    days = (b - a).days
+    if days < 0:
+        return ""
+    if days == 0:
+        return "today"
+    return "yesterday" if days == 1 else f"{days} days ago"
+
+
+def backup_last(when, place, ago=""):
+    return f"Last backup: {when}, {ago} ({place})" if ago else f"Last backup: {when} ({place})"
 
 
 
@@ -438,7 +458,8 @@ SEND_COPIED = "Copied."
 SEND_WAITING = "Waiting for the other PC..."
 SEND_SENT = "Sent. The other PC can restore it now."
 RECEIVE_TYPE = "Type the code the other PC shows:"
-RECEIVE_EXAMPLE = "Like 37-amber-lamp-river. Spaces work too."
+RECEIVE_EXAMPLE = ("Like 37-amber-lamp-river. Spaces work too.\n"
+                   "The first 3 letters of each word are enough.")
 RECEIVE_NOTE = ("Only use a code from yourself or someone you trust. You'll see what's inside "
                 "and pick what to restore. A safety copy is made first.")
 RECEIVE_OK = "Receive"
@@ -929,6 +950,24 @@ SAVE_ZIP_STOPPED = "Not saved."
 FOUND_LOCKED = "locked"
 
 
+def kept_no_code(code):
+    """Locked here, but the codes file couldn't be saved: the player must keep the code."""
+    return (f"Kept here, locked, but {THIS_PC} couldn't remember the code. "
+            f"Write it down now: {code}")
+
+
+# The main window's X while a Receive / Send runs (it stops first, then the app closes).
+CLOSING_STOPPING = "Stopping... Addon Manager closes in a moment."
+CLOSING_LOCKING = "Finishing the locked copy... Addon Manager closes when it's done."
+# Save zip...: ".zip" was added to the picked name and that file is already there.
+SAVE_ZIP_REPLACE_TITLE = "Replace the file?"
+SAVE_ZIP_REPLACE_OK = "Replace"
+
+
+def save_zip_replace(name):
+    return f"{name} is already there. Replace it?"
+
+
 def kept_failed(kind=None):
     """The locked copy couldn't be made after receiving: the backup is only here for now
     (why is in the log)."""
@@ -948,7 +987,7 @@ def zip_saved(name, removed=True):
     if removed:
         return f"Saved as a normal zip: {name}. The locked copy was removed."
     return (f"Saved as a normal zip: {name}. The locked copy couldn't be removed; "
-            "delete it in Old backups....")
+            "Old backups... can delete it.")
 
 
 def save_zip_message(exc):
@@ -1036,9 +1075,16 @@ CODES_STOP_FAILED = ("Couldn't reach the host. Try again later; the code stops b
 CODES_FORGET_TITLE = "Forget this code?"
 CODES_FORGET_TEXT = "After this, the backup opens only by typing its code. Write it down first."
 CODES_FORGET_OK = "Forget it"
+CODES_STOP_UNREADABLE = ("Couldn't read the codes saved on " + THIS_PC
+                         + ", so nothing was stopped. Try again in a moment.")
+CODES_COPY = "Copy"
+CODES_COPIED = "Copied."
 def codes_head(text, count, shown):
-    """A group heading in Your codes; "(3 of 5, newest)" when not every row fits."""
-    return f"{text} ({shown} of {count}, newest)" if count > shown else text
+    """A group heading in Your codes: "(5)" with more than one, "(50 of 60, newest)" when
+    not every code can be listed."""
+    if count > shown:
+        return f"{text} ({shown} of {count}, newest)"
+    return f"{text} ({count})" if count > 1 else text
 
 
 HOST_NAMES = {"adminforge": "adminForge", "visee": "send.vis.ee", "kiwi": "file.kiwi"}

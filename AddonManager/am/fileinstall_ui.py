@@ -32,6 +32,9 @@ ADD_TIP = ("Install an addon from a .zip, .rar or .7z file (from CurseForge, Wag
            "friend). Shortcut: Ctrl+O.")
 ADD_KEYS = ("<Control-o>", "<Control-O>")
 FOLDER_TIP = "Right-click: install from an unpacked folder. You can also drop a file on the window."
+if sys.platform != "win32":   # press-and-hold works on the hint text, not on the button
+    FOLDER_TIP = ("Right-click it, or press and hold the text beside it: install from an "
+                  "unpacked folder. You can also drop a file on the window.")
 FILE_MENU = "Install from a file..."
 FOLDER_MENU = "Install from a folder..."
 FOLDER_DIALOG_TITLE = "Choose the unpacked addon folder"
@@ -143,8 +146,8 @@ def message(exc, name=""):
                    "Install from a folder..., or ask for a .zip."
                    if sys.platform == "win32" else
                    "This system can't open .rar or .7z files. Unpack it "
-                   "first, then right-click Add file... > Install from a folder..., or ask for "
-                   "a .zip."),
+                   "first, then right-click Add file... (or press and hold the text beside "
+                   "it) > Install from a folder..., or ask for a .zip."),
         "timeout": "Reading this file took too long. Nothing was installed.",
         "empty": "No WoW addon was found in this file.",
         "ambiguous": "This file has the same addon twice, or two addons in one place, so "

@@ -318,7 +318,8 @@ def save(data, home=None, keys=None):
 
 def _change(fn, home=None, keys=None):
     """Load, change, save. If the file can't be read right now nothing is saved (it would
-    overwrite every remembered code with an empty list): returns None, logged."""
+    overwrite every remembered code with an empty list): returns None, logged. None too
+    when the save itself failed (nothing was kept)."""
     with _LOCK:
         try:
             data = load(home, keys, strict=True)
@@ -326,7 +327,8 @@ def _change(fn, home=None, keys=None):
             log.warning("Codes file not changed: it can't be read right now")
             return None
         out = fn(data)
-        save(data, home, keys)
+        if not save(data, home, keys):
+            return None
         return out
 
 
@@ -339,12 +341,15 @@ def prune(data, now=None):
     return len(data["sent"]) != before
 
 
-def sent(home=None, keys=None, now=None):
-    """The sent codes that may still work (pruned; saved if something went)."""
+def sent(home=None, keys=None, now=None, strict=False):
+    """The sent codes that may still work (pruned; saved if something went). A file that
+    can't be read right now gives [], or raises Unreadable with strict=True."""
     with _LOCK:
         try:
             data = load(home, keys, strict=True)
         except Unreadable:
+            if strict:
+                raise
             return []
         if prune(data, now):
             save(data, home, keys)
@@ -386,10 +391,12 @@ def remove_sent(entry_id, home=None, keys=None):
 
 # ---------- locked kept copies ----------
 def remember_lock(file_id, name, size, code, home=None, keys=None, now=None):
+    """True once the code is saved; None if the codes file couldn't be read or saved."""
     def add(data):
         data["locked"][file_id] = {"code": code, "name": name, "size": int(size),
                                    "saved": time.time() if now is None else now}
-    _change(add, home, keys)
+        return True
+    return _change(add, home, keys)
 
 
 def lock_code(file_id, home=None, keys=None):

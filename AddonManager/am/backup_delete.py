@@ -182,13 +182,22 @@ def delete_one(f, places, addons_dir, trash_api, for_good=()):
 
 def delete(items, places, addons_dir, trash_api, for_good=()):
     """[(FoundBackup, kind)], one file at a time; one failure never stops the rest. A locked
-    kept copy that went also takes its remembered code (by name + size: no file is opened)."""
+    kept copy that went also takes its remembered code (by name + size: no file is opened),
+    unless another locked copy of that name and size is still in the searched places."""
     out = [(f, delete_one(f, places, addons_dir, trash_api, for_good)) for f in items]
-    for f, kind in out:
-        if kind in DONE and getattr(f, "locked", False):
+    gone = {(os.path.basename(f.path), f.size) for f, kind in out
+            if kind in DONE and getattr(f, "locked", False)}
+    if gone:
+        try:
+            left = {(os.path.basename(f.path), f.size)
+                    for f in find(places, addons_dir) if getattr(f, "locked", False)}
+        except Exception as e:   # noqa: BLE001 (can't tell: keep the codes)
+            log.info("Backups not listed again (%s)", type(e).__name__)
+            left = gone
+        for name, size in gone - left:
             try:
                 from am import codes
-                codes.forget_named(os.path.basename(f.path), f.size)
+                codes.forget_named(name, size)
             except Exception as e:   # noqa: BLE001
                 log.info("Code of a deleted locked backup not forgotten (%s)", type(e).__name__)
     return out

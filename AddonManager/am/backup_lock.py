@@ -321,11 +321,15 @@ class Kept:
     """A received (or unlocked) backup shown in the Restore window.
     locked: the .amlocked kept copy (None if it couldn't be made: lock_error says why).
     plain: the hidden plain part Restore and Save zip use (removed by discard()).
-    code: the code, only right after receiving (shown once; never logged)."""
+    code: the code, only right after receiving (shown once; never logged).
+    remembered: False when this PC couldn't save the code (the window shows it to write
+    down); None when nothing was asked to remember it."""
 
-    def __init__(self, locked, plain, code=None, file_id=None, lock_error=None):
+    def __init__(self, locked, plain, code=None, file_id=None, lock_error=None,
+                 remembered=None):
         self.locked, self.plain, self.code = locked, plain, code
         self.file_id, self.lock_error = file_id, lock_error
+        self.remembered = remembered
         self.saved_to = None
 
     def __repr__(self):
@@ -347,7 +351,7 @@ def keep(received_zip, code, remember=None, progress=None, now=None):
     hidden = os.path.basename(received_zip).startswith(UNLOCKED_PREFIX)
     plain = received_zip if hidden else _hidden_part(folder, UNLOCKED_PREFIX)
     code = normal_code(code) or code
-    locked = fid = error = None
+    locked = fid = error = remembered = None
     try:
         dest = os.path.splitext(received_zip)[0] + EXT
         if hidden or os.path.lexists(dest):   # hidden: name it like a received backup
@@ -355,7 +359,11 @@ def keep(received_zip, code, remember=None, progress=None, now=None):
         fid = lock(received_zip, dest, code, progress)
         locked = dest
         if remember is not None:
-            remember(fid, os.path.basename(dest), os.path.getsize(dest), code)
+            remembered = False
+            remembered = bool(remember(fid, os.path.basename(dest), os.path.getsize(dest),
+                                       code))
+            if not remembered:
+                log.warning("The code of the locked copy couldn't be saved")
     except LockError as e:
         error = e
         log.warning("Could not keep a locked copy (%s %s)", e.kind, e.detail)
@@ -368,7 +376,7 @@ def keep(received_zip, code, remember=None, progress=None, now=None):
         except OSError:
             log.warning("Could not hide the received file")
             plain = received_zip
-    return Kept(locked, plain, code, fid, error)
+    return Kept(locked, plain, code, fid, error, remembered)
 
 
 # ---------- Save zip ----------

@@ -205,8 +205,10 @@ class BackupWindow:
                                             self.open_old, False)
         from am import ui   # imported here: ui imports this module
         # Tooltips: why a button is greyed (render); Old backups... says what it does.
-        self.tips = {b: ui.Tooltip(b, "") for b in self.buttons()}
-        self.tips[self.old_button] = ui.Tooltip(self.old_button, errors.DELETE_OPEN_TIP)
+        # A click on a greyed button puts its reason on the status line (touch screens).
+        self.tips = {b: ui.Tooltip(b, "", on_click=self.set_status) for b in self.buttons()}
+        self.tips[self.old_button] = ui.Tooltip(self.old_button, errors.DELETE_OPEN_TIP,
+                                                on_click=self.set_status)
         # The status line takes room only while it has text (no empty gap).
         self.status_var = tk.StringVar()
         self.status = ttk.Label(frame, textvariable=self.status_var,
@@ -333,7 +335,8 @@ class BackupWindow:
             return
         self.last = f = msg[2]
         any_found = bool(msg[3]) if len(msg) > 3 else bool(f)
-        self.last_var.set(errors.backup_last(found_date(f.mtime), f.place) if f
+        self.last_var.set(errors.backup_last(found_date(f.mtime), f.place,
+                                             errors.days_ago(f.mtime)) if f
                           else errors.BACKUP_LAST_NONE)
         self.open_button.grid_remove()
         self.old_button.grid_remove()
@@ -446,7 +449,8 @@ class SpokenAsk:
         theme.even_buttons(buttons)
         win.protocol("WM_DELETE_WINDOW", lambda: self.answer(None))
         win.bind("<Escape>", lambda _e: self.answer(None))
-        win.bind("<Return>", lambda _e: self.answer("skip"))
+        for key in ("<Return>", "<KP_Enter>"):   # the number pad's Enter too (Linux)
+            win.bind(key, lambda _e: self.answer("skip"))
         if show:
             win.update_idletasks()
             p = self.parent
@@ -1134,8 +1138,10 @@ class UnlockDialog(_Dialog):
         self.entry = ttk.Entry(self.frame, textvariable=self.code_var, width=24,
                                font=share_ui.code_font())
         self.entry.pack(anchor="w", fill="x", pady=(theme.px(8), 0))
-        self.entry.bind("<Return>", lambda _e: self.start())
-        ttk.Label(self.frame, text=errors.UNLOCK_EXAMPLE, style="Muted.TLabel").pack(
+        for key in ("<Return>", "<KP_Enter>"):   # the number pad's Enter too (Linux)
+            self.entry.bind(key, lambda _e: self.start())
+        ttk.Label(self.frame, text=errors.UNLOCK_EXAMPLE, style="Muted.TLabel",
+                  justify="left").pack(
             anchor="w", pady=(theme.px(2), 0))
         self._status_area(collapse=True)
         self.cancel_button = ttk.Button(self.buttons, text=errors.CANCEL, command=self.close)
@@ -1329,8 +1335,11 @@ class RestoreDialog(_Dialog):
             row, text=errors.SAVE_ZIP, command=self.save_zip,
             width=max(theme.button_chars(row), theme.chars(row, [errors.SAVE_ZIP])))
         self.save_button.pack(side="right", anchor="n")
-        text = (errors.KEPT_LOCKED if kept.locked else
-                errors.kept_failed(getattr(kept.lock_error, "kind", "")))
+        if kept.locked and kept.remembered is False and kept.code:
+            text = errors.kept_no_code(kept.code)   # the codes file couldn't be saved
+        else:
+            text = (errors.KEPT_LOCKED if kept.locked else
+                    errors.kept_failed(getattr(kept.lock_error, "kind", "")))
         # Starts narrow, then fit_wrap gives it the width it really gets: never widens.
         self.kept_label = ttk.Label(row, text=text, style="Muted.TLabel", justify="left",
                                     wraplength=theme.px(WRAP) // 2)
@@ -1368,6 +1377,14 @@ class RestoreDialog(_Dialog):
             return False
         if not target.lower().endswith(".zip"):
             target += ".zip"
+            # the save dialog asked about the name without ".zip": ask about this one
+            if os.path.lexists(target):
+                ok = self.app.ask(errors.SAVE_ZIP_REPLACE_TITLE,
+                                  errors.save_zip_replace(os.path.basename(target)),
+                                  errors.SAVE_ZIP_REPLACE_OK, errors.CANCEL)
+                self.grab()
+                if not ok or self.closed:
+                    return False
         self.saving = True
         self.save_cancel = threading.Event()
         self._lock_widgets(True)

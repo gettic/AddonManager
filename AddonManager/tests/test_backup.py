@@ -1307,7 +1307,8 @@ class WindowBackupTests(unittest.TestCase):
         dlg.close()
         self.pump(app)
         when = backup_ui.found_date(os.path.getmtime(dlg.path))
-        self.assertEqual(hub.last_var.get(), errors.backup_last(when, errors.PLACE_DOCUMENTS))
+        self.assertEqual(hub.last_var.get(), errors.backup_last(
+            when, errors.PLACE_DOCUMENTS, errors.days_ago(os.path.getmtime(dlg.path))))
         self.assertEqual(hub.open_button.winfo_manager(), "grid")
         hub.open_button.invoke()
         self.assertEqual(self.opened, [os.path.dirname(dlg.path)])

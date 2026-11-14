@@ -85,6 +85,53 @@ class _ShareDialog(backup_ui._Dialog):
     def mine(self, msg):
         return len(msg) > 1 and msg[1] is self.tag
 
+    worker = None      # the transfer thread (the main window's X waits for it)
+    locking = False    # the locked kept copy is being written (never cut off)
+    exiting = False    # the main window's X stopped this transfer: the app closes next
+
+    def _start_worker(self, target, args):
+        self.worker = threading.Thread(target=target, daemon=True, args=args)
+        self.worker.start()
+
+    def transfer_running(self):
+        w = self.worker
+        return w is not None and w.is_alive()
+
+    def ask_stop(self):
+        """May the main window's X stop this transfer? (Receive asks for a Send-server
+        download, see ReceiveDialog.)"""
+        return True
+
+    def stop_for_exit(self):
+        """The main window's X while a transfer runs: stop it like Cancel (the locking step
+        finishes by itself). False = the player chose to keep it going."""
+        if self.exiting:
+            return True
+        if not self.ask_stop():
+            return False
+        self.exiting = True
+        self.cancel_event.set()
+        for w in (getattr(self, "go_button", None), getattr(self, "entry", None)):
+            if w is not None:
+                try:
+                    w.state(["disabled"])
+                except tk.TclError:
+                    pass
+        self.set_status(errors.CLOSING_LOCKING if self.locking else errors.CLOSING_STOPPING)
+        return True
+
+    def exit_message(self, msg):
+        """While the app waits to close: the closing text stays; a backup that arrived
+        anyway (stopped too late) only keeps its locked copy. True = handled here."""
+        if not self.exiting:
+            return False
+        if msg[0] == "share_locking":
+            self.locking = True
+            self.set_status(errors.CLOSING_LOCKING)
+        elif msg[0] == "share_received" and len(msg) > 4 and msg[4] is not None:
+            msg[4].discard()
+        return True
+
     def close(self):
         if self.running:
             # Making the backup: Cancel/Esc/X stops it (the half-written file is removed);
@@ -380,11 +427,11 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
                                                   if self.left_out else ""))
         else:
             self.set_status(errors.SEND_CONNECTING)
-        threading.Thread(target=_send_worker, daemon=True,
-                         args=(self.app.queue, self.tag, self.app.check_game,
-                               self.app.addons_dir, backup_ui.backup_folder(settings), flags, path,
-                               self.app.share_url, self.app.allow_local,
-                               self.cancel_event, self.later, fresh)).start()
+        self._start_worker(_send_worker,
+                           (self.app.queue, self.tag, self.app.check_game,
+                            self.app.addons_dir, backup_ui.backup_folder(settings), flags, path,
+                            self.app.share_url, self.app.allow_local,
+                            self.cancel_event, self.later, fresh))
         return True
 
     def _reset_try(self):
@@ -530,6 +577,8 @@ class SendDialog(backup_ui._SpokenCheck, _ShareDialog):
         kind = msg[0]
         if not kind.startswith("share_") or not self.mine(msg):
             return
+        if self.exit_message(msg):
+            return
         if kind == "share_spoken":
             if not self.active:
                 self.spoken_ready(msg[2], msg[3])
@@ -627,13 +676,15 @@ class ReceiveDialog(_ShareDialog):
         self.entry = ttk.Entry(self.frame, textvariable=self.code_var, width=24,
                                font=code_font())
         self.entry.pack(anchor="w", fill="x", pady=(theme.px(4), 0))
-        self.entry.bind("<Return>", lambda _e: self.start())
+        for key in ("<Return>", "<KP_Enter>"):   # the number pad's Enter too (Linux)
+            self.entry.bind(key, lambda _e: self.start())
         code = clipboard_code(getattr(app, "read_clipboard", None))
         if code:   # a copied code: filled in and selected (typing replaces it)
             self.code_var.set(code)
             self.entry.select_range(0, "end")
             self.entry.icursor("end")
-        ttk.Label(self.frame, text=errors.RECEIVE_EXAMPLE, style="Muted.TLabel").pack(
+        ttk.Label(self.frame, text=errors.RECEIVE_EXAMPLE, style="Muted.TLabel",
+                  justify="left").pack(
             anchor="w", pady=(theme.px(2), 0))
         ttk.Label(self.frame, text=errors.RECEIVE_NOTE, style="Muted.TLabel", wraplength=theme.px(WRAP),
                   justify="left").pack(anchor="w", pady=(theme.px(10), 0))
@@ -662,16 +713,18 @@ class ReceiveDialog(_ShareDialog):
         self.speed = Speed()
         self.cancel_event = threading.Event()
         self.set_status(errors.RECEIVE_CONNECTING)
-        threading.Thread(target=_receive_worker, daemon=True,
-                         args=(self.app.queue, self.tag, self.app.share_url,
-                               self.app.allow_local, code,
-                               backup_ui.backup_folder(config.load_settings()),
-                               self.cancel_event)).start()
+        self._start_worker(_receive_worker,
+                           (self.app.queue, self.tag, self.app.share_url,
+                            self.app.allow_local, code,
+                            backup_ui.backup_folder(config.load_settings()),
+                            self.cancel_event))
         return True
 
     def handle(self, msg):
         kind = msg[0]
         if not kind.startswith("share_") or not self.mine(msg) or not self.active:
+            return
+        if self.exit_message(msg):
             return
         if kind == "share_matched":
             self.set_status(errors.RECEIVE_CONNECTING)
@@ -687,6 +740,7 @@ class ReceiveDialog(_ShareDialog):
         elif kind == "share_ticket":
             self.show_ticket(msg[2])
         elif kind == "share_locking":   # the locked kept copy is being written
+            self.locking = True
             self.set_progress(msg[2], msg[3])
             self.set_status(errors.receive_locking(int(self.progress.cget("value"))))
         elif kind == "share_received":
@@ -713,10 +767,26 @@ class ReceiveDialog(_ShareDialog):
     store_download = False   # downloading a send kept on a Send server
     asking = False
 
+    def ask_stop(self):
+        """The main window's X during a Send-server download: the same question as Cancel
+        (stopping deletes that send for good). The locking step comes after the download."""
+        if not (self.store_download and not self.locking) or self.closed:
+            return True
+        if self.asking:
+            return False
+        self.asking = True
+        try:
+            ok = self.app.ask(errors.RECEIVE_STOP_TITLE, errors.RECEIVE_STOP_TEXT,
+                              errors.RECEIVE_STOP_OK, errors.RECEIVE_STOP_KEEP)
+        finally:
+            self.asking = False
+        self.grab()
+        return bool(ok) and not self.closed
+
     def close(self):
         """Cancel/Esc/X. While a Send-server download runs, stopping deletes that send for
         good, so ask first (only a yes stops it)."""
-        if self.active and self.store_download and not self.closed:
+        if self.active and self.store_download and not self.closed and not self.exiting:
             if self.asking:
                 return
             self.asking = True
@@ -825,10 +895,10 @@ class ReceiveDialog(_ShareDialog):
         self.trying = _file_key(path)
         self.open_button.state(["disabled"])
         self.set_status(errors.LATER_CHECKING)
-        threading.Thread(target=_open_later_worker, daemon=True,
-                         args=(self.app.queue, self.tag, self.ticket, path,
-                               backup_ui.backup_folder(config.load_settings()),
-                               self.cancel_event, self.code_var.get())).start()
+        self._start_worker(_open_later_worker,
+                           (self.app.queue, self.tag, self.ticket, path,
+                            backup_ui.backup_folder(config.load_settings()),
+                            self.cancel_event, self.code_var.get()))
 
 
 MAX_CLIPBOARD = 80   # characters: anything longer is not a code

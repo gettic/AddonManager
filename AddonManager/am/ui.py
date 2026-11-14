@@ -7,6 +7,7 @@ import os
 import queue
 import re
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
@@ -63,6 +64,8 @@ LINUX_SLIM_BUTTONS = os.name != "nt"
 SLIM_PADDING = (6, 3)   # px at 100 %: less side padding, same height as every button
 COL_GAP = 10 if os.name == "nt" else LINUX_COL_GAP   # space after the list's text columns
 # The gear needs a symbol font; Linux (Noto Sans) may not have one, so plain text there.
+CLOSE_WAIT = 30         # s: X during a Receive/Send waits this long for it to stop, at most
+CLOSE_POLL_MS = 200     # (the locking step of a received backup is never cut off)
 COPY_MENU = "Copy"
 OPEN_ADDONS_MENU = "Open AddOns folder"
 OPEN_LOG_MENU = "Open log folder"
@@ -82,12 +85,29 @@ SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and
 
 
 class Tooltip:
-    """Small hover text for a widget."""
+    """Small hover text for a widget. on_click(text): a click on the widget while it is
+    greyed (or on a label) passes the text there too (no hover on a touch screen)."""
 
-    def __init__(self, widget, text):
+    def __init__(self, widget, text, on_click=None):
         self.widget, self.text, self.tip = widget, text, None
+        self.on_click = on_click
         widget.bind("<Enter>", self.show)
         widget.bind("<Leave>", self.hide)
+        if on_click is not None:
+            widget.bind("<ButtonRelease-1>", self.clicked, add="+")
+
+    def clicked(self, _event=None):
+        """The tip text for a greyed button or a label; nothing for a button that works."""
+        if not self.text or self.on_click is None:
+            return
+        greyed = True   # a label: its tip is the whole reason
+        if isinstance(self.widget, (ttk.Button, ttk.Checkbutton)):
+            try:
+                greyed = self.widget.instate(["disabled"])
+            except tk.TclError:
+                return
+        if greyed:
+            self.on_click(self.text)
 
     def show(self, _event=None):
         if self.tip or not self.text:
@@ -185,6 +205,9 @@ class App:
         self.queue = queue.Queue()
         self.busy = False
         self.closed = False
+        # X while a Receive/Send runs: its thread, its window and when it was stopped
+        self._exit_worker = self._exit_dialog = None
+        self._exit_since = 0.0
         self.addons_dir = None
         self.rows = []
         self.manifest = None
@@ -348,7 +371,7 @@ class App:
                                      style=slim + "Accent.TButton")
         self.all_button.configure(width=width)
         self.all_button.pack(side="left", padx=(theme.px(8), 0))
-        self.all_tip = Tooltip(self.all_button, "")
+        self.all_tip = Tooltip(self.all_button, "", on_click=self.set_message)
         # App settings live in a small Settings window (see open_settings).
         # Show beta versions: off by default. Share anonymous counts: on by default.
         self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
@@ -363,7 +386,7 @@ class App:
                                              width=width, style=slim + "TButton",
                                              command=self.open_backup_window)
         self.backup_main_button.pack(side="right", padx=(0, theme.px(8)))
-        self.backup_tip = Tooltip(self.backup_main_button, "")
+        self.backup_tip = Tooltip(self.backup_main_button, "", on_click=self.set_message)
         # Show beta versions also in the main window (easy to toggle), left of Backup.
         # Same variable and command as the box in Settings, so both always match.
         self.beta_main_check = ttk.Checkbutton(buttons, text=BETA_MAIN_TEXT, variable=self.beta_var,
@@ -701,7 +724,9 @@ class App:
             f.rowconfigure(i, minsize=self._row_h)
             self._cells.append({"name": name, "name_tip": Tooltip(name, ""),
                                 "installed": installed, "latest": latest, "status": status,
-                                "status_tip": Tooltip(status, ""), "button": button,
+                                # a click shows the whole reason on the message line
+                                "status_tip": Tooltip(status, "", on_click=self.set_message),
+                                "button": button,
                                 "button_tip": Tooltip(button, "")})
         if not self.rows:
             ttk.Label(f, text=self.manifest_note or "No addons to show.",
@@ -1480,6 +1505,20 @@ class App:
                       justify="left").pack(anchor="w", padx=(theme.px(24), 0))
             checks.append(check)
         self.beta_check, self.share_check = checks
+        # The folders every help text points to, as plain links (no right-click needed).
+        links = ttk.Frame(frame)
+        links.pack(anchor="w", pady=(theme.px(12), 0))
+        self.settings_links = {}
+        for key, text, command, ok in (
+                ("addons", OPEN_ADDONS_MENU, self.open_addons_folder, bool(self.addons_dir)),
+                ("log", OPEN_LOG_MENU, self.open_log_folder, True)):
+            link = tk.Label(links, text=text, background=theme.BG,
+                            foreground=theme.LINK if ok else theme.DISABLED,
+                            cursor="hand2" if ok else "", font=theme.font("underline"))
+            link.pack(side="left", padx=(0, theme.px(16)))
+            if ok:
+                link.bind("<Button-1>", lambda _e, c=command: c())
+            self.settings_links[key] = link
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(theme.px(14), 0))
         self.settings_close = ttk.Button(buttons, text="Close", command=self.close_settings)
@@ -1977,6 +2016,53 @@ class App:
             return   # never stop a backup/restore half-way; it finishes in seconds
         if self.files.running:
             return   # an install from a file finishes first (it can't stop half-way safely)
+        if self._exit_worker is not None:
+            return   # already stopping a Receive/Send; it closes by itself (_close_when_stopped)
+        d = self.backup_dialog
+        if d is not None and getattr(d, "transfer_running", None) and d.transfer_running():
+            # A Receive/Send runs: stop it like its Cancel (a Send-server download asks
+            # first), then close once its thread has ended (the locking step finishes).
+            if not d.stop_for_exit():
+                return   # the player chose to keep receiving
+            self._exit_worker, self._exit_dialog = d.worker, d
+            self._exit_since = time.monotonic()
+            self.root.after(CLOSE_POLL_MS, self._close_when_stopped)
+            return
+        self._close_now()
+
+    def _close_when_stopped(self):
+        """Close the app once the stopped transfer's thread has ended; after CLOSE_WAIT
+        anyway (logged), except while the locked copy is still being written."""
+        w, d = self._exit_worker, self._exit_dialog
+        waited = time.monotonic() - self._exit_since
+        if w is not None and w.is_alive() and (
+                waited < CLOSE_WAIT or getattr(d, "locking", False)):
+            try:
+                self.root.after(CLOSE_POLL_MS, self._close_when_stopped)
+            except tk.TclError:
+                pass
+            return
+        if w is not None and w.is_alive():
+            log.info("Closing while a transfer is still stopping")
+        self._exit_worker = self._exit_dialog = None
+        if self.closed:
+            return
+        try:   # the transfer's last messages (a backup that came anyway keeps its locked copy)
+            while not self.closed:
+                self._handle(self.queue.get_nowait())
+        except queue.Empty:
+            pass
+        except Exception:   # noqa: BLE001
+            log.info("Last messages not read before closing")
+        if self.closed:
+            return
+        if d is not None and not d.closed:
+            d.running = False
+            d.active = False
+            d.close()
+        self._close_now()
+
+    def _close_now(self):
         self._save_geometry()
         if self.backup_dialog is not None and getattr(self.backup_dialog, "kept", None):
             try:   # a Restore window of a locked backup: its hidden plain copy goes now

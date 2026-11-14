@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.18.0
+Current version: v0.20.0
 
 ## Get it
 
@@ -59,7 +59,7 @@ Blizzard doesn't officially support playing WoW on Linux, SteamOS or through Pro
    The title bar is dark too on Windows 10 (20H1 or newer) and Windows 11. The **Choose folder** window follows your Windows light or dark setting.
 3. Click **Install** or **Update** next to an addon, or the big button at the bottom to do every addon that needs it. It says **Update all** when an installed addon has an update, otherwise **Install all**. It is greyed out when there is nothing to do.
 4. If the status says "Installed (version unknown)", the button says **Reinstall**.
-5. To use a different WoW Forever folder, click **Change...**. The folder path at the top can be selected and copied (Ctrl+C, or right-click and Copy). Right-click it to also **Open AddOns folder** or **Open log folder** (handy when asking for help). On Steam Deck, press and hold instead of right-click (also on an addon's name).
+5. To use a different WoW Forever folder, click **Change...**. The folder path at the top can be selected and copied (Ctrl+C, or right-click and Copy). Right-click it to also **Open AddOns folder** or **Open log folder** (handy when asking for help). **Settings** has the same two links. On Steam Deck, press and hold instead of right-click (also on an addon's name).
 6. Click **Check again** (point at it to see the tooltip; or press **F5** or Ctrl+R) to reload the list, for example after your internet came back.
 
 When the app asks a question, **Enter** means Yes only if nothing is removed, deleted or overwritten. For Uninstall, Delete and Restore questions you have to click.
@@ -68,7 +68,9 @@ If the app had saved the folder of another version (for example Retail), it swit
 
 If WoW is running, the app warns you. You can still install. Afterwards type `/reload` in the game, or restart it, to use the new versions.
 
-If something fails, the app tells you in plain words and nothing is half-installed: your old version stays. Error messages say where the details are: right-click the folder path and choose **Open log folder**.
+If something fails, the app tells you in plain words and nothing is half-installed: your old version stays. Error messages say where the details are: **Settings > Open log folder**.
+
+Click a greyed-out button (or an addon's Status) and the message line says why it can't be used. This works on a touch screen too.
 
 ## Updating the app itself
 
@@ -110,7 +112,7 @@ Click **Backup** (bottom row, left of **Settings**).
 
 ![The Backup window](docs/screenshots/backup-window.png)
 
-The **Backup** window has **Make a backup...** and **Restore a backup...** (This PC), and **Send to another PC...** and **Receive...** (Another PC). It also shows "Last backup: <date> (<place>)", and once a backup is found, an **Open backup folder** button and an **Old backups...** button. A greyed button says why in a tooltip.
+The **Backup** window has **Make a backup...** and **Restore a backup...** (This PC), and **Send to another PC...** and **Receive...** (Another PC). It also shows "Last backup: <date> (<place>)" with its age, for example "4 days ago", and once a backup is found, an **Open backup folder** button and an **Old backups...** button. A greyed button says why in a tooltip.
 
 You can make a backup (and send a new one) while WoW is open. Your settings are the ones from your last `/reload` or logout, so type `/reload` in WoW first to include today's changes. A settings file WoW is writing at that very moment is left out, and the "Backup saved" line names it. **Restore a backup...** still needs WoW closed.
 
@@ -156,7 +158,7 @@ Click **Old backups...** in the **Backup** window. Tick the backups you don't ne
 
 ![Send to another PC with a code](docs/screenshots/send-to-another-pc.png)
 
-In the **Backup** window, click **Send to another PC...**. Choose a new backup (the button says it holds addons and settings), your newest one, or another file. The app shows a short code like `37-amber-lamp-river` (a number and three words). On the other PC click **Receive...** in the **Backup** window (or **Use a code...** in the Restore list) and type the code. Spaces work too. If you copied a valid code, **Receive** fills it in by itself. The clipboard is read only when the window opens, and is never sent or saved. The window shows "about N min left" while it sends. Once a send starts, "What to send" folds to one line, so the window fits a Steam Deck screen.
+In the **Backup** window, click **Send to another PC...**. Choose a new backup (the button says it holds addons and settings), your newest one, or another file. The app shows a short code like `37-amber-lamp-river` (a number and three words). On the other PC click **Receive...** in the **Backup** window (or **Use a code...** in the Restore list) and type the code. Spaces work too, and the first 3 letters of each word are enough. The number pad's Enter works in code fields. If you copied a valid code, **Receive** fills it in by itself. The clipboard is read only when the window opens, and is never sent or saved. The window shows "about N min left" while it sends. Once a send starts, "What to send" folds to one line, so the window fits a Steam Deck screen.
 
 - If something goes wrong, the **Get code** button turns into **Try again**. You don't have to close the window. A backup already made for the failed send is sent again, not made twice. If the file you picked isn't a backup (or is too big), the button stays **Get code** so you can pick another file.
 - The code works once. Both PCs must be online together: the code lasts 10 minutes, and a backup up to 500 MB goes straight across.
@@ -188,7 +190,7 @@ The guild keeps no copy and doesn't run or guarantee these hosts, and they weren
   - From adminForge, the app downloads the file by itself, with no browser. Receiving such a send needs v0.16.0 or newer. For send.vis.ee it needs v0.18.0 or newer: an older app says the file arrived damaged, so update it first. A send on a host the app doesn't know yet says "update this app".
   - From file.kiwi, your browser gets the file. The download link is also shown with a **Copy link** button, for when the browser doesn't open. The Addon Manager finds the file in your Downloads folder by itself (or click **Open file...**, beside **Download**).
   - Then it checks the file and opens the usual Restore window.
-- **Closing Receive during an adminForge or send.vis.ee download** asks first, because stopping deletes that send for good. The other PC would have to send again. If that download fails, the message tells you to make a new code on the other PC.
+- **Closing Receive during an adminForge or send.vis.ee download** asks "Stop receiving?" first, because stopping deletes that send for good. Closing the app while a Receive or Send runs stops it safely first, like **Cancel**. The other PC would have to send again. If that download fails, the message tells you to make a new code on the other PC.
 - **What adminForge sees:** its servers are in Germany. It sees your IP address, the file's size and when it was sent. The file is encrypted, so it can't open it.
 - **What send.vis.ee sees:** its servers are in the Netherlands, run by one private person with no terms or privacy page and no guarantee. It sees your IP address, the file's size and when it was sent. The file is encrypted, so it can't open it.
 - **What file.kiwi sees:** its servers are in the US, and it uses Cloudflare and Google. It sees your IP address, the file's size and when it was sent. The file is encrypted, so none of them can open it.
@@ -211,14 +213,16 @@ After a receive, the app keeps the backup on your PC as a locked file (`.amlocke
 - **Another PC** shows the **Unlock backup** window. Type the code once; that PC remembers it after that.
 - **Save zip...** (in the Restore window) saves it as a normal zip anywhere. The locked copy is then removed.
 - If the app can't keep a copy, the Restore window says so. Restore it or use **Save zip...** before you close it.
+- If this PC can't save the code, the Restore window shows the code. Write it down.
+- A received backup that is being locked is always finished and kept, even if you close the app.
 
 ### Your codes
 
 When this PC has send-later codes that may still work, or locked backups, the **Backup** window shows **Codes...** with a short line beside it. It opens **Your codes**:
 
-- **Sent for later:** each code with its time left and whether it was picked up yet. **Stop** makes the code stop working and deletes the backup from its site (file.kiwi keeps a locked copy until it expires).
-- **Locked backups:** **Show code** (and **Hide code**), and **Forget**. After **Forget**, the backup opens only by typing its code, so write the code down first. Do this too before you restore on another PC.
-- Each group shows the 3 newest; the heading says "(3 of 5, newest)" when there are more.
+- **Sent for later:** each code with its time left and whether it was picked up yet, and a **Copy** link beside it. **Stop** makes the code stop working and deletes the backup from its site (file.kiwi keeps a locked copy until it expires).
+- **Locked backups:** **Show code** (and **Hide code**), with a **Copy** link beside the code once it is shown, and **Forget**. After **Forget**, the backup opens only by typing its code, so write the code down first. Do this too before you restore on another PC.
+- Every code is listed. With more than 6 rows the list scrolls. Each group shows at most 50, newest first; the heading says "(50 of 60, newest)" when there are more.
 
 The codes are kept in one encrypted file in the settings folder. On Windows it is tied to your Windows account. On Linux it is tied to this PC and your user: a copy of the file is no use on another PC or for another user. This is weaker than on Windows, and it only keeps the codes from casual reading.
 
