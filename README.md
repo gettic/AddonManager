@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.20.0
+Current version: v0.20.1
 
 ## Get it
 
@@ -86,6 +86,7 @@ Keep `AddonManager.exe` (or the AppImage) in a normal folder, such as Desktop, D
 A beta is a test version of an addon. It may have bugs. The checkbox **Show beta versions** (at the bottom of the main window, next to **Backup** and **Settings**, and also in the **Settings** window; both always match) is off by default, and the app remembers your choice.
 
 - When it is on, an addon's newest beta is offered if it is newer than its normal version. It is shown as "v1.2.0 (beta)".
+- The newest beta is picked by its version number (`beta.10` is newer than `beta.9`), not by the order GitHub lists them.
 - Turning it off does not remove the beta. You keep it until a newer normal version comes out.
 - To go back sooner: with the checkbox off, an addon whose installed beta is newer than its normal version says "Beta installed" and has a **Use vX** button. Click it and confirm "Go back to the normal version?". Your addon settings are kept.
 - **Install all** and **Update all** never go back by itself.
@@ -247,7 +248,7 @@ A window lists the addons found, each with a tick. Nothing is installed until yo
 
 Each guild addon has its own public page on GitHub. The app takes the latest normal release from there. Drafts are never offered. Test versions (betas) are only offered if you switch them on, see the next section.
 
-The guild's list of addons is the file `addons.json` in the AddonManager repo. The app shows the addons in the same order as in that file. The app also has a built-in copy of the list, in case it can't read the file.
+The guild's list of addons is the file `addons.json` in the AddonManager repo. The app shows the addons in the same order as in that file. The app also has a built-in copy of the list (with Gear Set too), in case it can't read the file.
 
 GitHub allows about 60 update checks per hour from one PC. That is plenty. The app remembers the answers for 10 minutes, and if you reach the limit it tells you when to try again.
 

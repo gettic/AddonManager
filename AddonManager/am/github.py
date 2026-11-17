@@ -7,6 +7,7 @@ player or the game is sent: the request is the repo name and a neutral User-Agen
 """
 
 import dataclasses
+import datetime
 import json
 import logging
 import os
@@ -129,10 +130,38 @@ def _get_json(url, repo, timeout):
         raise ReleaseError("bad", f"not JSON: {e}") from e
 
 
+def _published(raw):
+    """A release's published_at as an aware datetime, or None if missing or unreadable."""
+    value = raw.get("published_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return when
+
+
+def _newer(a, b):
+    """True if candidate a = (release, published, list position) beats b: the higher version;
+    same or not comparable -> the later published_at; no dates (or equal) -> earlier in the list."""
+    c = versions.compare(plain_tag(a[0]["tag"]), plain_tag(b[0]["tag"]))
+    if c in (1, -1):
+        return c == 1
+    if a[1] is not None and b[1] is not None and a[1] != b[1]:
+        return a[1] > b[1]
+    return a[2] < b[2]
+
+
 def newest_releases(repo, base, timeout=20):
-    """GET <base>/repos/<repo>/releases (newest first, up to 100 in one call) ->
+    """GET <base>/repos/<repo>/releases (up to 100 in one call) ->
     (newest normal release or None, newest pre-release published after it or None).
-    A beta is what GitHub flags as a pre-release (whatever its tag). Drafts are skipped."""
+    GitHub's list is not in version order (v0.0.1-beta.9 can come before beta.10), so the
+    newest is picked by version (see _newer), never by list position. A pre-release published
+    before the chosen normal release is ignored (by published_at; without dates, by list
+    position). A beta is what GitHub flags as a pre-release (whatever its tag). Drafts are skipped."""
     if not manifest_mod.is_safe_repo(repo):
         raise ReleaseError("bad", f"repo {repo!r}")
     url = f"{base}/repos/{repo}/releases"
@@ -142,7 +171,7 @@ def newest_releases(repo, base, timeout=20):
     if not isinstance(data, list):
         raise ReleaseError("bad", "release list is not a list")
     stable = beta = None
-    for raw in data:
+    for pos, raw in enumerate(data):
         if not isinstance(raw, dict) or raw.get("draft"):
             continue
         try:
@@ -150,12 +179,20 @@ def newest_releases(repo, base, timeout=20):
         except ReleaseError:
             log.warning("Unreadable release in %s skipped", repo)
             continue
+        cand = (release, _published(raw), pos)
         if release["prerelease"]:
-            beta = beta or release
+            if beta is None or _newer(cand, beta):
+                beta = cand
+        elif stable is None or _newer(cand, stable):
+            stable = cand
+    if beta is not None and stable is not None:
+        if beta[1] is not None and stable[1] is not None:
+            stale = beta[1] < stable[1]
         else:
-            stable = release
-            break   # pre-releases older than the newest normal release don't matter
-    return stable, beta
+            stale = beta[2] > stable[2]
+        if stale:   # pre-releases older than the newest normal release don't matter
+            beta = None
+    return (stable[0] if stable else None), (beta[0] if beta else None)
 
 
 def choose(stable, beta, show_betas):

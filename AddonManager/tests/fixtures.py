@@ -140,10 +140,13 @@ def asset(name, url, path=None, digest=True, state="uploaded"):
             "content_type": "application/zip"}
 
 
-def release_json(tag, assets, prerelease=False, draft=False):
-    """One release as GitHub's API shows it."""
-    return {"tag_name": tag, "name": tag, "draft": draft, "prerelease": prerelease,
-            "assets": assets}
+def release_json(tag, assets, prerelease=False, draft=False, published=None):
+    """One release as GitHub's API shows it (published_at only when given)."""
+    release = {"tag_name": tag, "name": tag, "draft": draft, "prerelease": prerelease,
+               "assets": assets}
+    if published is not None:
+        release["published_at"] = published
+    return release
 
 
 def write_releases(api_dir, repo, releases, raw=None):

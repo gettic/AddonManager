@@ -153,7 +153,7 @@ class Basics(unittest.TestCase):
         m = manifest.parse(json.dumps(doc), "https://example.invalid/addons.json")
         self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
                                                    "gettic/NotePad", "gettic/OnlyFriends",
-                                                   "gettic/MiniMap"])
+                                                   "gettic/MiniMap", "gettic/GearSet"])
 
     def test_repo_entries(self):
         m = manifest.parse(json.dumps({"addons": [
@@ -466,7 +466,7 @@ class WithServer(unittest.TestCase):
             m = github.load_list(url, allow_local=True)
         self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
                                                    "gettic/NotePad", "gettic/OnlyFriends",
-                                                   "gettic/MiniMap"])
+                                                   "gettic/MiniMap", "gettic/GearSet"])
         self.assertEqual(github.load_list(url, allow_local=True).addons, [])  # other lists: as is
 
     def test_fallback_to_builtin_list(self):
@@ -474,20 +474,22 @@ class WithServer(unittest.TestCase):
             m = github.load_list(config.DEFAULT_MANIFEST_URL)
             self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
                                                    "gettic/NotePad", "gettic/OnlyFriends",
-                                                   "gettic/MiniMap"])
+                                                   "gettic/MiniMap", "gettic/GearSet"])
             with self.assertRaises(manifest.ManifestError):   # other lists don't fall back
                 github.load_list("https://127.0.0.1:9/other.json")
 
     def _write_taxi(self, *releases):
-        """releases: (tag, prerelease[, draft]) newest first; each gets a matching zip."""
+        """releases: (tag, prerelease[, draft[, published_at]]) in list order; each gets a
+        matching zip."""
         items = []
-        for tag, pre, *draft in releases:
+        for tag, pre, *extra in releases:
             version = tag.lstrip("v")
             zname = f"TaxiTime-{tag}.zip"
             z = fixtures.make_zip(os.path.join(self.gh, "dl", zname), "TaxiTime", version)
             items.append(fixtures.release_json(tag, [fixtures.asset(
                 zname, self.server.url + "dl/" + zname, z)], prerelease=pre,
-                draft=bool(draft and draft[0])))
+                draft=bool(extra and extra[0]),
+                published=extra[1] if len(extra) > 1 else None))
         fixtures.write_releases(self.api_dir, "gettic/TaxiTime", items)
 
     def test_betas_hidden_unless_switched_on(self):
@@ -561,6 +563,72 @@ class WithServer(unittest.TestCase):
         self._write_taxi(("v1.5.0", False), ("v1.6.0-beta.1", True))
         (taxi,), _ = self.resolve([_addon()], show_betas=True)
         self.assertEqual((taxi.version, taxi.beta, taxi.beta_version), ("1.5.0", False, ""))
+
+    def _pair(self):
+        stable, beta = github.newest_releases("gettic/TaxiTime", self.api)
+        return (stable and stable["tag"]), (beta and beta["tag"])
+
+    def test_beta_10_listed_after_beta_9(self):
+        # As GitHub really lists gettic/GearSet: beta.9 first, though beta.10 is newer.
+        self._write_taxi(("v0.0.1-beta.9", True, False, "2026-11-17T00:27:16Z"),
+                         ("v0.0.1-beta.10", True, False, "2026-11-17T00:51:51Z"),
+                         ("v0.0.1-beta.8", True, False, "2026-11-16T23:30:25Z"))
+        self.assertEqual(self._pair(), (None, "v0.0.1-beta.10"))
+        (taxi,), problems = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((problems, taxi.version, taxi.beta), ({}, "0.0.1-beta.10", True))
+
+    def test_beta_10_without_dates(self):
+        self._write_taxi(("v1.4.0-beta.9", True), ("v1.4.0-beta.10", True), ("v1.3.0", False))
+        self.assertEqual(self._pair(), ("v1.3.0", "v1.4.0-beta.10"))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta), ("1.4.0-beta.10", True))
+
+    def test_normal_releases_out_of_order(self):
+        self._write_taxi(("v1.3.0", False), ("v1.3.1", False), ("v1.2.0", False))
+        (taxi,), _ = self.resolve([_addon()])
+        self.assertEqual((taxi.version, taxi.beta), ("1.3.1", False))
+
+    def test_not_comparable_tags_by_date(self):
+        self._write_taxi(("v1.4.0beta", True, False, "2026-01-01T00:00:00Z"),
+                         ("v1.4.0betaB", True, False, "2026-02-01T00:00:00Z"))
+        self.assertEqual(self._pair(), (None, "v1.4.0betaB"))
+        # No dates: the first in the list.
+        self._write_taxi(("v1.4.0beta", True), ("v1.4.0betaB", True))
+        self.assertEqual(self._pair(), (None, "v1.4.0beta"))
+
+    def test_same_version_later_date_wins(self):
+        self._write_taxi(("v1.4.0-beta.1", True, False, "2026-01-01T00:00:00Z"),
+                         ("V1.4.0-beta.1", True, False, "2026-03-01T00:00:00Z"))
+        self.assertEqual(self._pair(), (None, "V1.4.0-beta.1"))
+
+    def test_drafts_never_picked_by_version(self):
+        self._write_taxi(("v1.4.0-beta.11", True, True), ("v1.4.0-beta.2", True),
+                         ("v1.5.0", False, True), ("v1.3.0", False))
+        self.assertEqual(self._pair(), ("v1.3.0", "v1.4.0-beta.2"))
+
+    def test_stale_beta_by_date(self):
+        # Made before the normal release: ignored, even listed first.
+        self._write_taxi(("v1.6.0-beta.1", True, False, "2026-01-01T00:00:00Z"),
+                         ("v1.5.0", False, False, "2026-02-01T00:00:00Z"))
+        self.assertEqual(self._pair(), ("v1.5.0", None))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta), ("1.5.0", False))
+
+    def test_beta_after_stable_listed_below_it(self):
+        self._write_taxi(("v1.5.0", False, False, "2026-02-01T00:00:00Z"),
+                         ("v1.6.0-beta.1", True, False, "2026-03-01T00:00:00Z"))
+        self.assertEqual(self._pair(), ("v1.5.0", "v1.6.0-beta.1"))
+        (taxi,), _ = self.resolve([_addon()], show_betas=True)
+        self.assertEqual((taxi.version, taxi.beta), ("1.6.0-beta.1", True))
+
+    def test_bad_published_at_is_no_date(self):
+        self._write_taxi(("v1.4.0beta", True, False, "x"),
+                         ("v1.4.0betaB", True, False, 123),
+                         ("v1.3.0", False, False, "2026-13-45T99:00:00Z"))
+        self.assertEqual(self._pair(), ("v1.3.0", "v1.4.0beta"))
+        self.assertIsNone(github._published({"published_at": "x"}))
+        self.assertIsNone(github._published({}))
+        self.assertIsNotNone(github._published({"published_at": "2026-11-17T00:27:16Z"}))
 
     def test_beta_numbers_without_dot(self):
         self._write_taxi(("v1.0.0-beta10", True), ("v0.9.0", False))
