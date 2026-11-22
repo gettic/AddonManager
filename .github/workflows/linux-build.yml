@@ -185,6 +185,27 @@ jobs:
           '
           mv /usr/lib/ssl.moved /usr/lib/ssl
 
+      # The real thing, like SteamOS (no /usr/lib/ssl): the guild's addon list from this
+      # commit, its releases from the real GitHub API and every addon's real release zip
+      # (made on Windows: "\" between folders), installed into a fake WoW folder. No
+      # token: the same public, logged-out requests a player's program makes.
+      - name: Real download self-test (GitHub, like SteamOS)
+        run: |
+          mv /usr/lib/ssl /usr/lib/ssl.moved
+          runuser -u builder -- bash -euo pipefail -c '
+            cd /home/builder/repo/AddonManager
+            . /home/builder/venv/bin/activate
+            export APPIMAGE_EXTRACT_AND_RUN=1
+            work=$(mktemp -d)
+            mapfile -t data < <(python -m tests.make_selftest_data "$work/selftest")
+            xvfb-run -a /home/builder/out/AddonManager-x86_64.AppImage --selftest \
+                --manifest /home/builder/repo/addons.json --wow "${data[1]}" \
+                --home "$work/home" --selftest-out "$work/selftest.json" \
+              || { cat "$work/selftest.json" || true; exit 1; }
+            python -c "import json,sys; r=json.load(open(sys.argv[1])); [print(s[\"step\"], \"ok\" if s[\"ok\"] else \"FAILED\", s[\"detail\"]) for s in r[\"steps\"] if s[\"step\"] in (\"manifest\", \"releases\", \"certificates\") or s[\"step\"].startswith(\"install \")]" "$work/selftest.json"
+          '
+          mv /usr/lib/ssl.moved /usr/lib/ssl
+
       - name: Package and sha256
         run: |
           mkdir -p out

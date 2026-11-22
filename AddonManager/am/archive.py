@@ -163,7 +163,9 @@ def _unpack_zip(path, dest, budget):
         infos = zf.infolist()
         if len(infos) > MAX_ENTRIES:
             raise ArchiveError("too_big", "too many files")
-        checked = _check_names([(i.filename, i.is_dir()) for i in infos], budget)
+        # "\\" between folders (zips made with Windows tools) counts as "/" on every system
+        checked = _check_names([(installer.zip_name(i), installer.zip_is_dir(i))
+                                for i in infos], budget)
         by_key = {}
         for info in infos:
             if info.flag_bits & 0x1:
@@ -173,7 +175,7 @@ def _unpack_zip(path, dest, budget):
             if (info.file_size > 1024 * 1024
                     and info.file_size > MAX_RATIO * max(info.compress_size, 1)):
                 raise ArchiveError("too_big", f"suspicious compression {info.filename!r}")
-            by_key.setdefault("/".join(p for p in info.filename.split("/")
+            by_key.setdefault("/".join(p for p in installer.zip_name(info).split("/")
                                        if p not in ("", ".")).lower(), info)
         planned = sum(by_key[("/".join(p)).lower()].file_size for p, d in checked if not d)
         if budget.bytes + planned > budget.max_bytes:

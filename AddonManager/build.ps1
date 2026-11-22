@@ -6,8 +6,17 @@
 #   powershell -ExecutionPolicy Bypass -File build.ps1            (full build)
 #   powershell -ExecutionPolicy Bypass -File build.ps1 -TestOnly  (compile check + tests only)
 #   ... build.ps1 -DistPath <folder> -WorkPath <folder>  (test build that leaves dist\ alone)
+#   ... build.ps1 -ForceTests    (run the tests even if the same code already passed)
+#   ... build.ps1 -Fingerprint   (only print the code fingerprint the stamp uses)
+#
+# Tests-passed stamp: when the tests pass, .venv-build\tests-passed.json records a fingerprint
+# of the code tested (git tree ids of the inputs below, staged/unstaged/untracked included, via a
+# temp index; plus the venv's Python and packages). A later run skips the tests only when the
+# fingerprint is exactly the same and the stamp is under 24 h old. Any doubt: the tests run.
 param(
     [switch]$TestOnly,
+    [switch]$ForceTests,
+    [switch]$Fingerprint,
     [string]$TempRoot = $env:TEMP,
     [string]$DistPath = 'dist',     # where the .exe goes (e.g. a plan folder for a test build)
     [string]$WorkPath = 'build'
@@ -32,18 +41,112 @@ if ($LASTEXITCODE) {
     if ($LASTEXITCODE) { throw 'Could not install the app packages.' }
 }
 
+# --- Tests-passed stamp (see the top). Every failure here means "run the tests". ---
+# What the tests read, relative to the repo root. A test that reads another repo file must add it here.
+$testInputs = @('AddonManager', 'addons.json')
+$stampFile = Join-Path $here '.venv-build\tests-passed.json'
+$stampMaxAge = [TimeSpan]::FromHours(24)
+
+function Get-TestFingerprint([string]$tmpDir) {
+    # Git tree ids of $testInputs as they are on disk (a temp index, never the real one) + the venv's
+    # Python and packages. $null when anything is off.
+    $ErrorActionPreference = 'Continue'   # git warnings on stderr must not throw (PowerShell 5.1)
+    $oldIndex = $env:GIT_INDEX_FILE
+    $tmpIndex = Join-Path $tmpDir ('fp-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.index')
+    try {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
+        $top = & git -C $here rev-parse --show-toplevel 2>$null
+        if ($LASTEXITCODE -or -not $top) { return $null }
+        $gitDir = & git -C $top rev-parse --absolute-git-dir 2>$null
+        if ($LASTEXITCODE -or -not $gitDir) { return $null }
+        $realIndex = Join-Path $gitDir 'index'
+        if (Test-Path -LiteralPath $realIndex) { Copy-Item -LiteralPath $realIndex -Destination $tmpIndex -ErrorAction Stop }
+        $env:GIT_INDEX_FILE = $tmpIndex
+        & git -C $top add -A 2>$null | Out-Null
+        if ($LASTEXITCODE) { return $null }
+        $tree = & git -C $top write-tree 2>$null
+        if ($LASTEXITCODE -or -not $tree) { return $null }
+        $parts = @()
+        foreach ($p in $testInputs) {
+            $id = & git -C $top rev-parse "${tree}:$p" 2>$null
+            if ($LASTEXITCODE -or -not $id) { return $null }
+            $parts += "$p=$id"
+        }
+        $pyVer = & $py -VV 2>$null
+        if ($LASTEXITCODE) { return $null }
+        $freeze = & $py -m pip freeze --all --disable-pip-version-check 2>$null
+        if ($LASTEXITCODE) { return $null }
+        $bytes = [Text.Encoding]::UTF8.GetBytes((@($pyVer) + @($freeze) | Out-String))
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $envHash = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+        $sha.Dispose()
+        return (($parts -join ';') + ";env=$envHash")
+    } catch {
+        return $null
+    } finally {
+        if ($null -eq $oldIndex) { Remove-Item Env:\GIT_INDEX_FILE -ErrorAction SilentlyContinue }
+        else { $env:GIT_INDEX_FILE = $oldIndex }
+        Remove-Item -LiteralPath $tmpIndex, ($tmpIndex + '.lock') -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Read-TestStamp {
+    # The stamp as {fingerprint, passed_at, age}, or $null if missing, unreadable or too old.
+    try {
+        $s = Get-Content -LiteralPath $stampFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        if (-not $s.fingerprint -or -not $s.passed_utc_ticks) { return $null }
+        $age = [DateTime]::UtcNow - [DateTime]::new([long]$s.passed_utc_ticks, [DateTimeKind]::Utc)
+        if ($age -lt [TimeSpan]::Zero -or $age -ge $stampMaxAge) { return $null }
+        return $s
+    } catch { return $null }
+}
+
+function Write-TestStamp([string]$fp) {
+    # $fp empty = "not passed" (written before a run, so a failed run never leaves an old pass behind).
+    try {
+        $obj = [ordered]@{ fingerprint = $fp; passed_at = (Get-Date).ToString('yyyy-MM-dd HH:mm');
+                           passed_utc_ticks = [string][DateTime]::UtcNow.Ticks }
+        $tmp = $stampFile + '.tmp'
+        [IO.File]::WriteAllText($tmp, ($obj | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $stampFile -Force -ErrorAction Stop
+        return $true
+    } catch { Write-Host "Could not write the test stamp: $($_.Exception.Message)"; return $false }
+}
+
 $work = Join-Path $TempRoot ('AddonManager_build_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
+    if ($Fingerprint) {
+        $fp = Get-TestFingerprint $work
+        if (-not $fp) { throw 'No fingerprint (git missing or failed).' }
+        Write-Host $fp
+        return
+    }
+
     Write-Host 'Compile check ...'
     & $py -m compileall -q main.py am tests
     if ($LASTEXITCODE) { throw 'Compile check failed.' }
 
-    Write-Host 'Tests ...'
-    $env:ADDONMANAGER_TEST_TMP = Join-Path $work 'tests'
-    & $py -m unittest discover -s tests -t .
-    if ($LASTEXITCODE) { throw 'Tests failed.' }
-    Remove-Item Env:\ADDONMANAGER_TEST_TMP
+    $fp = Get-TestFingerprint $work
+    $stamp = $null
+    if ($fp -and -not $ForceTests) { $stamp = Read-TestStamp }
+    if ($stamp -and ($stamp.fingerprint -ceq $fp)) {
+        Write-Host "Tests skipped: same code passed at $($stamp.passed_at) (-ForceTests to run them)."
+    } else {
+        Write-Host 'Tests ...'
+        if ($fp) { [void](Write-TestStamp '') }
+        $env:ADDONMANAGER_TEST_TMP = Join-Path $work 'tests'
+        & $py -m unittest discover -s tests -t .
+        if ($LASTEXITCODE) { throw 'Tests failed.' }
+        Remove-Item Env:\ADDONMANAGER_TEST_TMP
+        if (-not $fp) {
+            Write-Host 'No test stamp written (no fingerprint: git missing or failed).'
+        } elseif ((Get-TestFingerprint $work) -cne $fp) {
+            Write-Host 'Tests passed, but the code changed during the run: no stamp written.'
+        } elseif (Write-TestStamp $fp) {
+            Write-Host 'Test stamp written.'
+        }
+    }
     if ($TestOnly) { Write-Host 'TESTS OK'; return }
 
     Write-Host 'PyInstaller ...'

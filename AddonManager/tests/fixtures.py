@@ -72,6 +72,32 @@ def make_zip(path, folder, version, files=None, toc_version=None):
     return path
 
 
+def raw_name_info(name):
+    """A ZipInfo whose name is written exactly as given, "\\" included (ZipInfo() turns
+    "\\" into "/" on Windows, like reading does there; Linux keeps it)."""
+    info = zipfile.ZipInfo("x")
+    info.filename = name
+    info.compress_type = zipfile.ZIP_DEFLATED
+    return info
+
+
+def make_windows_zip(path, folder, version):
+    """An addon zip as Windows tools make it (PowerShell Compress-Archive): "\\" between
+    folders, MS-DOS made, with a sub folder entry. Read on Linux, the names keep the "\\"."""
+    entries = [(f"{folder}\\{folder}_Forever.toc", toc_text(folder, version)),
+               (f"{folder}\\{folder}.lua", f"-- {folder} {version}\n"),
+               (f"{folder}\\Libs\\", ""),
+               (f"{folder}\\Libs\\Lib.lua", "-- lib\n")]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in entries:
+            info = raw_name_info(name)
+            info.create_system = 0
+            if name.endswith("\\"):
+                info.external_attr = 0x10   # MS-DOS folder flag
+            z.writestr(info, data)
+    return path
+
+
 def make_raw_zip(path, entries):
     """entries: list of (ZipInfo or name, data)."""
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:

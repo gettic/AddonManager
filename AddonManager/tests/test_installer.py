@@ -120,6 +120,42 @@ class InstallerTests(unittest.TestCase):
             zf.writestr(info, "../../outside")
         self.assert_fails(self.addon(z), "unsafe")
 
+    # --- zips made with Windows tools: "\" between folders (Compress-Archive) ---
+    def test_backslash_zip_installs(self):
+        """The guild's release zips: Windows reads "\\" as "/", Linux must too."""
+        z = fixtures.make_windows_zip(os.path.join(self.zips, "win.zip"), "TaxiTime", "1.3.0")
+        self.assertEqual(self.install(self.addon(z)), "1.3.0")
+        self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "1.3.0"))
+        self.assertTrue(os.path.isfile(os.path.join(self.addons, "TaxiTime", "Libs", "Lib.lua")))
+        self.assertFalse(os.path.exists(os.path.join(self.addons, "TaxiTime", "old_only.lua")))
+        self.assertFalse([n for n in os.listdir(self.addons) if "\\" in n])
+
+    def test_backslash_traversal(self):
+        z = self.good_zip(files={})
+        with zipfile.ZipFile(z, "a") as zf:
+            zf.writestr(fixtures.raw_name_info("TaxiTime\\..\\..\\evil.txt"), "x")
+        self.assert_fails(self.addon(z), "unsafe")
+        self.assertFalse(os.path.exists(os.path.join(self.client, "evil.txt")))
+
+    def test_backslash_duplicate(self):
+        """"A/x" and "A\\x" are the same file once read as a path: refused."""
+        z = self.good_zip(files={})
+        with zipfile.ZipFile(z, "a") as zf:
+            zf.writestr(fixtures.raw_name_info("TaxiTime\\TaxiTime.lua"), "-- other\n")
+        self.assert_fails(self.addon(z), "unsafe")
+
+    def test_backslash_drive(self):
+        z = self.good_zip(files={})
+        with zipfile.ZipFile(z, "a") as zf:
+            zf.writestr(fixtures.raw_name_info("C:\\evil.txt"), "x")
+        self.assert_fails(self.addon(z), "unsafe")
+
+    def test_zip_name(self):
+        self.assertEqual(installer.zip_name("A\\B\\c.lua"), "A/B/c.lua")
+        self.assertEqual(installer.zip_name("A/B/c.lua"), "A/B/c.lua")
+        self.assertTrue(installer.zip_is_dir("A\\Libs\\"))
+        self.assertFalse(installer.zip_is_dir("A\\Libs\\x.lua"))
+
     def test_zip_bomb(self):
         """A header claiming more than MAX_RATIO x its packed size (more than deflate can
         really do) is refused."""

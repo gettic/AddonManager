@@ -69,8 +69,21 @@ def target_path(addons_dir, folder):
     return path
 
 
+def zip_name(info):
+    """A zip entry's name with "/" between folders. Zips made with Windows tools (e.g.
+    PowerShell's Compress-Archive) write "\\" instead; Python turns that into "/" only on
+    Windows, so on Linux every such entry looked unsafe. The checks run on the result."""
+    name = info.filename if isinstance(info, zipfile.ZipInfo) else info
+    return name.replace("\\", "/")
+
+
+def zip_is_dir(info):
+    """A folder entry, also when its name ends in "\\" (Windows tools)."""
+    return zip_name(info).endswith("/")
+
+
 def _entry_parts(name, folder):
-    """Split a zip entry name into path parts, or raise if it's unsafe."""
+    """Split a zip entry name (already zip_name) into path parts, or raise if it's unsafe."""
     if "\\" in name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
         raise InstallError("unsafe", f"bad path {name!r}")
     parts = [p for p in name.split("/") if p != ""]
@@ -87,9 +100,16 @@ def check_zip(zf, folder, expected_version):
     infos = zf.infolist()
     if len(infos) > MAX_ENTRIES:
         raise InstallError("unsafe", "too many files")
-    checked, total = [], 0
+    checked, total, seen_files = [], 0, set()
+    toc_entry = f"{folder}/{toc.toc_name(folder)}"
     for info in infos:
-        parts = _entry_parts(info.filename, folder)
+        name = zip_name(info)
+        parts = _entry_parts(name, folder)
+        if not zip_is_dir(info):   # e.g. "A/x" and "A\x": one would overwrite the other
+            key = "/".join(parts).lower()
+            if key in seen_files:
+                raise InstallError("unsafe", f"duplicate {info.filename!r}")
+            seen_files.add(key)
         if info.flag_bits & 0x1:
             raise InstallError("unsafe", f"encrypted entry {info.filename!r}")
         mode = info.external_attr >> 16
@@ -102,11 +122,10 @@ def check_zip(zf, folder, expected_version):
             raise InstallError("unsafe", f"suspicious compression {info.filename!r}")
         checked.append((info, parts))
 
-    toc_entry = f"{folder}/{toc.toc_name(folder)}"
-    try:
-        toc_info = zf.getinfo(toc_entry)
-    except KeyError:
-        raise InstallError("bad_zip", f"missing {toc_entry}") from None
+    toc_info = next((i for i, p in checked if "/".join(p) == toc_entry
+                     and not zip_is_dir(i)), None)
+    if toc_info is None:
+        raise InstallError("bad_zip", f"missing {toc_entry}")
     if toc_info.file_size > 1024 * 1024:
         raise InstallError("bad_zip", "toc too big")
     try:
@@ -129,7 +148,7 @@ def extract(zf, checked, staging):
         dest = os.path.join(staging_real, *parts)
         if os.path.commonpath([staging_real, os.path.realpath(dest)]) != staging_real:
             raise InstallError("unsafe", f"bad path {info.filename!r}")
-        if info.is_dir():
+        if zip_is_dir(info):
             os.makedirs(dest, exist_ok=True)
             continue
         os.makedirs(os.path.dirname(dest), exist_ok=True)

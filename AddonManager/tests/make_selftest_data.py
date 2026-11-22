@@ -39,10 +39,16 @@ def main(base):
     site = fixtures.make_server_files(base)
     gh = fixtures.make_github_site(base, lambda rel: pathlib.Path(base, "gh", rel).as_uri())
     zpath = os.path.join(site, "TaxiTime-1.3.0.zip")
+    # Made like the guild's release zips (Compress-Archive: "\" between folders), which
+    # older Linux builds refused as unsafe.
+    wpath = fixtures.make_windows_zip(os.path.join(site, "NotePad-1.0.0.zip"), "NotePad", "1.0.0")
     list_path = fixtures.write_manifest(os.path.join(base, "selftest.json"), [
         {"folder": "TaxiTime", "name": "Taxi Time", "version": "1.3.0",
          "url": pathlib.Path(zpath).as_uri(), "sha256": fixtures.sha256(zpath),
          "size": os.path.getsize(zpath)},
+        {"folder": "NotePad", "name": "Note Pad", "version": "1.0.0",
+         "url": pathlib.Path(wpath).as_uri(), "sha256": fixtures.sha256(wpath),
+         "size": os.path.getsize(wpath)},
         {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"}])
     root, _addons = fixtures.make_fake_wow(os.path.join(base, "wow"))
     print(list_path)

@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.20.1
+Current version: v0.20.2
 
 ## Get it
 
@@ -243,6 +243,7 @@ A window lists the addons found, each with a tick. Nothing is installed until yo
 - If the file holds one addon and its `.toc` only has the start of the version, the app takes the full version from the file's name. For example, `ZG Release Forever 1.6.37602.rar` with a `.toc` of 1.6 shows v1.6.37602. An addon added before shows the longer version after you add it again.
 - `.rar` and `.7z` need Windows 11. On Linux they need `bsdtar` installed. Otherwise unpack the file first and use **Install from a folder...**.
 - On Linux, drag and drop may not work everywhere. **Add file...** always works.
+- Zips made on Windows (with `\` in their paths) install on Linux too.
 
 ## Where the addons come from
 

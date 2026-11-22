@@ -14,8 +14,8 @@ from am import archive, backup, fileinstall, fileinstall_ui, installer, instance
 from am.archive import ArchiveError
 from am.installer import InstallError
 from tests import archive_fixtures as af
-from tests.fixtures import (forge_size, make_addon_folder, make_fake_wow, temp_dir,
-                            tree_snapshot)
+from tests.fixtures import (forge_size, make_addon_folder, make_fake_wow, make_windows_zip,
+                            raw_name_info, temp_dir, tree_snapshot)
 
 GUILD = ["TaxiTime"]
 
@@ -108,6 +108,21 @@ class ZipSafetyTests(Base):
                     e = dict(good)
                     e.update(entries)
                     self.assertRefused(self.zip(e), kind)
+        self.untouched()
+
+    def test_backslash_zip(self):
+        """A zip made with Windows tools ("\\" between folders) reads the same on Linux;
+        "\\" can't sneak past the path checks."""
+        p = make_windows_zip(os.path.join(self.tmp, "win.zip"), "NotePad", "1.0.0")
+        plan = self.scan(p)
+        self.assertEqual([a.folder for a in plan.addons], ["NotePad"])
+        self.assertIn(["Libs", "Lib.lua"], [list(f) for f in plan.addons[0].files])
+        raw = raw_name_info
+        for bad in ("A\\..\\..\\evil.lua", "C:\\x\\A.toc", "\\abs\\A.toc"):
+            with self.subTest(name=bad):
+                self.assertRefused(self.zip([("A/A.toc", "x"), (raw(bad), "x")]), "unsafe")
+        self.assertRefused(self.zip([("A/A.toc", "x"), ("A/x.lua", "1"),
+                                     (raw("A\\x.lua"), "2")], "dup.zip"), "unsafe")
         self.untouched()
 
     def test_link_encrypted_bomb_count(self):
