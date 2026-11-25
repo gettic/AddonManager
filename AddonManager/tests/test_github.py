@@ -151,7 +151,7 @@ class Basics(unittest.TestCase):
         strip = lambda d: [(a["folder"], a["repo"]) for a in d["addons"]]
         self.assertEqual(strip(doc), strip(config.BUILTIN_LIST))
         m = manifest.parse(json.dumps(doc), "https://example.invalid/addons.json")
-        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
+        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/All-in-One-Guide", "gettic/TaxiTime",
                                                    "gettic/NotePad", "gettic/OnlyFriends",
                                                    "gettic/MiniMap", "gettic/GearSet"])
 
@@ -464,7 +464,7 @@ class WithServer(unittest.TestCase):
         url = self.server.url + "empty.json"
         with mock.patch.object(config, "DEFAULT_MANIFEST_URL", url):
             m = github.load_list(url, allow_local=True)
-        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
+        self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/All-in-One-Guide", "gettic/TaxiTime",
                                                    "gettic/NotePad", "gettic/OnlyFriends",
                                                    "gettic/MiniMap", "gettic/GearSet"])
         self.assertEqual(github.load_list(url, allow_local=True).addons, [])  # other lists: as is
@@ -472,7 +472,7 @@ class WithServer(unittest.TestCase):
     def test_fallback_to_builtin_list(self):
         with mock.patch.object(config, "DEFAULT_MANIFEST_URL", "https://127.0.0.1:9/addons.json"):
             m = github.load_list(config.DEFAULT_MANIFEST_URL)
-            self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/TaxiTime",
+            self.assertEqual([a.repo for a in m.addons], ["gettic/GuildHub", "gettic/All-in-One-Guide", "gettic/TaxiTime",
                                                    "gettic/NotePad", "gettic/OnlyFriends",
                                                    "gettic/MiniMap", "gettic/GearSet"])
             with self.assertRaises(manifest.ManifestError):   # other lists don't fall back

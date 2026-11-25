@@ -15,6 +15,7 @@ BUILTIN_LIST = {
     "title": "Guild Addons",
     "addons": [
         {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"},
+        {"folder": "AllinOneGuide", "name": "All-in-One Guide", "repo": "gettic/All-in-One-Guide"},
         {"folder": "TaxiTime", "name": "Taxi Time", "repo": "gettic/TaxiTime"},
         {"folder": "NotePad", "name": "Note Pad", "repo": "gettic/NotePad"},
         {"folder": "OnlyFriends", "name": "Only Friends", "repo": "gettic/OnlyFriends"},
