@@ -1,7 +1,10 @@
 // Tests for worker.js with a fake D1 and a fake GitHub (nothing goes online).
 // Run from this folder: node test.mjs   (exit code 0 = all passed)
 import assert from "node:assert/strict";
-import worker, { adler32, strictEscape, parseLine, buildLine, cleanReport, issueFor, take, retry } from "./worker.js";
+import worker, {
+  adler32, strictEscape, parseLine, buildLine, cleanReport, issueFor, take, retry,
+  checkPage, D1_KEYS, cleanUp, CLEAN_SQL,
+} from "./worker.js";
 
 // Lines built by the addon's own code (same as tests\test_reports.py).
 const LINE_A = "AOGR2 rid=k3x9qa;v=0.2.0;c=16001 1.60.1.70959 forever enUS;lang=enUS;ab=coords;" +
@@ -240,6 +243,171 @@ test("web: form page, Turnstile, licence tick", async () => {
 test("rate limit binding", async () => {
   const e = env({ REPORT_LIMIT: { limit: async () => ({ success: false }) } });
   assert.equal((await worker.fetch(appRequest({ v: 1, a: "AllinOneGuide", r: line("rl") }), e)).status, 429);
+});
+
+// ---------------------------------------------------------------- game data (POST /data)
+// Pages built by All-in-One Guide's own code (same as tests\test_gather.py).
+const PAGE_A = "AOGD1 rid=k3x9q2ab;h=1;v=0.3.0;b=1.60.1.70959;fac=A;cls=WARRIOR;race=Human;" +
+  "realm=Forever Test;loc=enUS;day=2026-11-26;cnt=3 AOGD1 k=qxp;q=783;xp=85;pl=2;ql=1 " +
+  "AOGD1 k=camp;npc=80;m=1429;x=27;y=46;n=11 AOGD1 k=drop;npc=38;it=752;loot=14;got=3 AOGD1 ck=bfc547a4";
+const PAGE_B = "AOGD1 rid=zz9abc12;h=1;v=0.3.0;b=1.60.1.70959;fac=A;cls=WARRIOR;race=Human;" +
+  "realm=Forever Test;loc=enUS;day=2026-11-26;cnt=2 AOGD1 k=err;msg=Gather.lua:12: " +
+  "attempt%3B a%3Db %7C 100%25 AOGD1 k=fly;fn=2;tn=4;sec=95 AOGD1 ck=50513f3a";
+const SID = "abcdefghij12";
+
+function page(rid, rec = "k=camp;npc=80;n=1") {
+  const core = `AOGD1 rid=${rid};h=1;v=0.3.0;cnt=1 AOGD1 ${rec}`;
+  return `${core} AOGD1 ck=${adler32(core)}`;
+}
+
+class FakeDataDB {
+  constructor() { this.rows = new Map(); this.blocked = new Set(); this.fail = false; this.ran = []; }
+  prepare(sql) {
+    const db = this;
+    let args = [];
+    const st = {
+      bind(...a) { args = a; return st; },
+      async first(col) {
+        if (db.fail) throw new Error("d1 down");
+        if (sql.startsWith("SELECT 1 FROM blocked_sids")) return db.blocked.has(args[0]) ? { 1: 1 } : null;
+        if (sql.startsWith("SELECT 1 FROM gather_pages WHERE rid")) return db.rows.has(args[0]) ? { 1: 1 } : null;
+        if (sql.includes("WHERE sid = ?1 AND day = ?2")) {
+          const n = [...db.rows.values()].filter((r) => r.sid === args[0] && r.day === args[1]).length;
+          return col ? n : { n };
+        }
+        if (sql.includes("FROM gather_pages WHERE day = ?1")) {
+          const n = [...db.rows.values()].filter((r) => r.day === args[0]).length;
+          return col ? n : { n };
+        }
+        throw new Error("unexpected first: " + sql);
+      },
+      async run() {
+        if (db.fail) throw new Error("d1 down");
+        db.ran.push(sql);
+        if (sql.startsWith("INSERT OR IGNORE INTO gather_pages")) {
+          if (db.rows.has(args[0])) return { meta: { changes: 0 } };
+          db.rows.set(args[0], { rid: args[0], sid: args[1], page: args[2], day: args[3] });
+          return { meta: { changes: 1 } };
+        }
+        if (sql.startsWith("DELETE FROM gather_pages")) return { meta: { changes: 0 } };
+        throw new Error("unexpected run: " + sql);
+      },
+    };
+    return st;
+  }
+}
+
+function dataEnv(extra = {}) {
+  return { DB: new FakeDB(), DATA: new FakeDataDB(), DATA_SID_CAP: "120", DATA_CAP: "800", ...extra };
+}
+
+function dataRequest(body, type = "application/json") {
+  return new Request("https://aog-report.example.workers.dev/data", {
+    method: "POST", headers: { "content-type": type }, body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+}
+
+async function postData(e, body) {
+  const res = await worker.fetch(dataRequest(body), e);
+  return { status: res.status, body: res.status === 200 ? await res.json() : null };
+}
+
+test("data: pages from the addon pass the checks", () => {
+  assert.equal(checkPage(PAGE_A), "k3x9q2ab");
+  assert.equal(checkPage(PAGE_B), "zz9abc12");
+  assert.equal(checkPage(PAGE_A.replace("xp=85", "xp=86")), null, "checksum");
+  assert.equal(checkPage(PAGE_A.slice(0, -2)), null, "cut");
+  assert.equal(checkPage(page("u1", "k=camp;zz=1")), null, "unknown key");
+  assert.equal(checkPage(page("u2", "k=camp;k=drop")), null, "key twice");
+  assert.equal(checkPage(page("u3", "k=camp;ck=1")), null, "ck inside");
+  assert.equal(checkPage(page("u4", "k=camp;n=" + "1".repeat(3000))), null, "over 3000");
+  assert.equal(checkPage(page("u5", "k=camp;noequals")), null, "no value");
+  assert.equal(checkPage(LINE_A), null, "a report line isn't a page");
+  // the addon's DB\Serializer.lua kinds.D1, in order (printed by LuaJIT from the addon's file)
+  const ADDON_D1 = "rid,h,v,b,fac,cls,race,realm,loc,day,cnt,k,q,npc,obj,ins,from,m,x,y,c,n,xp,mo,pl,ql,it,loot," +
+    "got,cu,sh,gray,cloth,herb,ore,pk,s,t,fn,tn,sec,lo,hi,cl,fa,gain,sp,sk,lv,dif,tries,ups,sv,rc,sup,min,boss,qs,pz," +
+    "pn,dd,gs,gx,rt,gph,e,st,skp,und,nd,bk,spc,ns,hs,fl,wk,hr,mt,sw,ft,dev,pct,rd,kv,ms,rf,uk,on,fe,msg,at,stk,tt,nq," +
+    "oi,why,ch,sz,ct,cf,ml,hc,cn,cb,eq,stt,am,qcu,vcu,dcu,mcu,gv,sks,ck";
+  assert.equal([...D1_KEYS].join(","), ADDON_D1, "the addon's D1 list (DB\\Serializer.lua)");
+});
+
+test("data: stored with sid + day only, each page once", async () => {
+  const e = dataEnv();
+  let r = await postData(e, { v: 1, sid: SID, pages: [PAGE_A, PAGE_B, PAGE_A] });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { took: ["k3x9q2ab", "zz9abc12"], dup: [], bad: [], over: [] });
+  const row = e.DATA.rows.get("k3x9q2ab");
+  assert.deepEqual(Object.keys(row).sort(), ["day", "page", "rid", "sid"]);
+  assert.equal(row.sid, SID);
+  assert.match(row.day, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(row.page, PAGE_A);
+  r = await postData(e, { v: 1, sid: "zyxwvutsrq98", pages: [PAGE_A, PAGE_A.replace("xp=85", "xp=86")] });
+  assert.deepEqual(r.body, { took: [], dup: ["k3x9q2ab"], bad: ["k3x9q2ab"], over: [] });
+  assert.equal(e.DATA.rows.get("k3x9q2ab").sid, SID, "a duplicate changes nothing");
+});
+
+test("data: odd requests refused", async () => {
+  const e = dataEnv();
+  for (const body of [{ v: 2, sid: SID, pages: [PAGE_A] }, { v: 1, sid: "short", pages: [PAGE_A] },
+    { v: 1, sid: SID.toUpperCase(), pages: [PAGE_A] }, { v: 1, sid: SID, pages: [] },
+    { v: 1, sid: SID, pages: PAGE_A }, { v: 1, sid: SID, pages: [PAGE_A], x: 1 },
+    { v: 1, pages: [PAGE_A] }, { v: 1, sid: SID, pages: Array(31).fill(PAGE_A) }, "not json", [1]]) {
+    assert.equal((await postData(e, body)).status, 400, JSON.stringify(body).slice(0, 60));
+  }
+  assert.equal((await worker.fetch(dataRequest("a=b", "text/plain"), e)).status, 415);
+  assert.equal((await worker.fetch(dataRequest({ v: 1, sid: SID, pages: ["x".repeat(120000)] }), e)).status, 413);
+  assert.equal((await worker.fetch(new Request("https://x.example/data"), e)).status, 405, "nothing to read");
+  assert.equal(e.DATA.rows.size, 0);
+  assert.equal((await worker.fetch(dataRequest({ v: 1, sid: SID, pages: [PAGE_A] }), env())).status, 503, "no DATA binding");
+});
+
+test("data: 120 a day per sender code, then over (sent the next day); total cap 429", async () => {
+  const e = dataEnv({ DATA_SID_CAP: "3", DATA_CAP: "5" });
+  let r = await postData(e, { v: 1, sid: SID, pages: [page("a1"), page("a2")] });
+  assert.deepEqual(r.body.took, ["a1", "a2"]);
+  r = await postData(e, { v: 1, sid: SID, pages: [page("a3"), page("a4"), page("a5")] });
+  assert.deepEqual([r.body.took, r.body.over], [["a3"], ["a4", "a5"]]);
+  r = await postData(e, { v: 1, sid: "zyxwvutsrq98", pages: [page("b1"), page("b2")] });
+  assert.deepEqual(r.body.took, ["b1", "b2"]);
+  r = await postData(e, { v: 1, sid: "zyxwvutsrq97", pages: [page("c1")] });
+  assert.equal(r.status, 429, "today's total cap");
+});
+
+test("data: a blocked sender code gets every page as bad", async () => {
+  const e = dataEnv();
+  e.DATA.blocked.add(SID);
+  const r = await postData(e, { v: 1, sid: SID, pages: [PAGE_A] });
+  assert.deepEqual(r.body, { took: [], dup: [], bad: ["k3x9q2ab"], over: [] });
+  assert.equal(e.DATA.rows.size, 0);
+});
+
+test("data: D1 down 503; rate limit 429", async () => {
+  const e = dataEnv();
+  e.DATA.fail = true;
+  assert.equal((await postData(e, { v: 1, sid: SID, pages: [PAGE_A] })).status, 503);
+  const e2 = dataEnv({ DATA_LIMIT: { limit: async () => ({ success: false }) } });
+  assert.equal((await postData(e2, { v: 1, sid: SID, pages: [PAGE_A] })).status, 429);
+});
+
+test("data: the cron deletes raw pages older than 183 days, once a day at 03:00 UTC", async () => {
+  const e = dataEnv();
+  assert.equal(CLEAN_SQL, "DELETE FROM gather_pages WHERE day < date('now', '-183 days')");
+  assert.equal(await cleanUp(e, Date.UTC(2026, 10, 26, 2, 30)), false);
+  assert.equal(await cleanUp(e, Date.UTC(2026, 10, 26, 3, 30)), false);
+  await worker.scheduled({ scheduledTime: Date.UTC(2026, 10, 26, 3, 0) }, e);
+  assert.deepEqual(e.DATA.ran, [CLEAN_SQL]);
+  assert.equal(await cleanUp(env(), Date.UTC(2026, 10, 26, 3, 0)), false, "no DATA binding");
+});
+
+test("data: logs and observability off in wrangler.toml; nothing logged", async () => {
+  const { readFileSync } = await import("node:fs");
+  const toml = readFileSync(new URL("./wrangler.toml", import.meta.url), "utf8");
+  assert.match(toml, /\[observability\]\s*\nenabled = false/);
+  assert.ok(!/logpush\s*=\s*true/i.test(toml));
+  assert.match(toml, /binding = "DATA"\s*\ndatabase_name = "guide-data"/);
+  const src = readFileSync(new URL("./worker.js", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
+  assert.ok(!src.includes("console."), "no console logging");
+  assert.ok(!/request\.cf\b/.test(src), "request.cf never read");
 });
 
 let failed = 0;

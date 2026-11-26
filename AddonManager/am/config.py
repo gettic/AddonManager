@@ -51,6 +51,10 @@ SHARE_URL = "https://guild-share.gtd-relay.workers.dev"
 # secret. Empty = nothing is ever sent. Only the built app (not dev runs or self-tests) uses it.
 REPORT_URL = "https://aog-report.gtd-relay.workers.dev/report"
 
+# Game data from All-in-One Guide (see am\gather.py and report_worker\): the same Worker's
+# /data route. Public, not a secret. Empty = nothing is ever sent. Built app only.
+DATA_URL = "https://aog-report.gtd-relay.workers.dev/data"
+
 HOME_ENV = "ADDONMANAGER_HOME"
 
 
@@ -96,6 +100,9 @@ SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": st
                  "save_zip_folder": str,   # Save zip...'s last folder (never a code)
                  "send_reports": bool,     # guide reports: missing/True = send, False = never
                  "reports_sent": list,     # ids of guide reports already sent (am\reports.py)
+                 "share_game_data": bool,  # game data: missing/True = send, False = never
+                 "gather_accounts": dict,  # per account key: sender code, sent ids (am\gather.py)
+                 "gather_salt": str,       # random salt for the account keys
                  "window": str}         # main window "WxH+X+Y" (ui.App.restore_geometry)
 
 

@@ -88,6 +88,41 @@ WHERE day >= date('now', '-13 days') GROUP BY day, via, state ORDER BY day DESC;
 
 Reports still waiting for GitHub: `SELECT rid, day, tries FROM reports WHERE state = 'pending';`
 
+## Game data (POST /data)
+
+All-in-One Guide keeps game facts on the player's PC in sealed "AOGD1" pages. The Addon
+Manager (`am\gather.py`) sends them here while WoW is closed (on by default; "Share game data"
+in its Settings switches it off). The Worker checks every page again (length, the page rule,
+the Adler-32 checksum, only the field names of the addon's `DB\Serializer.lua` kind D1),
+stores each page once with the random sender code and the UTC day, and answers which pages it
+took. At most `DATA_SID_CAP` (120) pages a day per sender code (the rest is sent the next day)
+and `DATA_CAP` a day in total.
+
+**The raw pages are private.** They live in their own D1 database `guide-data`, are never
+published or shared (not per page, not per sender code), and are deleted after 183 days by the
+03:00 UTC run of the cron. Only merged facts go into the guide packs.
+
+Once (each step needs the owner's yes; done on 2026-11-26, the id is in `wrangler.toml`):
+
+1. `npx wrangler d1 create guide-data` and put the printed `database_id` into `wrangler.toml`.
+2. `npx wrangler d1 execute guide-data --remote --file data_schema.sql`
+3. `npx wrangler deploy`
+4. In the Worker's **Settings, Observability**: Workers Logs off, no Logpush (the app tells
+   players the server doesn't store their IP address).
+
+Block a sender code that keeps sending bad data (its pages are then answered "bad"):
+`npx wrangler d1 execute guide-data --remote --command "INSERT INTO blocked_sids VALUES ('<sid>', date('now'))"`
+
+Pages per day (D1, `guide-data`, **Console**):
+
+```sql
+SELECT day, COUNT(*) AS pages, COUNT(DISTINCT sid) AS senders FROM gather_pages
+WHERE day >= date('now', '-13 days') GROUP BY day ORDER BY day DESC;
+```
+
+Size: a page is at most 3 KB; `DATA_CAP` 800 a day for 183 days is about 440 MB (the free plan's
+database size limit was 500 MB when this was written; check before raising the cap).
+
 ## What a report holds
 
 Only the report line from the addon: the addon and client version, the language, the guide and

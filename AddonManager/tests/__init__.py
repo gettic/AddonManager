@@ -35,6 +35,8 @@ config.STATS_URL = ""
 # ...and no guide report ever goes to the real report server (test_reports.py runs its own).
 REAL_REPORT_URL = config.REPORT_URL
 config.REPORT_URL = ""
+REAL_DATA_URL = config.DATA_URL
+config.DATA_URL = ""
 # ...and no backup is ever sent to the real relay (share tests use tests\fake_relay.py).
 REAL_SHARE_URL = config.SHARE_URL
 config.SHARE_URL = ""

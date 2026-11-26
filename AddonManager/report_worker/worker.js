@@ -10,6 +10,7 @@
 //     409 already received, 413 too big, 429 today's cap reached or too fast, 503 try later.
 //   GET  /  or /report   the web page (a form; Cloudflare Turnstile against bots)
 //   POST /report  (form: r, agree, cf-turnstile-response)                         (web page)
+//   POST /data    game data pages (Addon Manager; see "game data" below; private D1 DATA)
 //
 // Checks: size, the "AOGR2 " start, the allowed characters, the field names, the Adler-32
 // checksum (the same as the addon's), the note's length, one issue per report id (D1), a
@@ -267,6 +268,161 @@ export async function retry(env) {
   }
 }
 
+// ---------------------------------------------------------------- game data (POST /data)
+// All-in-One Guide's sealed "AOGD1" pages, sent by the Addon Manager (am\gather.py) while WoW
+// is closed. Stored in a PRIVATE D1 database (binding DATA, data_schema.sql): rid, sid, page and
+// the UTC day only. Never published: only merged facts go into the guide packs. Raw pages are
+// deleted after 183 days (cleanUp, from the cron). No IP, headers, user agent or request.cf.
+//
+//   POST /data  {"v": 1, "sid": "<12 a-z0-9>", "pages": ["AOGD1 rid=...", ...]}  (<= 30 pages)
+//     200 {"took": [...], "dup": [...], "bad": [...], "over": [...]}  (page ids)
+//     400 not a request, 413 too big, 429 too fast / today's total cap, 503 try later.
+//   "over" = this sender code's daily limit (DATA_SID_CAP): the app sends them the next day.
+//   A blocked sender code (blocked_sids) gets every page as "bad".
+const DATA_MAX_BODY = 110 * 1024;
+const PAGE_MAX = 3000;
+const PAGES_MAX = 30;
+const PAGE_RE = /^AOGD1 rid=([a-z0-9]+);h=1;[A-Za-z0-9 .,:_\/+()'!?\-%=;]+ AOGD1 ck=([0-9a-f]{8})$/;
+const SID_RE = /^[a-z0-9]{12}$/;
+const KEEP_DAYS = 183;
+// The page's field names: All-in-One Guide's DB\Serializer.lua kinds.D1 (keep the same).
+export const D1_KEYS = new Set([
+  "rid", "h", "v", "b", "fac", "cls", "race", "realm", "loc", "day", "cnt", "k", "q", "npc", "obj", "ins", "from", "m",
+  "x", "y", "c", "n", "xp", "mo", "pl", "ql", "it", "loot", "got", "cu", "sh", "gray", "cloth", "herb", "ore", "pk", "s",
+  "t", "fn", "tn", "sec", "lo", "hi", "cl", "fa", "gain", "sp", "sk", "lv", "dif", "tries", "ups", "sv", "rc", "sup",
+  "min", "boss", "qs", "pz", "pn", "dd", "gs", "gx", "rt", "gph",
+  "e", "st", "skp", "und", "nd", "bk", "spc", "ns", "hs", "fl", "wk", "hr", "mt", "sw", "ft", "dev", "pct", "rd", "kv",
+  "ms", "rf", "uk", "on", "fe", "msg", "at", "stk", "tt", "nq", "oi", "why", "ch", "sz", "ct", "cf", "ml", "hc", "cn",
+  "cb", "eq", "stt", "am", "qcu", "vcu", "dcu", "mcu", "gv", "sks", "ck",
+]);
+const VALUE_RE = /^[A-Za-z0-9 .,:_\/+()'!?\-%]*$/;
+
+// The page's id when it is a whole, unchanged page with known fields only; else null.
+export function checkPage(page) {
+  if (typeof page !== "string" || page.length > PAGE_MAX) return null;
+  const m = PAGE_RE.exec(page);
+  if (!m) return null;
+  const core = page.slice(0, -(" AOGD1 ck=".length + 8));
+  if (adler32(core) !== m[2]) return null;
+  // header + records, each "AOGD1 key=value;key=value"
+  const parts = core.split(" AOGD1 ");
+  parts[0] = parts[0].slice("AOGD1 ".length);
+  for (const part of parts) {
+    const seen = new Set();
+    for (const field of part.split(";")) {
+      const eq = field.indexOf("=");
+      if (eq < 1) return null;
+      const key = field.slice(0, eq);
+      if (!D1_KEYS.has(key) || key === "ck" || seen.has(key) || !VALUE_RE.test(field.slice(eq + 1))) return null;
+      seen.add(key);
+    }
+  }
+  return m[1];
+}
+
+// -> {status, body?}
+export async function takeData(env, data) {
+  if (!data || typeof data !== "object" || Array.isArray(data) || data.v !== 1) return { status: 400 };
+  if (Object.keys(data).sort().join(",") !== "pages,sid,v") return { status: 400 };
+  if (typeof data.sid !== "string" || !SID_RE.test(data.sid)) return { status: 400 };
+  if (!Array.isArray(data.pages) || data.pages.length === 0 || data.pages.length > PAGES_MAX) return { status: 400 };
+  const out = { took: [], dup: [], bad: [], over: [] };
+  const good = [];
+  const seen = new Set();
+  for (const page of data.pages) {
+    const rid = checkPage(page);
+    if (!rid) {
+      const m = typeof page === "string" ? /^AOGD1 rid=([a-z0-9]{1,16});/.exec(page) : null;
+      if (m) out.bad.push(m[1]);
+      continue;
+    }
+    if (seen.has(rid)) continue;
+    seen.add(rid);
+    good.push([rid, page]);
+  }
+  const day = today();
+  const sidCap = Number.parseInt(env.DATA_SID_CAP || "120", 10) || 120;
+  const cap = Number.parseInt(env.DATA_CAP || "800", 10) || 800;
+  try {
+    if (await env.DATA.prepare("SELECT 1 FROM blocked_sids WHERE sid = ?1").bind(data.sid).first()) {
+      out.bad.push(...good.map(([rid]) => rid));
+      return { status: 200, body: out };
+    }
+    if (!good.length) return { status: 200, body: out };
+    const total = (await env.DATA.prepare("SELECT COUNT(*) AS n FROM gather_pages WHERE day = ?1").bind(day).first("n")) || 0;
+    if (total >= cap) return { status: 429 };
+    let mine = (await env.DATA.prepare("SELECT COUNT(*) AS n FROM gather_pages WHERE sid = ?1 AND day = ?2")
+      .bind(data.sid, day).first("n")) || 0;
+    for (const [rid, page] of good) {
+      if (await env.DATA.prepare("SELECT 1 FROM gather_pages WHERE rid = ?1").bind(rid).first()) {
+        out.dup.push(rid);
+        continue;
+      }
+      if (mine >= sidCap) {
+        out.over.push(rid);
+        continue;
+      }
+      const ins = await env.DATA.prepare(
+        "INSERT OR IGNORE INTO gather_pages (rid, sid, page, day) VALUES (?1, ?2, ?3, ?4)"
+      ).bind(rid, data.sid, page, day).run();
+      if (ins.meta && ins.meta.changes === 0) {
+        out.dup.push(rid);
+      } else {
+        out.took.push(rid);
+        mine += 1;
+      }
+    }
+  } catch {
+    return { status: 503 };
+  }
+  return { status: 200, body: out };
+}
+
+// Raw pages older than KEEP_DAYS (183) are deleted. Run by the cron once a UTC day (the first
+// run after 03:00); merged guide data lives elsewhere and is kept.
+export const CLEAN_SQL = `DELETE FROM gather_pages WHERE day < date('now', '-${KEEP_DAYS} days')`;
+export async function cleanUp(env, when) {
+  if (!env.DATA) return false;
+  const d = new Date(when);
+  if (d.getUTCHours() !== 3 || d.getUTCMinutes() >= 30) return false;
+  await env.DATA.prepare(CLEAN_SQL).run();
+  return true;
+}
+
+async function dataLimited(env, request) {
+  // optional per-IP limit; the IP is only the key, never stored
+  if (!env.DATA_LIMIT) return false;
+  const ip = request.headers.get("cf-connecting-ip") || "none";
+  try {
+    const { success } = await env.DATA_LIMIT.limit({ key: ip });
+    return !success;
+  } catch {
+    return false;
+  }
+}
+
+async function dataRoute(request, env) {
+  if (request.method !== "POST") return reply(405);
+  if (!env.DATA) return reply(503);
+  if (Number(request.headers.get("content-length") || "0") > DATA_MAX_BODY) return reply(413);
+  const type = (request.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (type !== "application/json") return reply(415);
+  const text = await request.text();
+  if (text.length > DATA_MAX_BODY) return reply(413);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return reply(400);
+  }
+  if (await dataLimited(env, request)) return reply(429);
+  const result = await takeData(env, data);
+  if (!result.body) return reply(result.status);
+  return new Response(JSON.stringify(result.body), {
+    status: result.status, headers: { "Content-Type": "application/json" },
+  });
+}
+
 // ---------------------------------------------------------------- the web page
 function esc(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -377,6 +533,7 @@ async function limited(env, request) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/data") return dataRoute(request, env);
     if (url.pathname !== "/" && url.pathname !== "/report") return reply(404);
     if (request.method === "GET") return html(formPage(env), 200);
     if (request.method !== "POST" || url.pathname !== "/report") return reply(405);
@@ -414,11 +571,16 @@ export default {
     return reply(415);
   },
 
-  async scheduled(_event, env) {
+  async scheduled(event, env) {
     try {
       await retry(env);
     } catch {
       // next run
+    }
+    try {
+      await cleanUp(env, event && event.scheduledTime ? event.scheduledTime : Date.now());
+    } catch {
+      // next day
     }
   },
 };

@@ -14,7 +14,8 @@ from tkinter import font as tkfont
 
 from am import (APP_NAME, APP_VERSION, backup, backup_lock, backup_ui, config, errors,
                 gamecheck, github,
-                fileinstall, fileinstall_ui, icon, installer, instance, reports, selfupdate,
+                fileinstall, fileinstall_ui, gather, gather_ui, icon, installer, instance,
+                reports, selfupdate,
                 share_ui, stats, sysenv, theme, toc, touch, trash, versions, wowpath)
 from am import manifest as manifest_mod
 
@@ -89,6 +90,10 @@ REPORTS_NOTE = ("On unless you switch it off. When you press Send on a report in
                 "them on the guide's GitHub page, so keep names out of your note. Holds the "
                 "step, your note, level, class, race, language, game and addon version, and "
                 "map position if you allowed it. Never your name or account.")
+GATHER_TEXT = "Share game data"
+GATHER_NOTE = ("On unless you switch it off. Sends All-in-One Guide's game facts while WoW "
+               "is closed. Never your name or account.")
+GATHER_LINK = "What is sent..."
 
 
 class Tooltip:
@@ -175,7 +180,8 @@ class App:
                  check_game=gamecheck.game_running, detect=wowpath.detect, ask_folder=None,
                  github_api=None, app_exe=None, updated_from=None, restart=selfupdate.restart,
                  open_link=None, confirm=None, stats_url=None, trash_api=None,
-                 share_url=None, open_path=None, instance_lock=None, report_url=None):
+                 share_url=None, open_path=None, instance_lock=None, report_url=None,
+                 data_url=None):
         """app_exe: the running .exe (self-update on); None = no self-update (from source,
         self-test). updated_from: set when this run was started by an update.
         confirm(title, text, ok_text, cancel_text) -> bool: the yes/no question (tests
@@ -215,6 +221,13 @@ class App:
         self._reports_after = None      # the next 10-minute look (root.after id)
         self.report_watch_ms = reports.WATCH_S * 1000   # tests make these short
         self.report_settle_s = reports.SETTLE_S
+        # Game data (am\gather.py): same address rule; read only while WoW is closed.
+        if data_url is None:
+            data_url = config.DATA_URL if (app_exe and not allow_local) else ""
+        self.data_url = data_url
+        self._gather_busy = False       # a look or send thread runs
+        self._gather_stamp = None       # the saved files' sizes/times at the last full look
+        self.gather_settle_s = reports.SETTLE_S
         # The app's own update check must be done first (latest/outdated for the app).
         self._app_checked = not app_exe or bool(updated_from)
         self._app_newer = False
@@ -401,7 +414,10 @@ class App:
         self.share_var = tk.BooleanVar(value=_share_on(self.settings))
         # Send guide reports: on by default, sent quietly (see _reports_found).
         self.report_var = tk.BooleanVar(value=_reports_on(self.settings))
+        # Share game data: on by default, its own setting (see _look_gather).
+        self.gather_var = tk.BooleanVar(value=gather.is_on(self.settings))
         self.settings_win = self.beta_check = self.share_check = self.report_check = None
+        self.gather_check = self.gather_link = None
         self.backup_win = None   # the Backup window (am\backup_ui.BackupWindow) while open
         self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON, width=width,
                                           command=self.open_settings, style=slim + "TButton")
@@ -1521,17 +1537,28 @@ class App:
         self.beta_var.set(self.settings.get("show_betas") is True)
         self.share_var.set(_share_on(config.load_settings()))
         self.report_var.set(_reports_on(config.load_settings()))
+        self.gather_var.set(gather.is_on(config.load_settings()))
         checks = []
         for text, var, command, note in (
                 (BETA_TEXT, self.beta_var, self.toggle_betas, BETA_NOTE),
                 (SHARE_TEXT, self.share_var, self.toggle_share, SHARE_NOTE),
-                (REPORTS_TEXT, self.report_var, self.toggle_reports, REPORTS_NOTE)):
-            check = ttk.Checkbutton(frame, text=text, variable=var, command=command)
-            check.pack(anchor="w", pady=(theme.px(10), 0))
+                (REPORTS_TEXT, self.report_var, self.toggle_reports, REPORTS_NOTE),
+                (GATHER_TEXT, self.gather_var, self.toggle_gather, GATHER_NOTE)):
+            row = ttk.Frame(frame)
+            row.pack(anchor="w", fill="x", pady=(theme.px(10), 0))
+            check = ttk.Checkbutton(row, text=text, variable=var, command=command)
+            check.pack(side="left")
             ttk.Label(frame, text=note, style="Muted.TLabel", wraplength=theme.px(320),
                       justify="left").pack(anchor="w", padx=(theme.px(24), 0))
             checks.append(check)
-        self.beta_check, self.share_check, self.report_check = checks
+        self.beta_check, self.share_check, self.report_check, self.gather_check = checks
+        # Share game data: what it holds, what never, and the exact pages (gather_ui); on
+        # the switch's own line, so Settings stays short enough for small screens.
+        self.gather_link = tk.Label(self.gather_check.master, text=GATHER_LINK,
+                                    background=theme.BG, foreground=theme.LINK, cursor="hand2",
+                                    font=theme.font("underline"))
+        self.gather_link.pack(side="left", padx=(theme.px(12), 0))
+        self.gather_link.bind("<Button-1>", lambda _e: self.open_game_data())
         # The folders every help text points to, as plain links (no right-click needed).
         links = ttk.Frame(frame)
         links.pack(anchor="w", pady=(theme.px(12), 0))
@@ -1585,6 +1612,7 @@ class App:
                 return   # it stayed open (stopping something first)
         win, self.settings_win = self.settings_win, None
         self.beta_check = self.share_check = self.report_check = None
+        self.gather_check = self.gather_link = None
         if win is not None:
             try:
                 win.grab_release()
@@ -1673,6 +1701,14 @@ class App:
         if self.backup_dialog is not None:
             return None
         self.backup_dialog = backup_ui.LicenceDialog(self, show=show)
+        return self.backup_dialog
+
+    def open_game_data(self, show=True):
+        """Settings > What is sent...: the game data text and the exact pages (read-only;
+        the pages are read only while WoW is closed)."""
+        if self.backup_dialog is not None:
+            return None
+        self.backup_dialog = gather_ui.GameDataDialog(self, show=show)
         return self.backup_dialog
 
     def open_send(self, show=True):
@@ -1974,6 +2010,23 @@ class App:
                 config.save_settings(self.settings)
             if msg[2]:
                 log.info("Sent %s guide report(s)", msg[2])
+        elif kind == "gather_found":
+            self._gather_stamp = msg[2]
+            self._gather_found(msg[1])
+        elif kind == "gather_sent":
+            self._gather_busy = False
+            if not msg[3]:   # offline, over today's limit or switched off: look again later
+                self._gather_stamp = None
+            if msg[1]:
+                self.settings = config.load_settings()
+                gather.record(self.settings, msg[1])
+                config.save_settings(self.settings)
+            if msg[2]:
+                log.info("Game data: %s page(s) handled", msg[2])
+        elif kind == "gather_preview":
+            dialog = self.backup_dialog
+            if dialog is not None and dialog.alive():
+                dialog.handle(msg)
         elif kind == "stats_sent":
             self.settings = config.load_settings()
             self.settings[stats.DAY_SETTING], self.settings[stats.WEEK_SETTING] = msg[1], msg[2]
@@ -2065,6 +2118,7 @@ class App:
         if self._reports_after is None and not self.closed:
             self._reports_after = self.root.after(self.report_watch_ms, self._reports_tick)
         self._look_reports()
+        self._look_gather()
 
     def _reports_tick(self):
         """Every 10 minutes: look again (nothing at all while the switch is off)."""
@@ -2072,6 +2126,7 @@ class App:
         if self.closed:
             return
         self._look_reports()
+        self._look_gather()
         self._reports_after = self.root.after(self.report_watch_ms, self._reports_tick)
 
     def _look_reports(self):
@@ -2112,6 +2167,57 @@ class App:
         if self.report_var.get():
             self._reports_stamp = None   # read the files again, changed or not
             self._maybe_find_reports(force=True)
+
+    # ---------- game data (am\gather.py): its own switch, only while WoW is closed ----------
+    def _look_gather(self):
+        """One look in a thread: the game check first (WoW open = nothing is read), then
+        os.stat of the saved files, read only when changed and settled. Nothing while one
+        runs, without an address or folder, or while the switch is off."""
+        if self._gather_busy or not self.data_url or not self.addons_dir:
+            return
+        settings = config.load_settings()
+        if not gather.is_on(settings):
+            return
+        try:
+            accounts = backup.places(self.addons_dir).accounts
+        except Exception:   # noqa: BLE001 (a bad folder: nothing, no message)
+            return
+        if settings.get(gather.SALT_SETTING) is None:
+            gather.salt(settings)
+            config.save_settings(settings)
+        self._gather_busy = True
+        threading.Thread(target=gather.find_worker, daemon=True,
+                         args=(self.queue, accounts, settings, self.check_game,
+                               self._gather_stamp, self.gather_settle_s)).start()
+
+    def _gather_found(self, found):
+        """Pages to send: each account gets its sender code first (saved), then one thread
+        sends them quietly. Checked again here in case the switch went off meanwhile."""
+        settings = config.load_settings()
+        if not found or not gather.is_on(settings):
+            self._gather_busy = False
+            if found:
+                self._gather_stamp = None
+            return
+        sids = gather.give_sids(settings, [key for key, _pages in found])
+        config.save_settings(settings)
+        batches = [(key, sids[key], pages) for key, pages in found]
+        threading.Thread(target=gather.send_worker, daemon=True,
+                         args=(self.queue, self.data_url, batches, self.allow_local,
+                               lambda: gather.is_on(config.load_settings()))).start()
+
+    def toggle_gather(self):
+        """Share game data switched in Settings: off removes every sender code at once
+        (a send in progress stops before its next request); on looks now."""
+        self.settings = config.load_settings()
+        on = bool(self.gather_var.get())
+        self.settings[gather.ON_SETTING] = on
+        if not on:
+            gather.forget_sids(self.settings)
+        config.save_settings(self.settings)
+        if on:
+            self._gather_stamp = None
+            self._look_gather()
 
     def close(self):
         if self._dialog_busy():

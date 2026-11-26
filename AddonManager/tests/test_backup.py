@@ -1214,6 +1214,20 @@ class WindowBackupTests(unittest.TestCase):
         patcher = mock.patch.object(backup, "cloud_folders", lambda: list(self.clouds))
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Every thread the windows start during the test is noted, so pump() can wait
+        # for the background work itself (size, last backup, clouds, search...) instead of
+        # a fixed number of updates (a race under load in the full suite).
+        self.threads = []
+        real_thread, threads = threading.Thread, self.threads
+
+        class NotedThread(real_thread):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                threads.append(self)
+
+        patcher = mock.patch.object(threading, "Thread", NotedThread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.root = tk.Tk()
         self.root.withdraw()
 
@@ -1231,9 +1245,14 @@ class WindowBackupTests(unittest.TestCase):
         return self.answer
 
     def pump(self, app, timeout=20):
+        """Run the window until the work is done: nothing busy, every thread started in
+        this test ended and every message it sent handled (a handler may start another
+        thread, e.g. the Backup window's last-backup look after a dialog closes)."""
         end = time.time() + timeout
         self.root.update()
-        while (app.busy or (app.backup_dialog and app.backup_dialog.running)) and time.time() < end:
+        while time.time() < end and (
+                app.busy or (app.backup_dialog and app.backup_dialog.running)
+                or any(t.is_alive() for t in self.threads) or not app.queue.empty()):
             self.root.update()
             time.sleep(0.02)
         for _ in range(5):

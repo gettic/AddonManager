@@ -259,7 +259,7 @@ Both are in `%APPDATA%\AddonManager` on Windows (paste it into the Windows Explo
 
 | File | What it holds |
 | --- | --- |
-| `settings.json` | the WoW Forever folder you chose, the "Show beta versions", "Share anonymous counts" and "Send guide reports" choices, the day and week of the last usage ping, and the ids of guide reports already sent |
+| `settings.json` | the WoW Forever folder you chose, the "Show beta versions", "Share anonymous counts", "Send guide reports" and "Share game data" choices, the day and week of the last usage ping, the ids of guide reports already sent, and for game data a random sender code and the ids of pages already sent |
 | `cache.json` | the latest versions found, kept for 10 minutes |
 | `log.txt` | details of errors; show it to the guild officer if something goes wrong |
 
@@ -301,6 +301,20 @@ If you use the All-in-One Guide addon, you can report a wrong guide step in the 
 - **Where it goes:** the report becomes a public GitHub issue on `gettic/All-in-One-Guide`. Anyone can read it, so keep names out of your note. Map positions are rounded to whole percent.
 - **If the server can't be reached:** the report waits and is sent on a later start.
 - **Without the Addon Manager:** copy the report in the game and paste it on the report web page: https://aog-report.gtd-relay.workers.dev
+- The server's code is public: see `AddonManager\report_worker\`.
+
+## Share game data
+
+If you use the All-in-One Guide addon, the app can send the game facts the addon keeps on your PC. They help fix and speed up the guides for everyone. This is separate from **Send guide reports**.
+
+- **On by default:** it sends quietly, with no question. To turn it off, click **Settings** and untick **Share game data**. Nothing is sent while it is off, and the random sender code is removed.
+- **Only while WoW is closed:** the app reads the addon's saved file (as text, it never runs or changes it) only when the game is not running. The file is saved when you `/reload`, log out or exit. Each page is sent once.
+- **What is sent:** quests (XP, givers, chains, objectives, rewards offered and picked, abandoned and failed quests), NPC and mob spots (whole map percent), drops, loot gold, deaths, fights (time to kill, spells used), professions, reputation gains, dungeon runs, travel and flights, guide skips and stuck steps, your settings, addon errors and speed, and about you: race, realm, class, spec, group size (a number), game language, addon version, gear item levels, stats, rested XP and the day (no time).
+- **Never sent:** your name, account, BattleTag, guild, chat, other players, your gold total, reputation standing or health.
+- **See it first:** **What is sent...**, under the switch in **Settings**, shows the full list and the exact pages on this PC, as they would be sent. It can only read them while WoW is closed.
+- **Sender code:** a random code made on this PC for each WoW account is sent with the pages, so bad data from one sender can be spotted and left out. It is not linked to your account.
+- **On the server:** your IP address is not stored (the web host sees it while sending, like any website). The raw pages stay private and are deleted after 183 days.
+- **Your rights:** by sharing, you give up your own rights in these lines (CC0), so they can be used freely in the guides. Game content stays Blizzard's.
 - The server's code is public: see `AddonManager\report_worker\`.
 
 ## For addon makers

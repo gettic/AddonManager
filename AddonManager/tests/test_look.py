@@ -483,6 +483,16 @@ class LookWindowTests(unittest.TestCase):
         self.assertEqual(str(lic.vbar.cget("style")), "Gold.Vertical.TScrollbar")
         self.assertEqual(str(lic.hbar.cget("style")), "Gold.Horizontal.TScrollbar")
         lic.close()
+        # Settings > What is sent... (game data): read-only box, Gold bars, <= 420 px
+        app.open_settings(show=False)
+        gd = app.open_game_data(show=False)
+        self.check_dialog(gd.win, "game data")
+        gd.win.update_idletasks()
+        self.assertLessEqual(gd.win.winfo_reqwidth(), theme.px(420), "game data width")
+        self.check_height(gd.win, "game data")
+        self.assertEqual(str(gd.vbar.cget("style")), "Gold.Vertical.TScrollbar")
+        gd.close()
+        app.close_settings()
         made = backup.make(self.addons, os.path.join(self.work, "made"),
                            now=datetime.datetime(2026, 11, 9, 21, 14))[0]
         d = app.open_restore(show=False, path=made)

@@ -14,7 +14,14 @@ binding = "DB"
 database_name = "guide-reports"
 database_id = "be4ab228-2bc2-4194-b269-5b010d47f2b0"
 
-# Reports GitHub didn't take at once are filed by this (every 30 minutes, free).
+# Game data from All-in-One Guide (POST /data): its own PRIVATE database (data_schema.sql).
+[[d1_databases]]
+binding = "DATA"
+database_name = "guide-data"
+database_id = "b349ba4a-4bcb-4c0a-80a8-339dbe212371"
+
+# Reports GitHub didn't take at once are filed by this (every 30 minutes, free); the 03:00 UTC
+# run also deletes raw game data pages older than 183 days.
 [triggers]
 crons = ["*/30 * * * *"]
 
@@ -24,7 +31,15 @@ name = "REPORT_LIMIT"
 namespace_id = "7303"
 simple = { limit = 5, period = 60 }
 
+# Game data: per-IP limit for POST /data (the app sends at most one request per account per look).
+[[ratelimits]]
+name = "DATA_LIMIT"
+namespace_id = "7304"
+simple = { limit = 10, period = 60 }
+
 [vars]
+DATA_SID_CAP = "120"           # game data pages per sender code per day (over = sent the next day)
+DATA_CAP = "800"               # game data pages per day in total (fits the free D1 size for 183 days)
 REPO = "gettic/All-in-One-Guide"
 REPORT_CAP = "30"              # reports filed per day at most (spam can't go past it)
 TURNSTILE_SITE_KEY = "0x4AAAAAAGUKQbBf3xa4WeEI"        # the public site key from Cloudflare Turnstile (see SETUP.md)

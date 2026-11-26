@@ -90,6 +90,7 @@ def selftest(args):
                 all_ok = step(f"install {addon.folder}", False, repr(e))
         all_ok &= _selftest_backup(addons_dir, step)
         all_ok &= _selftest_share(step)
+        all_ok &= _selftest_gather(step)
         all_ok &= _selftest_later(step)
         all_ok &= _selftest_file_install(addons_dir, step)
         all_ok &= _selftest_system(step)
@@ -148,6 +149,29 @@ def _selftest_backup(addons_dir, step):
         return step("backup", False, repr(e))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# A page made by All-in-One Guide's own code (DB\Serializer.lua + Packs\Format.lua Adler32).
+_SELFTEST_PAGE = ("AOGD1 rid=k3x9q2ab;h=1;v=0.3.0;b=1.60.1.70959;fac=A;cls=WARRIOR;race=Human;"
+                  "realm=Forever Test;loc=enUS;day=2026-11-26;cnt=3 AOGD1 k=qxp;q=783;xp=85;pl=2;"
+                  "ql=1 AOGD1 k=camp;npc=80;m=1429;x=27;y=46;n=11 AOGD1 k=drop;npc=38;it=752;"
+                  "loot=14;got=3 AOGD1 ck=bfc547a4")
+
+
+def _selftest_gather(step):
+    """Game data pages: found only under modules.gather.pages, checksum checked, a changed
+    page refused. In memory, no network."""
+    try:
+        from am import gather
+        text = ('AllinOneGuideDB = {\n\t["modules"] = {\n\t\t["gather"] = {\n'
+                '\t\t\t["live"] = {\n\t\t\t\t"' + _SELFTEST_PAGE.replace("k3x9", "live") + '",\n\t\t\t},\n'
+                '\t\t\t["pages"] = {\n\t\t\t\t"' + _SELFTEST_PAGE + '", -- [1]\n'
+                '\t\t\t\t"' + _SELFTEST_PAGE.replace("xp=85", "xp=86") + '", -- [2]\n'
+                '\t\t\t},\n\t\t},\n\t},\n}\n')
+        pages = gather.pages_in(text)
+        return step("gather", pages == [_SELFTEST_PAGE], f"{len(pages)} page found")
+    except Exception as e:
+        return step("gather", False, repr(e))
 
 
 def _selftest_share(step):
