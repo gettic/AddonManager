@@ -16,5 +16,5 @@ database_name = "addon-stats"
 database_id = "e129817a-893f-4d64-82e2-834c3d4cecee"
 
 [vars]
-ADDONS = "GuildHub,TaxiTime,NotePad,AddonManager"
+ADDONS = "GuildHub,AllinOneGuide,TaxiTime,NotePad,OnlyFriends,MiniMap,GearSet,AddonManager"
 PING_CAP = "200"

@@ -10,7 +10,7 @@
 // the IP address, request headers, request.cf (location) or any ID. No console.log.
 //
 // Settings (Worker -> Settings -> Variables and Secrets, plain text):
-//   ADDONS   = "GuildHub,TaxiTime,NotePad,AddonManager"  (names that may be counted)
+//   ADDONS   = "GuildHub,AllinOneGuide,TaxiTime,NotePad,OnlyFriends,MiniMap,GearSet,AddonManager"  (names that may be counted)
 //   PING_CAP = "200"  (pings counted per day at most; spam can't go past it)
 // Binding: D1 database as DB (tables in schema.sql).
 

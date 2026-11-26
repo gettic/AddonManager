@@ -19,7 +19,7 @@ everything is done in the browser. Menu names can differ a little from what's wr
 5. The Worker -> **Settings -> Bindings -> Add -> D1 database**: variable name `DB`, database
    `addon-stats`.
 6. The Worker -> **Settings -> Variables and Secrets**, add two plain-text variables:
-   - `ADDONS` = `GuildHub,TaxiTime,NotePad,AddonManager`
+   - `ADDONS` = `GuildHub,AllinOneGuide,TaxiTime,NotePad,OnlyFriends,MiniMap,GearSet,AddonManager`
    - `PING_CAP` = `200` (most pings counted per day; a guild sends far fewer, spam can't go past it)
 7. The Worker -> **Settings -> Observability**: turn **Workers Logs off** (Cloudflare turns them
    on by default; with them off nothing about a request, the IP address included, is kept).
