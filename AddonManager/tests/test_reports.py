@@ -1,14 +1,14 @@
 """Guide reports (am\\reports.py): reading the All-in-One Guide's outbox from the saved files
 as text only (never run, never written), the line checks (same as the addon and the
-server), each report once, nothing while the game runs, the one-time question and quiet
-sending after a yes. Everything goes to a local fake server; nothing ever goes online."""
+server), each report once, nothing while the game runs, on by default and sent quietly
+(no question), an old "Never send" (False) stays off.
+Everything goes to a local fake server; nothing ever goes online."""
 
 import gc
 import http.server
 import json
 import os
 import queue
-import re
 import threading
 import time
 import tkinter as tk
@@ -76,37 +76,23 @@ class Lines(unittest.TestCase):
         self.assertFalse(reports.valid(make_line("abc", "x" * 1600)))              # too long
         self.assertFalse(reports.valid(None))
 
-    def test_fields_and_summary(self):
+    def test_fields(self):
         f = reports.fields(LINE_A)
         self.assertEqual(f["note"], "Wrong spot; a=b | 100%\næøå")
         self.assertEqual((f["pk"], f["sid"]), ("demo-elwynn", "e5"))
-        s = reports.summary(LINE_A)
-        self.assertTrue(s.startswith('Wrong place on the map, step e5: "Wrong spot; a=b'), s)
-        self.assertNotIn("demo-elwynn", s)   # no raw guide ids
-        self.assertIn("map position", s)
-        self.assertTrue(reports.summary(LINE_B).startswith("Dangerous spot, step e7:"))
-        self.assertIn("no location", reports.summary(LINE_B))
+        self.assertEqual(reports.fields(LINE_B)["noloc"], "1")
 
-    def test_question_says_public_names_and_position(self):
-        title, text = reports.question([("AllinOneGuide", LINE_A), ("AllinOneGuide", LINE_B)])
-        self.assertEqual(title, "Guide reports")
-        self.assertTrue(text.startswith("2 guide reports you made in the game are waiting:"))
-        self.assertIn("Send guide reports automatically from now on?", text)
-        self.assertIn("Anyone can read them on the guide's GitHub page", text)
-        self.assertIn("keep names out of your note", text)
-        for fact in ("the step", "your note", "level", "class", "race", "language",
-                     "game and addon version", "map position", "Leave out my location",
+    def test_settings_note_says_public_and_what_is_sent(self):
+        self.assertEqual(ui.REPORTS_TEXT, "Send guide reports")
+        note = ui.REPORTS_NOTE
+        for fact in ("On unless you switch it off", "once the game is closed",
+                     "Anyone can read them on the guide's GitHub page",
+                     "keep names out of your note", "the step", "your note", "level", "class",
+                     "race", "language", "game and addon version", "map position if you allowed it",
                      "Never your name or account"):
-            self.assertIn(fact, text)
-            if fact not in ("the step", "Leave out my location", "Never your name or account"):
-                self.assertIn(fact.replace("your note", "note"), ui.REPORTS_NOTE)
-        self.assertIn("Never your name or account", ui.REPORTS_NOTE)
-        self.assertIn("GitHub page", ui.REPORTS_NOTE)
-        self.assertNotIn("Leave out my location", ui.REPORTS_NOTE)
-        self.assertTrue(reports.question([("AllinOneGuide", LINE_A)])[1].startswith(
-            "1 guide report you made in the game is waiting:"))
-        many = [("AllinOneGuide", make_line(f"r{i}")) for i in range(5)]
-        self.assertIn("and 2 more", reports.question(many)[1])
+            self.assertIn(fact, note)
+        self.assertFalse(hasattr(reports, "question"))
+        self.assertFalse(hasattr(ui, "REPORTS_YES"))
 
 
 class Reading(unittest.TestCase):
@@ -335,92 +321,73 @@ class WindowTests(unittest.TestCase):
             self.root.update()
             time.sleep(0.02)
 
-    def test_asked_once_then_sent_quietly_each_once(self):
+    def test_on_by_default_sent_quietly_each_once(self):
         write_saved(self.addons, "X", saved_file([LINE_A, LINE_B]))
         app = self.make_app()
+        self.assertTrue(app.report_var.get())
         self.pump(app, until=lambda: len(self.server.requests) >= 2)
-        self.assertEqual(len(self.asked), 1)
-        title, text, ok, cancel = self.asked[0]
-        self.assertEqual((title, ok, cancel), ("Guide reports", ui.REPORTS_YES, ui.REPORTS_NO))
-        self.assertIn("Anyone can read them", text)
+        self.assertEqual(self.asked, [])   # never asked
         self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A, LINE_B])
         s = config.load_settings()
-        self.assertIs(s[reports.ON_SETTING], True)
+        self.assertNotIn(reports.ON_SETTING, s)   # nothing saved: still the default
         self.assertEqual(s[reports.SENT_SETTING], ["k3x9qa", "zz9abc"])
-        # Next start with one new report: no question, only the new one goes.
+        # Next start with one new report: only the new one goes.
         write_saved(self.addons, "X", saved_file([make_line("newone"), LINE_A, LINE_B]))
         self.new_root()
         app2 = self.make_app()
         self.pump(app2, until=lambda: len(self.server.requests) >= 3)
-        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(self.asked, [])
         self.assertEqual(len(self.server.requests), 3)
         self.assertEqual(self.server.payloads()[2]["r"], make_line("newone"))
 
-    def test_no_means_never(self):
-        self.answer = False
+    def test_old_never_send_stays_off(self):
+        """A False saved by the old question ("Never send") stays off for good."""
+        config.save_settings({reports.ON_SETTING: False})
+        write_saved(self.addons, "X", saved_file([LINE_A]))
+        for _ in range(2):
+            app = self.make_app()
+            self.assertFalse(app.report_var.get())
+            self.pump(app)
+            self.pump(app)
+            self.new_root()
+        self.assertEqual((self.asked, self.server.requests), ([], []))
+        self.assertIs(config.load_settings()[reports.ON_SETTING], False)
+        # Only the Settings switch turns it back on: sent at once.
+        app = self.make_app()
+        self.pump(app)
+        app.open_settings(show=False)
+        self.assertFalse(app.report_var.get())
+        app.report_var.set(True)
+        app.toggle_reports()
+        self.assertIs(config.load_settings()[reports.ON_SETTING], True)
+        self.pump(app, until=lambda: self.server.requests)
+        self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A])
+        app.close_settings()
+
+    def test_old_send_automatically_carries_on(self):
+        config.save_settings({reports.ON_SETTING: True})
         write_saved(self.addons, "X", saved_file([LINE_A]))
         app = self.make_app()
-        self.pump(app, until=lambda: self.asked)
+        self.pump(app, until=lambda: self.server.requests)
+        self.assertEqual(self.asked, [])
+        self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A])
+        self.assertIs(config.load_settings()[reports.ON_SETTING], True)
+
+    def test_switched_off_in_settings_nothing_next_run(self):
+        app = self.make_app(report_url="")   # this run sends nothing (no address)
         self.pump(app)
-        self.assertEqual(self.server.requests, [])
+        app.open_settings(show=False)
+        self.assertTrue(app.report_var.get())
+        app.report_var.set(False)
+        app.toggle_reports()
+        app.close_settings()
         self.assertIs(config.load_settings()[reports.ON_SETTING], False)
+        write_saved(self.addons, "X", saved_file([LINE_A]))
         self.new_root()
         app2 = self.make_app()
         self.pump(app2)
-        self.assertEqual(len(self.asked), 1)   # never asked again
-        self.assertEqual(self.server.requests, [])
-        # The Settings switch turns it on: sent at once.
-        app2.open_settings(show=False)
-        self.assertFalse(app2.report_var.get())
-        app2.report_var.set(True)
-        app2.toggle_reports()
-        self.pump(app2, until=lambda: self.server.requests)
-        self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A])
-        app2.close_settings()
-
-    def test_closing_the_question_asks_again_next_time(self):
-        """X or Esc (None from the question) is not "Never send": nothing saved or sent."""
-        self.answer = None
-        write_saved(self.addons, "X", saved_file([LINE_A]))
-        app = self.make_app()
-        self.pump(app, until=lambda: self.asked)
-        self.pump(app)
-        self.assertEqual(len(self.asked), 1)
-        self.assertEqual(self.server.requests, [])
-        self.assertNotIn(reports.ON_SETTING, config.load_settings())
-        self.assertFalse(app.report_var.get())
-        self.new_root()
-        self.answer = True
-        app2 = self.make_app()
-        self.pump(app2, until=lambda: self.server.requests)
-        self.assertEqual(len(self.asked), 2)   # asked again
-        self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A])
-
-    def test_real_question_x_and_esc_answer_none(self):
-        app = self.make_app(report_url="")
-        self.pump(app)
-        for how in ("x", "esc", "no", "yes"):
-            got = []
-            parts = app._reports_parts("Guide reports", "text", got.append)
-            win = parts["win"]
-            self.assertIs(parts["focus"], parts["cancel"])   # a stray key never says yes
-            self.assertEqual((parts["ok"].cget("text"), parts["cancel"].cget("text")),
-                             (ui.REPORTS_YES, ui.REPORTS_NO))
-            if how == "x":
-                self.root.tk.call(win.protocol("WM_DELETE_WINDOW"))
-            elif how == "esc":
-                # the key's own binding (event fields filled with 0: it ignores them)
-                win.tk.eval(re.sub(r"%[#A-Za-z]", "0", win.bind("<Escape>")))
-            elif how == "no":
-                parts["cancel"].invoke()
-            else:
-                parts["ok"].invoke()
-            self.assertEqual(got[:1], [{"x": None, "esc": None, "no": False, "yes": True}[how]],
-                             how)
-            try:
-                win.destroy()
-            except tk.TclError:
-                pass
+        self.pump(app2)
+        self.assertEqual((self.asked, self.server.requests), ([], []))
 
     def test_nothing_while_the_game_runs(self):
         self.game = True
@@ -429,9 +396,9 @@ class WindowTests(unittest.TestCase):
         self.pump(app)
         self.pump(app)
         self.assertEqual((self.asked, self.server.requests), ([], []))
-        self.assertNotIn(reports.ON_SETTING, config.load_settings())
+        self.assertNotIn(reports.SENT_SETTING, config.load_settings())
 
-    def test_nothing_to_send_no_question(self):
+    def test_nothing_to_send(self):
         write_saved(self.addons, "X", saved_file([], kept=[LINE_A]))
         app = self.make_app()
         self.pump(app)

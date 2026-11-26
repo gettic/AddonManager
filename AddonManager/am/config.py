@@ -94,7 +94,7 @@ SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": st
                  "send_later_v": int,   # the tick's wording it was given under
                  "backup_spoken": str,  # "skip" / "keep" the Spoken addons in backups
                  "save_zip_folder": str,   # Save zip...'s last folder (never a code)
-                 "send_reports": bool,     # guide reports: True = send automatically, False = never
+                 "send_reports": bool,     # guide reports: missing/True = send, False = never
                  "reports_sent": list,     # ids of guide reports already sent (am\reports.py)
                  "window": str}         # main window "WxH+X+Y" (ui.App.restore_geometry)
 

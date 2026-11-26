@@ -82,12 +82,12 @@ BETA_NOTE = ("Also offer test (beta) versions when newer than the normal one; In
 SHARE_TEXT = "Share anonymous counts"
 SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and whether "
               "they're up to date. No name, account or ID. Only the app's maker sees the totals.")
-REPORTS_TEXT = "Send guide reports automatically"
-REPORTS_NOTE = ("Sends the All-in-One Guide reports you made in the game, once the game is "
-                "closed. Anyone can read them on the guide's GitHub page, so keep names out of "
-                "your note. Holds the step, your note, level, class, race, language, game and "
-                "addon version, and map position if you allowed it. Never your name or account.")
-REPORTS_YES, REPORTS_NO = "Send automatically", "Never send"
+REPORTS_TEXT = "Send guide reports"
+REPORTS_NOTE = ("On unless you switch it off. When you press Send on a report in the "
+                "All-in-One Guide, the app sends it once the game is closed. Anyone can read "
+                "them on the guide's GitHub page, so keep names out of your note. Holds the "
+                "step, your note, level, class, race, language, game and addon version, and "
+                "map position if you allowed it. Never your name or account.")
 
 
 class Tooltip:
@@ -140,9 +140,9 @@ def _share_on(settings):
 
 
 def _reports_on(settings):
-    """Send guide reports: True / False, or None while the player wasn't asked yet."""
-    value = settings.get(reports.ON_SETTING)
-    return value if isinstance(value, bool) else None
+    """Send guide reports: on unless the player switched it off (missing = on, like the
+    anonymous counts; a False saved by the old "Never send" answer stays off)."""
+    return settings.get(reports.ON_SETTING) is not False
 
 
 def _is_installed_beta(row, installed_v):
@@ -394,8 +394,8 @@ class App:
         # Show beta versions: off by default. Share anonymous counts: on by default.
         self.beta_var = tk.BooleanVar(value=self.settings.get("show_betas") is True)
         self.share_var = tk.BooleanVar(value=_share_on(self.settings))
-        # Send guide reports: off until the player said yes (asked once, see _reports_found).
-        self.report_var = tk.BooleanVar(value=_reports_on(self.settings) is True)
+        # Send guide reports: on by default, sent quietly (see _reports_found).
+        self.report_var = tk.BooleanVar(value=_reports_on(self.settings))
         self.settings_win = self.beta_check = self.share_check = self.report_check = None
         self.backup_win = None   # the Backup window (am\backup_ui.BackupWindow) while open
         self.settings_button = ttk.Button(buttons, text=SETTINGS_BUTTON, width=width,
@@ -1515,7 +1515,7 @@ class App:
         theme.heading(frame, "Settings").pack(fill="x")
         self.beta_var.set(self.settings.get("show_betas") is True)
         self.share_var.set(_share_on(config.load_settings()))
-        self.report_var.set(_reports_on(config.load_settings()) is True)
+        self.report_var.set(_reports_on(config.load_settings()))
         checks = []
         for text, var, command, note in (
                 (BETA_TEXT, self.beta_var, self.toggle_betas, BETA_NOTE),
@@ -2042,12 +2042,12 @@ class App:
     def _maybe_find_reports(self, force=False):
         """Guide reports (see am\\reports.py): once per run, after the addon list, look in
         the saved files for reports the player pressed Send on in the game (in a thread;
-        nothing while the game runs, nothing at all once the player said Never send).
+        nothing while the game runs, nothing at all while the switch is off).
         force: the Settings switch was turned on (look again now)."""
         if ((self._reports_started and not force) or self._reports_sending or not self.report_url
                 or not self.addons_dir):
             return
-        if _reports_on(config.load_settings()) is False:
+        if not _reports_on(config.load_settings()):
             return
         try:
             accounts = backup.places(self.addons_dir).accounts
@@ -2059,62 +2059,14 @@ class App:
                          args=(self.queue, accounts, sent, self.check_game)).start()
 
     def _reports_found(self, found):
-        """Reports to send: the first time, ask once (Send automatically / Never send); then
-        send them in a thread. Closing the question (X or Esc) saves nothing and sends
-        nothing: asked again next run."""
-        settings = config.load_settings()
-        on = _reports_on(settings)
-        if on is None:
-            title, text = reports.question(found)
-            answer = self._ask_reports(title, text)
-            if answer is None:
-                log.info("Guide reports question closed: asked again next time")
-                return
-            on = bool(answer)
-            settings = config.load_settings()
-            settings[reports.ON_SETTING] = on
-            config.save_settings(settings)
-            self.settings = settings
-            if getattr(self, "report_var", None) is not None:
-                self.report_var.set(on)
-        if not on or self._reports_sending:
+        """Reports to send: sent quietly in a thread, like the anonymous counts (no
+        question; the Settings switch turns it off). Checked again here in case the
+        switch went off while the saved files were read."""
+        if not _reports_on(config.load_settings()) or self._reports_sending:
             return
         self._reports_sending = True
         threading.Thread(target=reports.send_worker, daemon=True,
                          args=(self.queue, self.report_url, found, self.allow_local)).start()
-
-    def _ask_reports(self, title, text):
-        """The guide reports question: True (Send automatically), False (Never send) or
-        None (closed with X or Esc: ask again next time). Test fakes get the four plain
-        arguments and may return None for a close."""
-        if self.confirm != self._confirm_dialog:
-            return self.confirm(title, text, REPORTS_YES, REPORTS_NO)
-        result = {"ok": None}
-
-        def answer(ok):
-            result["ok"] = ok
-            parts["win"].destroy()
-        parts = self._reports_parts(title, text, answer)
-        win = parts["win"]
-        win.update_idletasks()
-        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - win.winfo_reqwidth()) // 2)
-        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - win.winfo_reqheight()) // 3)
-        win.geometry(f"+{x}+{y}")
-        win.deiconify()
-        theme.dark_title_bar(win)
-        parts["focus"].focus_set()
-        win.grab_set()
-        self.root.wait_window(win)
-        return result["ok"]
-
-    def _reports_parts(self, title, text, answer):
-        """The question window (withdrawn), like _confirm_parts, but X and Esc answer None
-        instead of No. Like before, Never send has the focus and Enter does nothing, so a
-        stray key never says yes to sending."""
-        parts = self._confirm_parts(title, text, REPORTS_YES, REPORTS_NO, False, answer)
-        parts["win"].protocol("WM_DELETE_WINDOW", lambda: answer(None))
-        parts["win"].bind("<Escape>", lambda _e: answer(None))
-        return parts
 
     def toggle_reports(self):
         """Send guide reports switched in Settings: save it; on: look for reports now."""

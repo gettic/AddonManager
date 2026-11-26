@@ -22,9 +22,9 @@ The line holds the step, the addon and client version, the language, level/class
 unless the player ticked "Leave out my location" in the game, the map position. Never a name,
 account, path or the account folder name. The server turns it into a public GitHub issue.
 
-Asked once (settings "send_reports": missing = not asked yet, True = send automatically,
-False = never), and only when there is something to send. Closing the question (X or Esc)
-saves nothing: asked again next time. Settings has the same switch.
+On by default, like the anonymous counts: sent quietly with no question (settings
+"send_reports": missing or True = send, False = never). The player switches it off with the
+"Send guide reports" switch in Settings; a False saved earlier ("Never send") stays off.
 """
 
 import json
@@ -40,7 +40,7 @@ from am import download
 
 log = logging.getLogger(__name__)
 
-ON_SETTING = "send_reports"      # True = send automatically, False = never, missing = ask once
+ON_SETTING = "send_reports"      # missing or True = send (on by default), False = never
 SENT_SETTING = "reports_sent"    # ids of reports already sent (newest last)
 SENT_KEEP = 500                  # ids kept (the addon keeps 20 reports at most)
 TIMEOUT = 8
@@ -197,49 +197,6 @@ def fields(line):
         except Exception:   # noqa: BLE001
             out[m.group(1)] = m.group(2)
     return out
-
-
-TYPES = {"coords": "Wrong place on the map", "order": "Wrong order",
-         "missing": "Quest isn't there", "notick": "Step doesn't tick",
-         "text": "Text is wrong", "danger": "Dangerous spot", "other": "Something else"}
-
-
-def summary(line):
-    """One short line for the question: type, step, note, location or not
-    ('Wrong order, step 12: "note" (no location)'). No raw guide ids."""
-    f = fields(line)
-    what = TYPES.get(f.get("ab", ""), "Something else")
-    note = " ".join(f.get("note", "").split())
-    if len(note) > 60:
-        note = note[:57] + "..."
-    text = what
-    step = " ".join(f.get("sid", "").split())[:20]
-    if step:
-        text += f", step {step}"
-    if note:
-        text += f': "{note}"'
-    text += " (no location)" if f.get("noloc") == "1" else " (with your map position)"
-    return text
-
-
-def question(lines):
-    """Title and text of the one-time question."""
-    n = len(lines)
-    shown = [f"- {summary(line)}" for _a, line in lines[:3]]
-    if n > 3:
-        shown.append(f"- and {n - 3} more")
-    head = ("1 guide report you made in the game is waiting:" if n == 1 else
-            f"{n} guide reports you made in the game are waiting:")
-    text = "\n".join([head] + shown + [
-        "",
-        "Send guide reports automatically from now on?",
-        "",
-        "Anyone can read them on the guide's GitHub page, so keep names out of your note. "
-        "A report holds the step, your note, level, class, race, language, game and addon "
-        "version, and map position (unless you ticked \"Leave out my location\"). Never your "
-        "name or account.",
-        "You can change this later in Settings."])
-    return "Guide reports", text
 
 
 def url_ok(url, allow_local=False):
