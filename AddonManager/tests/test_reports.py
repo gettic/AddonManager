@@ -85,7 +85,8 @@ class Lines(unittest.TestCase):
     def test_settings_note_says_public_and_what_is_sent(self):
         self.assertEqual(ui.REPORTS_TEXT, "Send guide reports")
         note = ui.REPORTS_NOTE
-        for fact in ("On unless you switch it off", "once the game is closed",
+        for fact in ("On unless you switch it off",
+                     "after you /reload, log out or close the game",
                      "Anyone can read them on the guide's GitHub page",
                      "keep names out of your note", "the step", "your note", "level", "class",
                      "race", "language", "game and addon version", "map position if you allowed it",
@@ -155,13 +156,123 @@ class Reading(unittest.TestCase):
         reports.pending(self.accounts)
         self.assertEqual(state(), before)
 
-    def test_nothing_while_the_game_runs(self):
-        write_saved(self.addons, "X", saved_file([LINE_A]))
+    def test_complete(self):
+        """WoW still writing: a block or string left open = not complete."""
+        text = saved_file([LINE_A, LINE_B], kept=[make_line("kept1")])
+        self.assertTrue(reports.complete(text))
+        self.assertTrue(reports.complete(""))
+        cuts = [text.index(LINE_A) + 20, text.index('["outbox"]') + 14,
+                text.index("a } brace") + 3, text.index("AllinOneGuideRecDB") + 22,
+                len(text) // 2]
+        for cut in cuts:
+            self.assertFalse(reports.complete(text[:cut]), cut)
+        self.assertFalse(reports.complete("A = { } }"))
+        self.assertTrue(reports.complete('A = { "-- not a comment {", -- a { comment\n}\n'))
+        start = time.perf_counter()
+        self.assertFalse(reports.complete("A = {" * 200000))
+        self.assertFalse(reports.complete('A = { "' + "x" * 2000000))
+        self.assertLess(time.perf_counter() - start, 2.0)
+
+    def test_unfinished_file_skipped(self):
+        text = saved_file([LINE_A])
+        path = write_saved(self.addons, "X", text[: text.index("AllinOneGuideRecDB") + 22])
+        write_saved(self.addons, "SECOND", saved_file([LINE_B]))
+        unfinished = []
+        got = reports.pending(self.accounts, (), unfinished)
+        self.assertEqual([line for _a, line in got], [LINE_B])
+        self.assertEqual(unfinished, [path])
+
+    def test_stamp_is_stat_only(self):
+        path = write_saved(self.addons, "X", saved_file([LINE_A]))
+        st = os.stat(path)
+        self.assertEqual(reports.stamp(self.accounts), {path: (st.st_size, st.st_mtime_ns)})
+        self.assertEqual(reports.stamp(os.path.join(self.work, "nowhere")), {})
+
+    def find(self, last=None, settle=0, sleep=None, sent=()):
         q = queue.Queue()
-        reports.find_worker(q, self.accounts, [], lambda: True)
+        reports.find_worker(q, self.accounts, list(sent), last, settle,
+                            sleep or (lambda s: None))
+        msg = q.get_nowait()
         self.assertTrue(q.empty())
-        reports.find_worker(q, self.accounts, [], lambda: False)
-        self.assertEqual(q.get_nowait(), ("reports_found", [("AllinOneGuide", LINE_A)]))
+        self.assertEqual(msg[0], "reports_found")
+        return msg[1], msg[2]
+
+    def test_find_worker_reads_only_changed_settled_complete(self):
+        """The game may run: no game check; the stamp decides."""
+        self.assertEqual(self.find(), ([], {}))   # no saved file yet
+        path = write_saved(self.addons, "X", saved_file([LINE_A]))
+        found, st = self.find()
+        self.assertEqual(found, [("AllinOneGuide", LINE_A)])
+        self.assertEqual(st, reports.stamp(self.accounts))
+        # Unchanged since the last look: not opened at all.
+        real_read = reports._read
+        reads = []
+        reports._read = lambda p: reads.append(p) or real_read(p)
+        try:
+            self.assertEqual(self.find(st, sent=["k3x9qa"]), ([], st))
+            self.assertEqual(reads, [])
+            # Written again (a /reload), still changing during the settle step: wait.
+            write_saved(self.addons, "X", saved_file([LINE_B, LINE_A]))
+            def still_writing(_s):
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write("\n")
+            self.assertEqual(self.find(st, settle=5, sleep=still_writing), ([], st))
+            self.assertEqual(reads, [])
+            # Settled now: read, only the new one.
+            found, st2 = self.find(st, settle=5, sent=["k3x9qa"])
+            self.assertEqual(found, [("AllinOneGuide", LINE_B)])
+            self.assertEqual(st2, reports.stamp(self.accounts))
+            # Settled but not complete (a cut write): nothing, same stamp kept (try again).
+            text = saved_file([make_line("cut1"), LINE_B, LINE_A])
+            write_saved(self.addons, "X", text[: text.index("cut1") + 10])
+            self.assertEqual(self.find(st2, settle=5), ([], st2))
+            write_saved(self.addons, "X", text)
+            found, _st3 = self.find(st2, settle=5, sent=["k3x9qa", "zz9abc"])
+            self.assertEqual([line for _a, line in found], [make_line("cut1")])
+        finally:
+            reports._read = real_read
+
+    def test_saved_file_can_be_replaced_while_open(self):
+        """WoW renames the old file to .bak and writes a new one: never blocked by us."""
+        path = write_saved(self.addons, "X", saved_file([LINE_A]))
+        new = path + ".new"
+        with open(new, "w", encoding="utf-8") as f:
+            f.write(saved_file([LINE_B]))
+        with reports._open_shared(path) as f:
+            head = f.read(10)
+            with open(path, "ab") as w:   # written while open
+                w.write(b"\n")
+            os.replace(path, path + ".bak")   # renamed while open
+            os.replace(new, path)             # replaced while open
+        self.assertTrue(head)
+        self.assertEqual(reports.outbox_lines(reports._read(path)), [LINE_B])
+        if os.name == "nt":   # Python's own open() would have blocked the rename
+            with open(path, "rb"):
+                with self.assertRaises(PermissionError):
+                    os.replace(path, path + ".bak2")
+        # While the app reads, a write from "WoW" still goes through.
+        with reports._open_shared(path):
+            os.remove(path + ".bak")
+            os.remove(path)
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(reports._read(path), "")
+
+    def test_never_read_beyond_the_saved_file(self):
+        """Only WTF\\Account\\*\\SavedVariables\\AllinOneGuide.lua is opened."""
+        write_saved(self.addons, "X", saved_file([LINE_A]))
+        sv = os.path.dirname(write_saved(self.addons, "Y", saved_file([LINE_B])))
+        with open(os.path.join(sv, "Other.lua"), "w") as f:
+            f.write(saved_file([make_line("other")]))
+        opened = []
+        real = reports._open_shared
+        reports._open_shared = lambda p: opened.append(p) or real(p)
+        try:
+            self.find()
+        finally:
+            reports._open_shared = real
+        self.assertEqual(sorted(os.path.relpath(p, self.accounts).lower() for p in opened),
+                         [os.path.join("x", "savedvariables", "allinoneguide.lua"),
+                          os.path.join("y", "savedvariables", "allinoneguide.lua")])
 
     def test_no_wtf_folder(self):
         self.assertEqual(reports.pending(os.path.join(self.work, "nowhere")), [])
@@ -249,13 +360,13 @@ class Sending(unittest.TestCase):
             q = queue.Queue()
             reports.send_worker(q, self.server.url, [("AllinOneGuide", LINE_A),
                                                      ("AllinOneGuide", LINE_B)], True)
-            self.assertEqual(q.get_nowait(), ("reports_sent", [], 0), status)
+            self.assertEqual(q.get_nowait(), ("reports_sent", [], 0, False), status)
 
     def test_offline_stops_and_keeps_the_rest(self):
         self.server.close()
         q = queue.Queue()
         reports.send_worker(q, self.server.url, [("AllinOneGuide", LINE_A)], True)
-        self.assertEqual(q.get_nowait(), ("reports_sent", [], 0))
+        self.assertEqual(q.get_nowait(), ("reports_sent", [], 0, False))
         self.server = Server()   # tearDown closes this one
 
     def test_tests_never_send_online(self):
@@ -299,12 +410,18 @@ class WindowTests(unittest.TestCase):
         self.asked.append((title, text, ok, cancel))
         return self.answer
 
-    def make_app(self, report_url=True):
+    def make_app(self, report_url=True, watch_ms=None, settle_s=0):
         if report_url is True:
             report_url = self.server.url
-        return ui.App(self.root, os.path.join(self.site, "manifest.json"), True, self.root_dir,
-                      check_game=lambda: self.game, detect=lambda: [], stats_url="",
-                      confirm=self.confirm, report_url=report_url)
+        app = ui.App(self.root, os.path.join(self.site, "manifest.json"), True, self.root_dir,
+                     check_game=lambda: self.game, detect=lambda: [], stats_url="",
+                     confirm=self.confirm, report_url=report_url)
+        self.assertEqual(app.report_watch_ms, 600000)   # every 10 minutes in the app
+        self.assertEqual(app.report_settle_s, 5)
+        if watch_ms:
+            app.report_watch_ms = watch_ms
+        app.report_settle_s = settle_s
+        return app
 
     def new_root(self):
         self.root.destroy()
@@ -314,7 +431,7 @@ class WindowTests(unittest.TestCase):
     def pump(self, app, until=None, timeout=15):
         end = time.time() + timeout
         self.root.update()
-        while time.time() < end and (app.busy or app._reports_sending or (until and not until())):
+        while time.time() < end and (app.busy or app._reports_busy or (until and not until())):
             self.root.update()
             time.sleep(0.02)
         for _ in range(10):
@@ -389,14 +506,111 @@ class WindowTests(unittest.TestCase):
         self.pump(app2)
         self.assertEqual((self.asked, self.server.requests), ([], []))
 
-    def test_nothing_while_the_game_runs(self):
+    def test_sent_while_the_game_runs(self):
+        """WoW wrote the file at a /reload: sent with the game still open."""
         self.game = True
         write_saved(self.addons, "X", saved_file([LINE_A]))
-        app = self.make_app()
+        app = self.make_app(settle_s=0.1)
+        self.pump(app, until=lambda: config.load_settings().get(reports.SENT_SETTING))
+        self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A])
+        self.assertEqual(self.asked, [])
+
+    def test_watch_sends_new_reports_while_open(self):
+        """Every check (10 minutes in the app; short here): a file WoW rewrote while the
+        app is open is read once it settled and complete; each report goes once."""
+        self.game = True
+        app = self.make_app(watch_ms=150, settle_s=0.05)
         self.pump(app)
+        self.assertIsNotNone(app._reports_after)
+        self.assertEqual(self.server.requests, [])
+        # A /reload: written.
+        write_saved(self.addons, "X", saved_file([LINE_A]))
+        self.pump(app, until=lambda: self.server.requests)
+        self.pump(app, until=lambda: config.load_settings().get(reports.SENT_SETTING))
+        # A cut write (WoW still writing): nothing; then finished: only the new one.
+        text = saved_file([LINE_B, LINE_A])
+        write_saved(self.addons, "X", text[: text.index(LINE_B) + 30])
+        time.sleep(0.6)
         self.pump(app)
-        self.assertEqual((self.asked, self.server.requests), ([], []))
-        self.assertNotIn(reports.SENT_SETTING, config.load_settings())
+        self.assertEqual(len(self.server.requests), 1)
+        self.game = False   # logged out and closed the game: the final write
+        write_saved(self.addons, "X", text)
+        self.pump(app, until=lambda: len(self.server.requests) >= 2)
+        time.sleep(0.6)   # more checks: nothing sent twice
+        self.pump(app)
+        self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A, LINE_B])
+        self.assertEqual(config.load_settings()[reports.SENT_SETTING], ["k3x9qa", "zz9abc"])
+        self.assertEqual(self.asked, [])
+
+    def test_no_overlapping_looks_during_a_slow_send(self):
+        write_saved(self.addons, "X", saved_file([LINE_A]))
+        gate = threading.Event()
+        real = reports.send_one
+        calls = []
+        def slow(*a, **kw):
+            calls.append(a[2])
+            gate.wait(10)
+            return real(*a, **kw)
+        reports.send_one = slow
+        finds = []
+        real_find = reports.find_worker
+        reports.find_worker = lambda *a, **kw: finds.append(1) or real_find(*a, **kw)
+        try:
+            app = self.make_app(watch_ms=50)
+            end = time.time() + 10
+            while not calls and time.time() < end:
+                self.root.update()
+                time.sleep(0.02)
+            for _ in range(20):   # many checks while the send hangs
+                self.root.update()
+                time.sleep(0.02)
+            self.assertEqual(len(finds), 1)
+            gate.set()
+            self.pump(app, until=lambda: config.load_settings().get(reports.SENT_SETTING))
+            for _ in range(15):
+                self.root.update()
+                time.sleep(0.02)
+        finally:
+            reports.send_one = real
+            reports.find_worker = real_find
+            gate.set()
+        self.assertEqual(calls, [LINE_A])
+        self.assertEqual(len(self.server.requests), 1)
+
+    def test_switched_off_nothing_looked_at(self):
+        """Switch off: the files aren't even stat'ed, let alone read."""
+        config.save_settings({reports.ON_SETTING: False})
+        write_saved(self.addons, "X", saved_file([LINE_A]))
+        looks = []
+        real_stamp, real_read = reports.stamp, reports._read
+        reports.stamp = lambda d: looks.append("stat") or real_stamp(d)
+        reports._read = lambda p: looks.append("read") or real_read(p)
+        try:
+            app = self.make_app(watch_ms=50)
+            self.pump(app)
+            time.sleep(0.3)
+            self.pump(app)
+            self.assertEqual(looks, [])
+            # Switched on: looked at and sent at once.
+            app.open_settings(show=False)
+            app.report_var.set(True)
+            app.toggle_reports()
+            app.close_settings()
+            self.pump(app, until=lambda: self.server.requests)
+            self.assertIn("read", looks)
+            # Off again: no more looks.
+            self.pump(app, until=lambda: config.load_settings().get(reports.SENT_SETTING))
+            app.open_settings(show=False)
+            app.report_var.set(False)
+            app.toggle_reports()
+            app.close_settings()
+            n = len(looks)
+            time.sleep(0.3)
+            self.pump(app)
+            self.assertEqual(len(looks), n)
+        finally:
+            reports.stamp, reports._read = real_stamp, real_read
+        self.assertEqual([p["r"] for p in self.server.payloads()], [LINE_A])
 
     def test_nothing_to_send(self):
         write_saved(self.addons, "X", saved_file([], kept=[LINE_A]))

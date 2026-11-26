@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.21.1
+Current version: v0.22.0
 
 ## Get it
 
@@ -292,11 +292,11 @@ What happens to it:
 
 ## Guide reports
 
-If you use the All-in-One Guide addon, you can report a wrong guide step in the game and press **Send** on its Report page. You don't need a GitHub account. The addon itself sends nothing: it only saves the report. The Addon Manager sends it later, when the game is closed.
+If you use the All-in-One Guide addon, you can report a wrong guide step in the game and press **Send** on its Report page. You don't need a GitHub account. The addon itself sends nothing: it only saves the report. WoW saves the report when you `/reload`, log out or exit, and then the Addon Manager sends it. The game can still be running.
 
 - **On by default:** the app sends the reports you pressed **Send** on, quietly and with no question, like the anonymous counts. Each report is sent once.
 - **On/off switch:** **Settings** has **Send guide reports**. Untick it and nothing is sent. If you chose "Never send" in an older version, it stays off.
-- **What it reads:** only the addon's saved file, as text, and only with the game closed. It never runs or changes that file.
+- **What it reads:** only the addon's saved file (`AllinOneGuide.lua` in your account's `SavedVariables`), as text. It never runs or changes that file. The app looks at it when it starts and every 10 minutes while it is open, and reads it once it has stopped changing. With **Send guide reports** off, the file is not looked at.
 - **What is sent:** only the report line: the step, your note, level, class, race, language, game and addon version, and your map position unless you ticked "Leave out my location" in the game. Never your name, account or a file path.
 - **Where it goes:** the report becomes a public GitHub issue on `gettic/All-in-One-Guide`. Anyone can read it, so keep names out of your note. Map positions are rounded to whole percent.
 - **If the server can't be reached:** the report waits and is sent on a later start.

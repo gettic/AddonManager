@@ -84,7 +84,8 @@ SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and
               "they're up to date. No name, account or ID. Only the app's maker sees the totals.")
 REPORTS_TEXT = "Send guide reports"
 REPORTS_NOTE = ("On unless you switch it off. When you press Send on a report in the "
-                "All-in-One Guide, the app sends it once the game is closed. Anyone can read "
+                "All-in-One Guide, the app sends it after you /reload, log out or close the "
+                "game. Anyone can read "
                 "them on the guide's GitHub page, so keep names out of your note. Holds the "
                 "step, your note, level, class, race, language, game and addon version, and "
                 "map position if you allowed it. Never your name or account.")
@@ -208,8 +209,12 @@ class App:
         if report_url is None:
             report_url = config.REPORT_URL if (app_exe and not allow_local) else ""
         self.report_url = report_url
-        self._reports_started = False   # looked for reports this run
-        self._reports_sending = False   # a send thread runs (its ids aren't saved yet)
+        self._reports_started = False   # looked for reports this run (the watch runs)
+        self._reports_busy = False      # a look or send thread runs (its ids aren't saved yet)
+        self._reports_stamp = None      # the saved files' sizes/times at the last full look
+        self._reports_after = None      # the next 10-minute look (root.after id)
+        self.report_watch_ms = reports.WATCH_S * 1000   # tests make these short
+        self.report_settle_s = reports.SETTLE_S
         # The app's own update check must be done first (latest/outdated for the app).
         self._app_checked = not app_exe or bool(updated_from)
         self._app_newer = False
@@ -1879,6 +1884,12 @@ class App:
             theme.release_images([getattr(self, "_logo", None)]
                                  + list(getattr(self.root, "_am_icons", None) or []))
             self.files.close()   # an open Add from file plan's temp folder
+            if getattr(self, "_reports_after", None):   # the 10-minute guide reports look
+                try:
+                    self.root.after_cancel(self._reports_after)
+                except tk.TclError:
+                    pass
+                self._reports_after = None
             if self._after:
                 try:
                     self.root.after_cancel(self._after)
@@ -1951,9 +1962,12 @@ class App:
             if dialog is not None and dialog.alive():
                 dialog.handle(msg)
         elif kind == "reports_found":
+            self._reports_stamp = msg[2]
             self._reports_found(msg[1])
         elif kind == "reports_sent":
-            self._reports_sending = False
+            self._reports_busy = False
+            if not msg[3]:   # offline or busy: the rest goes at the next check
+                self._reports_stamp = None
             if msg[1]:
                 self.settings = config.load_settings()
                 reports.remember(self.settings, msg[1])
@@ -2040,12 +2054,31 @@ class App:
                                stats.day(), stats.week())).start()
 
     def _maybe_find_reports(self, force=False):
-        """Guide reports (see am\\reports.py): once per run, after the addon list, look in
-        the saved files for reports the player pressed Send on in the game (in a thread;
-        nothing while the game runs, nothing at all while the switch is off).
+        """Guide reports (see am\\reports.py): after the addon list, look in the saved
+        files for reports the player pressed Send on in the game, then every 10 minutes
+        while the app is open (_reports_tick; read again only when WoW wrote the file,
+        also while the game runs: /reload, logout, exit).
         force: the Settings switch was turned on (look again now)."""
-        if ((self._reports_started and not force) or self._reports_sending or not self.report_url
-                or not self.addons_dir):
+        if self._reports_started and not force:
+            return
+        self._reports_started = True
+        if self._reports_after is None and not self.closed:
+            self._reports_after = self.root.after(self.report_watch_ms, self._reports_tick)
+        self._look_reports()
+
+    def _reports_tick(self):
+        """Every 10 minutes: look again (nothing at all while the switch is off)."""
+        self._reports_after = None
+        if self.closed:
+            return
+        self._look_reports()
+        self._reports_after = self.root.after(self.report_watch_ms, self._reports_tick)
+
+    def _look_reports(self):
+        """One look in a thread (os.stat of the saved files; read only when changed and
+        settled). Nothing while one runs, without an address or folder, or while the
+        switch is off (then the files aren't even looked at)."""
+        if self._reports_busy or not self.report_url or not self.addons_dir:
             return
         if not _reports_on(config.load_settings()):
             return
@@ -2053,18 +2086,21 @@ class App:
             accounts = backup.places(self.addons_dir).accounts
         except Exception:   # noqa: BLE001 (a bad folder: no reports, no message)
             return
-        self._reports_started = True
+        self._reports_busy = True
         sent = list(config.load_settings().get(reports.SENT_SETTING) or [])
         threading.Thread(target=reports.find_worker, daemon=True,
-                         args=(self.queue, accounts, sent, self.check_game)).start()
+                         args=(self.queue, accounts, sent, self._reports_stamp,
+                               self.report_settle_s)).start()
 
     def _reports_found(self, found):
         """Reports to send: sent quietly in a thread, like the anonymous counts (no
         question; the Settings switch turns it off). Checked again here in case the
         switch went off while the saved files were read."""
-        if not _reports_on(config.load_settings()) or self._reports_sending:
+        if not found or not _reports_on(config.load_settings()):
+            self._reports_busy = False
+            if found:   # switched off meanwhile: read them again if it goes back on
+                self._reports_stamp = None
             return
-        self._reports_sending = True
         threading.Thread(target=reports.send_worker, daemon=True,
                          args=(self.queue, self.report_url, found, self.allow_local)).start()
 
@@ -2074,6 +2110,7 @@ class App:
         self.settings[reports.ON_SETTING] = bool(self.report_var.get())
         config.save_settings(self.settings)
         if self.report_var.get():
+            self._reports_stamp = None   # read the files again, changed or not
             self._maybe_find_reports(force=True)
 
     def close(self):
