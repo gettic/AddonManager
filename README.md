@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.20.2
+Current version: v0.21.0
 
 ## Get it
 
@@ -259,7 +259,7 @@ Both are in `%APPDATA%\AddonManager` on Windows (paste it into the Windows Explo
 
 | File | What it holds |
 | --- | --- |
-| `settings.json` | the WoW Forever folder you chose, the "Show beta versions" and "Share anonymous counts" choices, and the day and week of the last usage ping |
+| `settings.json` | the WoW Forever folder you chose, the "Show beta versions", "Share anonymous counts" and "Send guide reports automatically" choices, the day and week of the last usage ping, and the ids of guide reports already sent |
 | `cache.json` | the latest versions found, kept for 10 minutes |
 | `log.txt` | details of errors; show it to the guild officer if something goes wrong |
 
@@ -289,6 +289,19 @@ What happens to it:
 - In a small guild, a total of 1 may show who that is. Turn it off if you don't want that.
 - The counter's code is public: see `AddonManager\stats_worker\`.
 - If the counter can't be reached, nothing changes. The app works as usual.
+
+## Guide reports
+
+If you use the All-in-One Guide addon, you can report a wrong guide step in the game and press **Send** on its Report page. You don't need a GitHub account. The addon itself sends nothing: it only saves the report. The Addon Manager sends it later, when the game is closed.
+
+- **Asked once:** the first time there is a report, the app asks "Send guide reports automatically from now on?" with **Send automatically** and **Never send**. If you close the question (X or Esc), nothing is saved and it asks again next time. After that it sends quietly, each report once.
+- **On/off switch:** **Settings** has **Send guide reports automatically**. Untick it and nothing is sent.
+- **What it reads:** only the addon's saved file, as text, and only with the game closed. It never runs or changes that file.
+- **What is sent:** only the report line: the step, your note, level, class, race, language, game and addon version, and your map position unless you ticked "Leave out my location" in the game. Never your name, account or a file path.
+- **Where it goes:** the report becomes a public GitHub issue on `gettic/All-in-One-Guide`. Anyone can read it, so keep names out of your note. Map positions are rounded to whole percent.
+- **If the server can't be reached:** the report waits and is sent on a later start.
+- **Without the Addon Manager:** copy the report in the game and paste it on the report web page: https://aog-report.gtd-relay.workers.dev
+- The server's code is public: see `AddonManager\report_worker\`.
 
 ## For addon makers
 

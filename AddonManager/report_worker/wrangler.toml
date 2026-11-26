@@ -1,0 +1,30 @@
+# Guide reports (see SETUP.md). No secrets here: GITHUB_TOKEN and TURNSTILE_SECRET are
+# Worker secrets (npx wrangler secret put ...), never in this file or the repo.
+name = "aog-report"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+# Logs OFF: nothing about a request (IP address included) is kept.
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "guide-reports"
+database_id = "be4ab228-2bc2-4194-b269-5b010d47f2b0"
+
+# Reports GitHub didn't take at once are filed by this (every 30 minutes, free).
+[triggers]
+crons = ["*/30 * * * *"]
+
+# Per-IP limit (the IP is only the key, never stored). Approximate, per Cloudflare location.
+[[ratelimits]]
+name = "REPORT_LIMIT"
+namespace_id = "7303"
+simple = { limit = 5, period = 60 }
+
+[vars]
+REPO = "gettic/All-in-One-Guide"
+REPORT_CAP = "30"              # reports filed per day at most (spam can't go past it)
+TURNSTILE_SITE_KEY = "0x4AAAAAAGUKQbBf3xa4WeEI"        # the public site key from Cloudflare Turnstile (see SETUP.md)

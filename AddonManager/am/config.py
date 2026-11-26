@@ -46,6 +46,11 @@ STATS_URL = "https://guild-stats.gtd-relay.workers.dev/ping"
 # are hidden and nothing is ever sent.
 SHARE_URL = "https://guild-share.gtd-relay.workers.dev"
 
+# Guide reports (see am\reports.py and report_worker\): where the All-in-One Guide's
+# "Send" reports go, e.g. "https://aog-report.<subdomain>.workers.dev/report". Public, not a
+# secret. Empty = nothing is ever sent. Only the built app (not dev runs or self-tests) uses it.
+REPORT_URL = "https://aog-report.gtd-relay.workers.dev/report"
+
 HOME_ENV = "ADDONMANAGER_HOME"
 
 
@@ -89,6 +94,8 @@ SETTING_TYPES = {"wow_folder": str, "wow_folder_source": str, "manifest_url": st
                  "send_later_v": int,   # the tick's wording it was given under
                  "backup_spoken": str,  # "skip" / "keep" the Spoken addons in backups
                  "save_zip_folder": str,   # Save zip...'s last folder (never a code)
+                 "send_reports": bool,     # guide reports: True = send automatically, False = never
+                 "reports_sent": list,     # ids of guide reports already sent (am\reports.py)
                  "window": str}         # main window "WxH+X+Y" (ui.App.restore_geometry)
 
 

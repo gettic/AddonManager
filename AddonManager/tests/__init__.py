@@ -32,6 +32,9 @@ config.GITHUB_API = "https://127.0.0.1:9"
 # ...and no usage ping ever goes out (stats tests pass their own local server).
 REAL_STATS_URL = config.STATS_URL
 config.STATS_URL = ""
+# ...and no guide report ever goes to the real report server (test_reports.py runs its own).
+REAL_REPORT_URL = config.REPORT_URL
+config.REPORT_URL = ""
 # ...and no backup is ever sent to the real relay (share tests use tests\fake_relay.py).
 REAL_SHARE_URL = config.SHARE_URL
 config.SHARE_URL = ""
