@@ -24,10 +24,14 @@ log = logging.getLogger(__name__)
 API_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 CACHE_SECONDS = 10 * 60
 _DIGEST_RE = re.compile(r"sha256:([0-9a-f]{64})", re.IGNORECASE)   # used with fullmatch
+_MAIN_TAG_RE = re.compile(r"[vV]?[0-9].*", re.DOTALL)   # an addon's own tags: v1.2.0 / 1.2.0
+PER_PAGE = 100   # releases per list request (GitHub's most)
+MAX_PAGES = 3    # more pages only while a wanted stream has nothing at all yet
 
 
 class ReleaseError(Exception):
     """kind: no_release, beta_only (only pre-releases while betas are off), no_asset,
+    not_out (a tag-prefixed entry, e.g. a guide pack, with no release of its own yet),
     rate_limited, offline, timeout, certificate, bad.
     wait: seconds until GitHub's limit resets (rate_limited)."""
 
@@ -89,9 +93,10 @@ def _cached(cache, key):
     return None
 
 
-def cache_key(base, repo):
-    """Cache key of a repo's newest normal release + newest pre-release."""
-    return f"{base}|{repo}|releases"
+def cache_key(base, repo, prefix=""):
+    """Cache key of a repo's newest normal release + newest pre-release (of the stream
+    with that tag prefix; the plain key is the addon's own tags, as before)."""
+    return f"{base}|{repo}|releases" + (f"|{prefix}" if prefix else "")
 
 
 def _cached_releases(cache, key):
@@ -145,10 +150,10 @@ def _published(raw):
     return when
 
 
-def _newer(a, b):
+def _newer(a, b, prefix=""):
     """True if candidate a = (release, published, list position) beats b: the higher version;
     same or not comparable -> the later published_at; no dates (or equal) -> earlier in the list."""
-    c = versions.compare(plain_tag(a[0]["tag"]), plain_tag(b[0]["tag"]))
+    c = versions.compare(plain_tag(a[0]["tag"], prefix), plain_tag(b[0]["tag"], prefix))
     if c in (1, -1):
         return c == 1
     if a[1] is not None and b[1] is not None and a[1] != b[1]:
@@ -156,35 +161,28 @@ def _newer(a, b):
     return a[2] < b[2]
 
 
-def newest_releases(repo, base, timeout=20):
-    """GET <base>/repos/<repo>/releases (up to 100 in one call) ->
-    (newest normal release or None, newest pre-release published after it or None).
-    GitHub's list is not in version order (v0.0.1-beta.9 can come before beta.10), so the
-    newest is picked by version (see _newer), never by list position. A pre-release published
-    before the chosen normal release is ignored (by published_at; without dates, by list
-    position). A beta is what GitHub flags as a pre-release (whatever its tag). Drafts are skipped."""
-    if not manifest_mod.is_safe_repo(repo):
-        raise ReleaseError("bad", f"repo {repo!r}")
-    url = f"{base}/repos/{repo}/releases"
-    if not url.startswith("file:"):   # the file-based fake API (dev only) has no query
-        url += "?per_page=100"
-    data = _get_json(url, repo, timeout)
-    if not isinstance(data, list):
-        raise ReleaseError("bad", "release list is not a list")
+def in_stream(tag, prefix=""):
+    """True if a release tag belongs to the stream: no prefix = the addon's own tags
+    (v1.2.0, 1.2.0-beta.1; never a pack's alliance-v...); a prefix = <prefix>v<version> or
+    <prefix><version> with a version that can be compared (strict: odd tags are skipped)."""
+    tag = (tag or "").strip()
+    if not prefix:
+        return bool(_MAIN_TAG_RE.fullmatch(tag))
+    if tag[:len(prefix)].lower() != prefix.lower():
+        return False
+    return versions.parse_full(plain_tag(tag, prefix)) is not None
+
+
+def _pick_stream(cands, prefix):
+    """(newest normal, newest pre-release published after it) of one stream, as candidates."""
     stable = beta = None
-    for pos, raw in enumerate(data):
-        if not isinstance(raw, dict) or raw.get("draft"):
+    for cand in cands:
+        if not in_stream(cand[0]["tag"], prefix):
             continue
-        try:
-            release = _trim(raw)
-        except ReleaseError:
-            log.warning("Unreadable release in %s skipped", repo)
-            continue
-        cand = (release, _published(raw), pos)
-        if release["prerelease"]:
-            if beta is None or _newer(cand, beta):
+        if cand[0]["prerelease"]:
+            if beta is None or _newer(cand, beta, prefix):
                 beta = cand
-        elif stable is None or _newer(cand, stable):
+        elif stable is None or _newer(cand, stable, prefix):
             stable = cand
     if beta is not None and stable is not None:
         if beta[1] is not None and stable[1] is not None:
@@ -193,16 +191,62 @@ def newest_releases(repo, base, timeout=20):
             stale = beta[2] > stable[2]
         if stale:   # pre-releases older than the newest normal release don't matter
             beta = None
-    return (stable[0] if stable else None), (beta[0] if beta else None)
+    return stable, beta
 
 
-def choose(stable, beta, show_betas):
+def newest_streams(repo, base, prefixes=("",), timeout=20):
+    """GET <base>/repos/<repo>/releases (up to 100 in one call) -> {prefix: (newest normal
+    release or None, newest pre-release published after it or None)} for each wanted tag
+    prefix ("" = the addon's own tags). One list for all streams of the repo. GitHub's list is
+    not in version order (v0.0.1-beta.9 can come before beta.10), so the newest is picked by
+    version (see _newer), never by list position. A pre-release published before the chosen
+    normal release of its stream is ignored (by published_at; without dates, by list
+    position). A beta is what GitHub flags as a pre-release (whatever its tag). Drafts are
+    skipped. A full page where a wanted stream has nothing at all is followed by the next
+    page (at most MAX_PAGES)."""
+    if not manifest_mod.is_safe_repo(repo):
+        raise ReleaseError("bad", f"repo {repo!r}")
+    prefixes = list(dict.fromkeys(prefixes or ("",)))
+    url = f"{base}/repos/{repo}/releases"
+    file_api = url.startswith("file:")   # the file-based fake API (dev only) has no query
+    cands, picked, pos = [], {}, 0
+    for page in range(1, MAX_PAGES + 1):
+        page_url = url if file_api else f"{url}?per_page={PER_PAGE}" + (
+            f"&page={page}" if page > 1 else "")
+        data = _get_json(page_url, repo, timeout)
+        if not isinstance(data, list):
+            raise ReleaseError("bad", "release list is not a list")
+        for raw in data:
+            pos += 1
+            if not isinstance(raw, dict) or raw.get("draft"):
+                continue
+            try:
+                release = _trim(raw)
+            except ReleaseError:
+                log.warning("Unreadable release in %s skipped", repo)
+                continue
+            cands.append((release, _published(raw), pos))
+        picked = {p: _pick_stream(cands, p) for p in prefixes}
+        if file_api or len(data) < PER_PAGE or all(
+                st is not None or be is not None for st, be in picked.values()):
+            break
+    return {p: ((st[0] if st else None), (be[0] if be else None))
+            for p, (st, be) in picked.items()}
+
+
+def newest_releases(repo, base, timeout=20):
+    """The addon's own stream of newest_streams (no tag prefix): (normal, pre-release)."""
+    return newest_streams(repo, base, ("",), timeout)[""]
+
+
+def choose(stable, beta, show_betas, prefix=""):
     """(release, is_beta) to offer. The pre-release (published after the newest normal
     release) only with show_betas, and not if its version is the same or lower; a tag
     that can't be compared (e.g. v1.1.0beta) counts as newer, as it was published later."""
     if show_betas and beta is not None and (
             stable is None
-            or versions.compare(plain_tag(beta["tag"]), plain_tag(stable["tag"])) not in (0, -1)):
+            or versions.compare(plain_tag(beta["tag"], prefix),
+                                plain_tag(stable["tag"], prefix)) not in (0, -1)):
         return beta, True
     if stable is None:
         if beta is not None:   # only test versions so far: offered once betas are switched on
@@ -230,21 +274,28 @@ def parse_digest(value):
     return ""
 
 
-def plain_tag(tag):
-    """Tag "v1.3.0" or "1.3.0" -> "1.3.0"."""
+def plain_tag(tag, prefix=""):
+    """Tag "v1.3.0" or "1.3.0" -> "1.3.0"; with a prefix, "alliance-v1.3.0" -> "1.3.0"."""
     tag = (tag or "").strip()
+    if prefix and tag[:len(prefix)].lower() == prefix.lower():
+        tag = tag[len(prefix):]
     return tag[1:] if tag[:1] in ("v", "V") else tag
 
 
-def pick_asset(release, folder):
+def pick_asset(release, folder, prefix=""):
     """The zip to install: <folder>-<version>.zip or <folder>-v<version>.zip,
-    else the only .zip in the release. None if there's no usable one."""
-    version = plain_tag(release["tag"])
-    wanted = {f"{folder}-{version}.zip".lower(), f"{folder}-v{version}.zip".lower()}
+    else the only .zip in the release. With a tag prefix (a pack sharing its repo) only
+    exactly <folder>-v<version>.zip. None if there's no usable one."""
+    version = plain_tag(release["tag"], prefix)
+    wanted = {f"{folder}-v{version}.zip".lower()}
+    if not prefix:
+        wanted.add(f"{folder}-{version}.zip".lower())
     assets = [a for a in release["assets"] if a.get("state", "uploaded") == "uploaded"]
     for a in assets:
         if a["name"].lower() in wanted:
             return a
+    if prefix:
+        return None
     zips = [a for a in assets if a["name"].lower().endswith(".zip")]
     return zips[0] if len(zips) == 1 else None
 
@@ -274,10 +325,10 @@ def apply_release(addon, release, allow_local, beta=False, beta_version="", stab
     (beta: it is a pre-release; beta_version: the newest pre-release's version, offered
     or not; stable_version: the newest normal release's version). Outside dev mode the copy has strict_hosts set: every redirect of its
     download must stay on https GitHub hosts (see download.github_host_ok)."""
-    version = plain_tag(release["tag"])
+    version = plain_tag(release["tag"], addon.tag_prefix)
     if not version or not manifest_mod._VERSION_RE.fullmatch(version):
         raise ReleaseError("bad", f"tag {release['tag']!r}")
-    asset = pick_asset(release, addon.folder)
+    asset = pick_asset(release, addon.folder, addon.tag_prefix)
     if asset is None:
         raise ReleaseError("no_asset", f"{addon.repo} {release['tag']}")
     if not download_allowed(asset["url"], addon.repo, allow_local):
@@ -310,14 +361,21 @@ def save_cache(path, cache):
 
 
 def _apply_pair(addon, pair, allow_local, show_betas):
-    """addon filled in from (newest normal release, newest pre-release)."""
-    release, is_beta = choose(pair[0], pair[1], show_betas)
+    """addon filled in from (newest normal release, newest pre-release). A tag-prefixed
+    entry (a pack) with no release in its stream yet: ReleaseError "not_out"."""
+    prefix = addon.tag_prefix
+    try:
+        release, is_beta = choose(pair[0], pair[1], show_betas, prefix)
+    except ReleaseError as e:
+        if prefix and e.kind == "no_release":
+            raise ReleaseError("not_out", f"no {prefix} release yet") from e
+        raise
     # The beta's version, if it's one the box would offer (so an installed normal
     # version is never mistaken for it).
     beta_version = ""
-    if pair[1] is not None and choose(pair[0], pair[1], True)[1]:
-        beta_version = plain_tag(pair[1]["tag"])
-    stable_version = plain_tag(pair[0]["tag"]) if pair[0] is not None else ""
+    if pair[1] is not None and choose(pair[0], pair[1], True, prefix)[1]:
+        beta_version = plain_tag(pair[1]["tag"], prefix)
+    stable_version = plain_tag(pair[0]["tag"], prefix) if pair[0] is not None else ""
     return apply_release(addon, release, allow_local, is_beta, beta_version, stable_version)
 
 
@@ -331,7 +389,8 @@ def cached_preview(known, base=None, allow_local=False, cache_file=None, show_be
     out = []
     try:
         cache = load_cache(cache_file) if cache_file else {}
-        builtin = {a.get("folder"): a.get("repo") for a in config.BUILTIN_LIST.get("addons", [])
+        builtin = {a.get("folder"): a for a in (config.BUILTIN_LIST.get("addons", [])
+                                                 + config.BUILTIN_LIST.get("packs", []))
                    if isinstance(a, dict)}
         by_name = {}
         prefix, suffix = base + "|", "|releases"
@@ -347,10 +406,17 @@ def cached_preview(known, base=None, allow_local=False, cache_file=None, show_be
             folder, name = item
             addon = manifest_mod.Addon(folder=folder, name=name, version="", url="")
             same = by_name.get(folder.lower(), [])
-            repo = builtin.get(folder) or (same[0] if len(same) == 1 else "")
+            known_entry = builtin.get(folder) or {}
+            repo = known_entry.get("repo") or (same[0] if len(same) == 1 else "")
+            prefix = known_entry.get("tag_prefix") or ""
+            if not manifest_mod.is_safe_prefix(prefix):
+                prefix = ""
+            parent = known_entry.get("parent")
+            if manifest_mod.is_safe_folder(parent):
+                addon = dataclasses.replace(addon, parent=parent)
             if repo and manifest_mod.is_safe_repo(repo):
-                addon = dataclasses.replace(addon, repo=repo)
-                entry = _cached_releases(cache, cache_key(base, repo))
+                addon = dataclasses.replace(addon, repo=repo, tag_prefix=prefix)
+                entry = _cached_releases(cache, cache_key(base, repo, prefix))
                 if entry is not None:
                     try:
                         addon = _apply_pair(addon, (entry["release"], entry["beta"]),
@@ -442,13 +508,13 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
             plans.append(None)
             continue
         # An entry from v0.2.0 (latest normal release only): kept as a stale fallback until
-        # the first successful fetch replaces it.
+        # the first successful fetch replaces it. Never for a tag-prefixed stream.
         old_key = f"{base}|{addon.repo}"
-        old = _cached(cache, old_key)
-        if old is None and old_key in cache:
+        old = None if addon.tag_prefix else _cached(cache, old_key)
+        if old is None and old_key in cache and not addon.tag_prefix:
             cache.pop(old_key, None)
             changed = True
-        key = cache_key(base, addon.repo)
+        key = cache_key(base, addon.repo, addon.tag_prefix)
         cached = _cached_releases(cache, key)
         if cached is None and key in cache:
             log.warning("Damaged cache entry for %s dropped", addon.repo)
@@ -460,8 +526,19 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
                         "release": dict(old["release"], prerelease=False), "beta": None}
         fresh = bool(cached and use_fresh_cache and 0 <= now - cached["time"] < CACHE_SECONDS)
         plans.append((old_key, key, cached, fallback, fresh))
-    # 2. Ask GitHub for the repos that need it: a few at a time (see _fetch_all).
-    fetched = _fetch_all([a.repo for a, p in zip(addons, plans) if p and not p[4]], base)
+    # 2. Ask GitHub for the repos that need it: a few at a time (see _fetch_all). One
+    # request per repo, for every stream (tag prefix) of it in the list.
+    streams = {}
+    for a, p in zip(addons, plans):
+        if p:
+            streams.setdefault(a.repo, []).append(a.tag_prefix)
+
+    def fetch(repo, base):
+        wanted = tuple(dict.fromkeys(streams[repo]))
+        if wanted == ("",):   # the usual case: the addon's own tags only
+            return {"": newest_releases(repo, base)}
+        return newest_streams(repo, base, wanted)
+    fetched = _fetch_all([a.repo for a, p in zip(addons, plans) if p and not p[4]], base, fetch)
     # 3. Results in list order, exactly as before (one addon's problem never stops another).
     for addon, plan in zip(addons, plans):
         if plan is None:
@@ -477,7 +554,7 @@ def resolve_all(addons, base=None, allow_local=False, cache_file=None, use_fresh
                     status, value = fetched[addon.repo]
                     if status == "error":
                         raise value
-                    pair = value
+                    pair = value[addon.tag_prefix]
                     cache[key] = {"time": now, "release": pair[0], "beta": pair[1]}
                     if cache.pop(old_key, None) is not None:
                         log.info("Old cache entry for %s replaced", addon.repo)

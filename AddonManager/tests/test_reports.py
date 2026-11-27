@@ -82,15 +82,32 @@ class Lines(unittest.TestCase):
         self.assertEqual((f["pk"], f["sid"]), ("demo-elwynn", "e5"))
         self.assertEqual(reports.fields(LINE_B)["noloc"], "1")
 
+    def test_newer_and_unknown_fields_pass(self):
+        # the guide's newer report fields and a field no list knows yet: the app sends them as is
+        body = ("AOGR2 rid=n1;v=0.3.0;ab=other;pk=demo-elwynn;sid=e1;ss=now+pin;qo=3/8,1/1;"
+                "aw=ext:1429,41.2,65.0;rl=Forever;set=sa1,hmauto;zz9=1;note=x")
+        line = f"{body};ck={reports.checksum(body)}"
+        self.assertTrue(reports.valid(line))
+        f = reports.fields(line)
+        self.assertEqual((f["ss"], f["qo"], f["zz9"], f["set"]), ("now+pin", "3/8,1/1", "1", "sa1,hmauto"))
+        server = Server()
+        try:
+            self.assertEqual(reports.send_one(server.url, "AllinOneGuide", line, True), "sent")
+            self.assertEqual(server.payloads(), [{"v": 1, "a": "AllinOneGuide", "r": line}])
+        finally:
+            server.close()
+
     def test_settings_note_says_public_and_what_is_sent(self):
         self.assertEqual(ui.REPORTS_TEXT, "Send guide reports")
         note = ui.REPORTS_NOTE
         for fact in ("On unless you switch it off",
                      "after you /reload, log out or close the game",
                      "Anyone can read them on the guide's GitHub page",
-                     "keep names out of your note", "the step", "your note", "level", "class",
-                     "race", "language", "game and addon version", "map position if you allowed it",
-                     "Never your name or account"):
+                     "keep names out of your note", "the step, its state and quests",
+                     "your quest log", "the arrow's target", "your note", "level", "class",
+                     "race", "faction", "spec", "game/addon version",
+                     "the targeted NPC's number", "map position if allowed",
+                     "The page never shows your name, realm or account"):
             self.assertIn(fact, note)
         self.assertFalse(hasattr(reports, "question"))
         self.assertFalse(hasattr(ui, "REPORTS_YES"))

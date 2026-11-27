@@ -71,6 +71,29 @@ def _selftest_releases(addons, api):
     return addons, problems, beta_only
 
 
+def _selftest_not_out(addons, problems):
+    """Packs that aren't out yet (a tag-prefixed entry with no release of its own: kind
+    "not_out") are a normal state (the player sees no row), not a failure: they leave the
+    problems and the install steps. -> (addons, problems, not_out folders)."""
+    not_out = sorted(f for f, e in problems.items() if getattr(e, "kind", "") == "not_out")
+    return ([a for a in addons if a.folder not in not_out],
+            {f: e for f, e in problems.items() if f not in not_out}, not_out)
+
+
+def _selftest_problem_text(problems):
+    """Release problems for the self-test report, with each one's kind and reason, so a
+    failed run shows whether it was GitHub's limit, the network or a real bug."""
+    if not problems:
+        return "none"
+    parts = []
+    for folder in sorted(problems):
+        e = problems[folder]
+        reason = str(getattr(e, "detail", e))[:120]
+        parts.append(f"{folder} ({getattr(e, 'kind', type(e).__name__)}"
+                     f"{': ' + reason if reason else ''})")
+    return "; ".join(parts)
+
+
 def selftest(args):
     """Headless check used on the built .exe. Never uses the real WoW folder:
     --manifest and --wow are required."""
@@ -89,10 +112,12 @@ def selftest(args):
         step("manifest", m.addons, f"{len(m.addons)} addons")
         api = github.api_base(args.github_api, True)
         m.addons, problems, beta_only = _selftest_releases(m.addons, api)
+        m.addons, problems, not_out = _selftest_not_out(m.addons, problems)
         releases_ok = step("releases", not problems,
                            f"{sum(1 for a in m.addons if a.repo)} from GitHub-style releases; "
                            f"beta only: {beta_only or 'none'}; "
-                           f"problems: {sorted(problems) or 'none'}")
+                           f"not out yet: {not_out or 'none'}; "
+                           f"problems: {_selftest_problem_text(problems)}")
         status, addons_dir = wowpath.from_picked(args.wow)
         if not step("wow folder", status == "ok", addons_dir or status):
             return report

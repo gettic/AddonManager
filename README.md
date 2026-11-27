@@ -6,7 +6,7 @@ An app for Windows and Linux (beta, for SteamOS / Steam Deck) that installs and 
 
 It is not an in-game addon. It downloads the guild's addons and puts them into your WoW Forever `Interface\AddOns` folder.
 
-Current version: v0.22.0
+Current version: v0.24.0
 
 ## Get it
 
@@ -71,6 +71,15 @@ If WoW is running, the app warns you. You can still install. Afterwards type `/r
 If something fails, the app tells you in plain words and nothing is half-installed: your old version stays. Error messages say where the details are: **Settings > Open log folder**.
 
 Click a greyed-out button (or an addon's Status) and the message line says why it can't be used. This works on a touch screen too.
+
+## Guide route packs
+
+All-in-One Guide has route packs, **Alliance routes** and **Horde routes**. Once they are out, they show indented under All-in-One Guide. Until then there are no rows.
+
+- Each pack has its own **Install** button. If All-in-One Guide is missing, it is installed first.
+- If the guide can't be installed yet (for example it only has a beta and **Show beta versions** is off), the pack's row says "Needs All-in-One Guide".
+- **Install all** leaves packs you haven't picked alone. **Update all** updates the packs you have.
+- Uninstalling the guide still warns you about installed packs.
 
 ## Updating the app itself
 
@@ -298,8 +307,8 @@ If you use the All-in-One Guide addon, you can report a wrong guide step in the 
 - **On by default:** the app sends the reports you pressed **Send** on, quietly and with no question, like the anonymous counts. Each report is sent once.
 - **On/off switch:** **Settings** has **Send guide reports**. Untick it and nothing is sent. If you chose "Never send" in an older version, it stays off.
 - **What it reads:** only the addon's saved file (`AllinOneGuide.lua` in your account's `SavedVariables`), as text. It never runs or changes that file. The app looks at it when it starts and every 10 minutes while it is open, and reads it once it has stopped changing. With **Send guide reports** off, the file is not looked at.
-- **What is sent:** only the report line: the step, your note, level, class, race, language, game and addon version, and your map position unless you ticked "Leave out my location" in the game. Never your name, account or a file path.
-- **Where it goes:** the report becomes a public GitHub issue on `gettic/All-in-One-Guide`. Anyone can read it, so keep names out of your note. Map positions are rounded to whole percent.
+- **What is sent:** only the report line: the step and its state, your quest progress and quest log (quest numbers), the arrow's target and distance, your note, level, class, race, faction, spec, language, game and addon version, the number of the NPC you targeted (never a player), and your map position unless you ticked "Leave out my location" in the game. Newer versions of the guide add some of these. Never your name, realm, account or a file path.
+- **Where it goes:** the report becomes a public GitHub issue on `gettic/All-in-One-Guide`. Anyone can read it, so keep names out of your note. Your realm is never shown. Map positions (also the arrow's target) are rounded to whole percent. A field the server doesn't know yet is kept only if it is a short code or number; anything longer is left out, and the report still goes through.
 - **If the server can't be reached:** the report waits and is sent on a later start.
 - **Without the Addon Manager:** copy the report in the game and paste it on the report web page: https://aog-report.gtd-relay.workers.dev
 - The server's code is public: see `AddonManager\report_worker\`.

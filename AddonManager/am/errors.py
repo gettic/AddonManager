@@ -89,7 +89,7 @@ def release_message(exc, name):
         return ("Can't check now", "The download server isn't answering. Try again in a few minutes.")
     if kind == "certificate":
         return ("Can't check now", CERTIFICATE)
-    if kind == "no_release":
+    if kind in ("no_release", "not_out"):
         return ("Not out yet", f"{name} has no release to download yet.")
     if kind == "beta_only":
         return (BETA_ONLY, f"{name} is only out as a test (beta) version so far. "
@@ -195,6 +195,19 @@ def app_updated(version_text):
 BETA_INSTALLED = "Beta installed"
 NO_NORMAL_YET = "There's no normal version of this addon yet."
 BETA_ONLY = "Beta only"   # row status: only test versions out, betas switched off
+NEEDS_PARENT = "Needs {parent}"   # a pack row whose main addon can't be installed now
+
+
+def needs_parent(parent_name, beta_only=False, removed=False):
+    """(row status, full reason) when a pack can't go in because its main addon can't
+    (removed: the player uninstalled it, so Install all / Update all leave it out)."""
+    why = (f"You uninstalled {parent_name}, so Update all leaves it out. Click this pack's "
+           f"Install button to get both again." if removed else
+           f"{parent_name} is only out as a test (beta) version so far. Switch on "
+           "\"Show beta versions\" to get both." if beta_only else
+           f"{parent_name} can't be downloaded right now. Try again later.")
+    return (NEEDS_PARENT.format(parent=parent_name),
+            f"This pack works only together with {parent_name}. {why}")
 GO_BACK_TITLE = "Go back to the normal version?"
 GO_BACK_OK = "Go back"
 GO_BACK_CANCEL = "Cancel"

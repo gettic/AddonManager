@@ -12,7 +12,8 @@
 //   POST /report  (form: r, agree, cf-turnstile-response)                         (web page)
 //   POST /data    game data pages (Addon Manager; see "game data" below; private D1 DATA)
 //
-// Checks: size, the "AOGR2 " start, the allowed characters, the field names, the Adler-32
+// Checks: size, the "AOGR2 " start, the allowed characters, the field names (unknown short ones
+// are kept as plain codes, see EXTRA_*; the realm rl is dropped), the Adler-32
 // checksum (the same as the addon's), the note's length, one issue per report id (D1), a
 // daily cap (REPORT_CAP). Names: a "Name-Realm" in the note is removed (the line is rebuilt
 // with a new checksum) and the issue gets the needs-review label; so does a note with a
@@ -36,8 +37,22 @@ const LINE_RE = /^AOGR2 rid=([a-z0-9]{1,16});[A-Za-z0-9 .,:_\/+()'!?\-%=;]*;ck=(
 // The fields of the line (DB\Serializer.lua kind R2), in order.
 const FIELDS = ["rid", "v", "c", "st", "lang", "ab", "pk", "pv", "fv", "rt", "sid", "sh", "inc", "qs",
   "cnd", "lv", "xp", "fa", "ra", "cl", "hc", "map", "x", "y", "r", "d", "noloc", "npc", "ki", "cf", "l3",
+  "ss", "ty", "pos", "dt", "bg", "ts", "qo", "pre", "ql", "qi", "it", "aw", "ah", "av", "ay", "br", "fc",
+  "nd", "ps", "rl", "sp", "set",
   "eng", "note"];
 const FIELD_SET = new Set(FIELDS);
+// The newer known fields (short codes): checked for a Name-Realm like unknown fields.
+const NEW_FIELDS = new Set(["ss", "ty", "pos", "dt", "bg", "ts", "qo", "pre", "ql", "qi", "it", "aw", "ah",
+  "av", "ay", "br", "fc", "nd", "ps", "rl", "sp", "set"]);
+// Never on a public issue (or in D1): the player's realm.
+const PRIVATE_FIELDS = ["rl"];
+// Fields a newer addon may add before this list knows them: kept when short and plain, else
+// that one field is dropped (the report is never refused for it).
+const EXTRA_KEY_RE = /^[a-z][a-z0-9]{0,5}$/;
+const EXTRA_VALUE_RE = /^[A-Za-z0-9.,:_\/+\-]{0,80}$/;   // the raw value: no %XX bytes, no spaces
+const EXTRA_MAX = 16;
+// Unknown field names that would carry the realm: always dropped.
+const EXTRA_BLOCKED = new Set(["ck", "realm", "rlm", "rn"]);
 const TYPES = {
   coords: "Wrong place on the map", order: "Wrong order", missing: "Quest isn't there",
   notick: "Step doesn't tick", text: "Text is wrong", danger: "Dangerous spot", other: "Something else",
@@ -85,6 +100,8 @@ function unescapeValue(v) {
 }
 
 // The checked fields ({rid, ab, note, ...} as plain text) and the order they came in, or null.
+// extra = unknown fields kept; dropped = unknown fields left out (droppedKeys: their names when
+// plain). null only for a broken line: never for a newer field.
 export function parseLine(line) {
   if (typeof line !== "string" || line.length > MAX_LEN) return null;
   const m = LINE_RE.exec(line);
@@ -93,17 +110,32 @@ export function parseLine(line) {
   if (adler32(body) !== m[2]) return null;
   const fields = {};
   const order = [];
+  const extra = [];
+  const droppedKeys = [];
+  const seen = new Set();
+  let dropped = 0;
   for (const part of body.slice("AOGR2 ".length).split(";")) {
     const eq = part.indexOf("=");
     if (eq < 1) return null;
     const key = part.slice(0, eq);
-    if (!FIELD_SET.has(key) || key in fields) return null;
-    fields[key] = unescapeValue(part.slice(eq + 1));
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const raw = part.slice(eq + 1);
+    if (!FIELD_SET.has(key)) {
+      const plainKey = EXTRA_KEY_RE.test(key) && !EXTRA_BLOCKED.has(key);
+      if (!plainKey || !EXTRA_VALUE_RE.test(raw) || extra.length >= EXTRA_MAX) {
+        dropped++;
+        if (plainKey) droppedKeys.push(key);
+        continue;
+      }
+      extra.push(key);
+    }
+    fields[key] = unescapeValue(raw);
     order.push(key);
   }
   if (fields.rid !== m[1]) return null;
   if (fields.note !== undefined && [...fields.note].length > NOTE_MAX) return null;
-  return { fields, order };
+  return { fields, order, extra, dropped, droppedKeys };
 }
 
 // The line again from fields (after a name was removed), with a new checksum.
@@ -113,13 +145,29 @@ export function buildLine(fields, order) {
   return body + ";ck=" + adler32(body);
 }
 
-// Removes Name-Realm from the note; rounds x / y to whole percent; flags rude words.
+// Removes Name-Realm from the note (and drops a newer/unknown field holding one); drops the
+// realm (rl); rounds x / y and the arrow's map target (aw) to whole percent; flags rude words.
 // Issues show no time of day either: the only date kept is the day (D1) and none goes in the body.
-// -> {line, fields, removed, rude}
+// -> {line, fields, removed, rude, extra, dropped, droppedKeys}
+const NAME_REALM_ONE = new RegExp(NAME_REALM_RE.source, "u");
+const AW_PLACE_RE = /^([a-z]+:\d+,)(\d{1,3}(?:\.\d+)?),(\d{1,3}(?:\.\d+)?)$/;
+
 export function cleanReport(parsed) {
   const fields = { ...parsed.fields };
   let removed = false;
   let rude = false;
+  const extraSet = new Set(parsed.extra || []);
+  // The realm (rl) is dropped; so is any newer / unknown field holding it (3+ letters, any case).
+  const realm = typeof fields.rl === "string" && fields.rl.trim().length >= 3 ? fields.rl.trim().toLowerCase() : "";
+  for (const k of PRIVATE_FIELDS) delete fields[k];
+  for (const k of Object.keys(fields)) {
+    if ((NEW_FIELDS.has(k) || extraSet.has(k)) &&
+        (NAME_REALM_ONE.test(fields[k]) || (realm && fields[k].toLowerCase().includes(realm)))) {
+      delete fields[k];
+      removed = true;
+    }
+  }
+  const extra = (parsed.extra || []).filter((k) => fields[k] !== undefined);
   if (fields.note) {
     const cleaned = fields.note.replace(NAME_REALM_RE, () => {
       removed = true;
@@ -133,7 +181,13 @@ export function cleanReport(parsed) {
   for (const k of ["x", "y"]) {
     if (fields[k] !== undefined && /^\d{1,3}(\.\d+)?$/.test(fields[k])) fields[k] = String(Math.round(Number(fields[k])));
   }
-  return { line: buildLine(fields, parsed.order), fields, removed, rude };
+  // The arrow's target as a map place ("ext:1429,41.2,65.0"): the same whole percent.
+  const aw = fields.aw !== undefined ? AW_PLACE_RE.exec(fields.aw) : null;
+  if (aw) fields.aw = aw[1] + Math.round(Number(aw[2])) + "," + Math.round(Number(aw[3]));
+  return {
+    line: buildLine(fields, parsed.order), fields, removed, rude,
+    extra, dropped: parsed.dropped || 0, droppedKeys: parsed.droppedKeys || [],
+  };
 }
 
 // ---------------------------------------------------------------- the issue
@@ -167,7 +221,15 @@ export function issueFor(clean, via, repo) {
       ? "_Sent through the report web page (no GitHub account needed). There is no reporter to ask; decide from the line._"
       : "_Sent by the Addon Manager (no GitHub account needed). There is no reporter to ask; decide from the line._",
   ];
-  if (clean.removed) parts.push("_A character name was removed from the note before posting._");
+  // field names here are a-z / 0-9 only (EXTRA_KEY_RE): nothing in them can render
+  if (clean.extra && clean.extra.length) {
+    parts.push(`_Newer fields this server doesn't list yet: ${clean.extra.join(", ")} (decide from the line)._`);
+  }
+  if (clean.dropped) {
+    const names = clean.droppedKeys.length ? ": " + clean.droppedKeys.join(", ") : "";
+    parts.push(`_Left out by the server (too long or not plain): ${clean.dropped} field(s)${names}._`);
+  }
+  if (clean.removed) parts.push("_A character name was removed from the report before posting._");
   if (clean.rude) parts.push("_The note may hold a rude word: check it before replying._");
   return { title, body: parts.join("\n"), labels, repo };
 }
@@ -446,6 +508,13 @@ function page(title, inner, siteKey) {
 <title>${esc(title)}</title><style>${STYLE}</style>${script}</head><body><main>${inner}</main></body></html>`;
 }
 
+// What a public report shows (form page and thanks page; the same as cleanReport leaves in).
+export const PUBLIC_HOLDS = "What the public issue shows: the guide, the step and its state, your quest progress " +
+  "and quest log (quest numbers), the arrow's target and distance, your level, class, race, spec and faction, " +
+  "the game language and the game and addon version, the number of the NPC you targeted, your note, and where " +
+  "you stood, rounded to whole percent (unless you ticked \"Leave out my location\" in the game). " +
+  "Never your name, realm, account or guild: a name is removed and your realm is left out.";
+
 export function formPage(env, message) {
   const siteKey = env.TURNSTILE_SITE_KEY || "";
   const widget = siteKey ? `<div class="cf-turnstile" data-sitekey="${esc(siteKey)}" data-theme="dark"></div>` : "";
@@ -466,15 +535,15 @@ ${note}
 ${widget}
 <p><button type="submit">Send</button></p>
 </form>
-<p><small>We keep no IP address and no logs. The report holds no names: the guide, the step, the addon version, your level, class and race, and where you stood (unless you ticked "Leave out my location" in the game).</small></p>`, siteKey);
+<p><small>We keep no IP address and no logs. ${esc(PUBLIC_HOLDS)}</small></p>`, siteKey);
 }
 
 function donePage(env, result) {
   if (result.status === 201) {
     const url = `https://github.com/${result.repo}/issues/${result.issue}`;
-    return page("Thanks", `<h1>Thanks!</h1><p class="ok">Your report is in: <a href="${esc(url)}">issue #${esc(result.issue)}</a>.</p>`);
+    return page("Thanks", `<h1>Thanks!</h1><p class="ok">Your report is in: <a href="${esc(url)}">issue #${esc(result.issue)}</a>.</p><p><small>${esc(PUBLIC_HOLDS)}</small></p>`);
   }
-  if (result.status === 202) return page("Thanks", `<h1>Thanks!</h1><p class="ok">Your report is saved and goes up on GitHub soon.</p>`);
+  if (result.status === 202) return page("Thanks", `<h1>Thanks!</h1><p class="ok">Your report is saved and goes up on GitHub soon.</p><p><small>${esc(PUBLIC_HOLDS)}</small></p>`);
   if (result.status === 409) return page("Already in", `<h1>Already in</h1><p class="ok">We already have this report. Thanks!</p>`);
   const why = {
     400: "That isn't a whole report line. Copy it again in the game (it starts with AOGR2) and paste all of it.",

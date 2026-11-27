@@ -113,10 +113,130 @@ test("bad lines are refused", () => {
   assert.equal(parseLine("hello"), null);
   assert.equal(parseLine(line("abc", "x".repeat(1600))), null);
   assert.equal(parseLine(line("abc", "y".repeat(201))), null, "note over 200");
-  const body = "AOGR2 rid=abc;zz=1";
-  assert.equal(parseLine(`${body};ck=${adler32(body)}`), null, "unknown field");
   const dup = "AOGR2 rid=abc;ab=x;ab=y";
   assert.equal(parseLine(`${dup};ck=${adler32(dup)}`), null, "field twice");
+  assert.equal(parseLine(signed("AOGR2 rid=abc;zz=1;zz=2")), null, "an unknown field twice");
+  assert.equal(parseLine(signed("AOGR2 rid=abc;zz")), null, "a part without =");
+  assert.equal(parseLine(signed("AOGR2 rid=abc;Zz=1;zz=2;ab=x;ab=y")), null, "a dropped field doesn't hide a repeat");
+});
+
+// ---------------------------------------------------------------- newer fields
+const signed = (body) => `${body};ck=${adler32(body)}`;
+// Every new field from the guide's better-reports plan, with its example value.
+const NEW = "ss=now+pin;ty=turnin;pos=41/212;dt=class:1;bg=e12,e14;ts=340;qo=3/8,1/1;pre=783d,5261n;" +
+  "ql=18/20;qi=33,54c,62;it=1307:0;aw=step:e5;ah=taxi;av=door:12;ay=86;br=214;fc=190;nd=1;ps=ghost;" +
+  "rl=Forever;sp=2;set=sa1,hmauto";
+
+test("newer fields: all 22 new keys are known and round-trip", () => {
+  const l = signed(`AOGR2 rid=n1;v=0.3.0;ab=other;pk=demo-elwynn;sid=e1;${NEW};note=x`);
+  const p = parseLine(l);
+  assert.ok(p, "the line passes");
+  assert.deepEqual(p.extra, [], "none of them is unknown");
+  assert.equal(p.dropped, 0);
+  assert.equal(buildLine(p.fields, p.order), l);
+  assert.equal(p.fields.qi, "33,54c,62");
+});
+
+test("newer fields: a short unknown field is kept and named on the issue", () => {
+  const p = parseLine(signed("AOGR2 rid=n2;ab=other;pk=demo-elwynn;sid=e1;zz=1;q2x=a/b,c:d;note=x"));
+  assert.ok(p, "no 400 for an unknown field");
+  assert.deepEqual(p.extra, ["zz", "q2x"]);
+  const c = cleanReport(p);
+  assert.ok(c.line.includes(";zz=1;q2x=a/b,c:d;"));
+  assert.ok(parseLine(c.line), "the rebuilt line checks out");
+  const i = issueFor(c, "app", "gettic/All-in-One-Guide");
+  assert.ok(i.body.includes("_Newer fields this server doesn't list yet: zz, q2x (decide from the line)._"));
+  assert.ok(!i.body.includes("Left out by the server"));
+});
+
+test("newer fields: over a cap only that field is dropped, never the report", () => {
+  const many = Array.from({ length: 17 }, (_, n) => `u${n}=1`).join(";");
+  const body = "AOGR2 rid=n3;ab=other;pk=demo-elwynn;sid=e1;Toolongkey=1;abcdefg=1;sp1=a b;ac=%C3%A6x;" +
+    `long=${"y".repeat(81)};ok=${"z".repeat(80)};ck=1;${many};note=x`;
+  const p = parseLine(signed(body));
+  assert.ok(p, "the report still parses");
+  assert.equal(p.extra.length, 16, "16 unknown fields at most");
+  assert.ok(p.extra.includes("ok"), "80 characters is fine");
+  assert.deepEqual(p.droppedKeys, ["sp1", "ac", "long", "u15", "u16"]);
+  assert.equal(p.dropped, 8, "keys that are not plain (too long, a capital, ck) are counted, not named");
+  const c = cleanReport(p);
+  assert.ok(parseLine(c.line), "the rebuilt line checks out");
+  for (const gone of ["Toolongkey", "abcdefg", "sp1=", "a b", "ac=", "%C3", "yyyyy", "u15=", "u16="]) {
+    assert.ok(!c.line.includes(gone), gone + " not in the line");
+  }
+  const i = issueFor(c, "app", "gettic/All-in-One-Guide");
+  assert.ok(i.body.includes("_Left out by the server (too long or not plain): 8 field(s): sp1, ac, long, u15, u16._"));
+  assert.ok(!i.body.includes("Toolongkey") && !i.body.includes("yyyyy"));
+});
+
+test("newer fields: a Name-Realm in a new or unknown field drops that field (needs-review)", () => {
+  const p = parseLine(signed("AOGR2 rid=n4;ab=other;pk=demo-elwynn;sid=e1;ty=Bob-Firemaw;zz=Ann-ArgentDawn;ss=now;note=x"));
+  const c = cleanReport(p);
+  assert.ok(c.removed);
+  assert.equal(c.fields.ty, undefined);
+  assert.equal(c.fields.zz, undefined);
+  assert.equal(c.fields.ss, "now");
+  assert.deepEqual(c.extra, [], "a dropped unknown field isn't listed as kept");
+  assert.ok(!c.line.includes("Firemaw") && !c.line.includes("ArgentDawn"));
+  const i = issueFor(c, "app", "gettic/All-in-One-Guide");
+  assert.ok(i.labels.includes("needs-review"));
+  assert.ok(!i.body.includes("Firemaw") && !i.body.includes("ArgentDawn"));
+});
+
+test("newer fields: the realm (rl) never reaches the issue, the rebuilt line or D1", async () => {
+  const l = signed(`AOGR2 rid=n5;v=0.3.0;ab=other;pk=demo-elwynn;sid=e1;${NEW};note=x`);
+  const c = cleanReport(parseLine(l));
+  assert.equal(c.fields.rl, undefined);
+  assert.ok(!c.line.includes("rl=") && !c.line.includes("Forever"));
+  assert.ok(parseLine(c.line), "the rebuilt line checks out");
+  const i = issueFor(c, "app", "gettic/All-in-One-Guide");
+  assert.ok(!i.body.includes("Forever") && !i.title.includes("Forever") && !i.body.includes("rl="));
+  const e = env();
+  gh.issues = [];
+  gh.status = 502;   // kept pending: the D1 line holds no realm either
+  assert.equal((await take(e, l, "app")).status, 202);
+  assert.ok(!e.DB.rows.get("n5").line.includes("Forever"));
+  gh.status = 201;
+  await retry(e);
+  assert.equal(e.DB.rows.get("n5").state, "filed");
+  assert.ok(!gh.issues[0].body.includes("Forever"));
+});
+
+test("newer fields: a field holding the realm, or named like one, is dropped", () => {
+  const p = parseLine(signed("AOGR2 rid=n9;ab=other;pk=demo-elwynn;sid=e1;rl=Forever;set=FOREVERx;zz=a/forever;" +
+    "ss=now;realm=x;rlm=y;rn=z;note=x"));
+  assert.ok(p, "the report still parses");
+  assert.equal(p.dropped, 3, "realm / rlm / rn dropped (counted, not named)");
+  assert.deepEqual(p.droppedKeys, []);
+  const c = cleanReport(p);
+  assert.ok(c.removed, "needs-review like a Name-Realm");
+  assert.equal(c.fields.set, undefined, "any case");
+  assert.equal(c.fields.zz, undefined, "unknown fields too");
+  assert.equal(c.fields.ss, "now");
+  assert.ok(!/forever/i.test(c.line) && !/forever/i.test(issueFor(c, "app", "gettic/All-in-One-Guide").body));
+  assert.ok(issueFor(c, "app", "gettic/All-in-One-Guide").labels.includes("needs-review"));
+  const short = cleanReport(parseLine(signed("AOGR2 rid=n10;ab=other;pk=demo-elwynn;sid=e1;rl=A;ss=now+pin;note=x")));
+  assert.equal(short.fields.ss, "now+pin", "a 1-2 letter realm drops nothing else");
+});
+
+test("newer fields: the arrow's map target is rounded like x / y", () => {
+  const c = cleanReport(parseLine(signed("AOGR2 rid=n6;ab=other;pk=demo-elwynn;sid=e1;aw=ext:1429,41.2,65.9;note=x")));
+  assert.equal(c.fields.aw, "ext:1429,41,66");
+  assert.ok(!c.line.includes("41.2") && !c.line.includes("65.9"));
+  const i = issueFor(c, "app", "gettic/All-in-One-Guide");
+  assert.ok(i.body.includes("aw=ext:1429,41,66") && !i.body.includes("65.9"));
+  const s = cleanReport(parseLine(signed("AOGR2 rid=n7;ab=other;pk=demo-elwynn;sid=e1;aw=step:e5;note=x")));
+  assert.equal(s.fields.aw, "step:e5");
+});
+
+test("newer fields: filed through take() with a new-key line (201)", async () => {
+  const e = env();
+  gh.issues = [];
+  const res = await take(e, signed(`AOGR2 rid=n8;v=0.3.0;ab=other;pk=demo-elwynn;sid=e1;${NEW};zz=1;Bad=1;note=x`), "app");
+  assert.equal(res.status, 201);
+  assert.equal(gh.issues.length, 1);
+  assert.ok(gh.issues[0].body.includes("ss=now+pin") && !gh.issues[0].body.includes("Bad=1"));
+  assert.equal(e.DB.rows.get("n8").line, null);
 });
 
 test("Name-Realm is removed (new checksum), rude words flagged", () => {
@@ -219,6 +339,7 @@ test("web: form page, Turnstile, licence tick", async () => {
   assert.equal(get.status, 200);
   const htmlText = await get.text();
   assert.ok(htmlText.includes("Reports are public on GitHub. Don't write names in the note."));
+  assert.ok(htmlText.includes("Never your name, realm, account or guild"), "the form says what a public report shows");
   assert.ok(htmlText.includes('data-sitekey="site-key"'));
   assert.match(get.headers.get("content-security-policy"), /default-src 'none'/);
   let res = await worker.fetch(formRequest({ r: LINE_A, "cf-turnstile-response": "good" }), e);
@@ -228,7 +349,9 @@ test("web: form page, Turnstile, licence tick", async () => {
   gh.issues = [];
   res = await worker.fetch(formRequest({ r: "  " + LINE_A + "\n", agree: "1", "cf-turnstile-response": "good" }), e);
   assert.equal(res.status, 200);
-  assert.ok((await res.text()).includes("issue #"));
+  const done = await res.text();
+  assert.ok(done.includes("issue #"));
+  assert.ok(done.includes("What the public issue shows") && done.includes("realm is left out"), "so does the thanks page");
   assert.deepEqual(gh.issues[0].labels.slice(-1), ["via-web"]);
   res = await worker.fetch(formRequest({ r: "hello <script>", agree: "1", "cf-turnstile-response": "good" }), e);
   assert.equal(res.status, 400);

@@ -23,9 +23,13 @@ What is sent (POST to config.REPORT_URL), nothing else:
 
     {"v": 1, "a": "AllinOneGuide", "r": "AOGR2 rid=k3x9qa;v=...;ck=1a2b3c4d"}
 
-The line holds the step, the addon and client version, the language, level/class/race and,
-unless the player ticked "Leave out my location" in the game, the map position. Never a name,
-account, path or the account folder name. The server turns it into a public GitHub issue.
+The line holds the step (and, from newer guide versions, its state, quest progress, the quest
+log's quest numbers, the arrow's target and distance, spec and realm), the addon and client
+version, the language, level/class/race and, unless the player ticked "Leave out my location"
+in the game, the map position. Never a name, account, path or the account folder name. The
+line is sent as is (no field list here: newer fields need no app update). The server turns it
+into a public GitHub issue: it drops the realm, rounds map places to whole percent and keeps
+fields it doesn't know only as short plain codes.
 
 On by default, like the anonymous counts: sent quietly with no question (settings
 "send_reports": missing or True = send, False = never). The player switches it off with the

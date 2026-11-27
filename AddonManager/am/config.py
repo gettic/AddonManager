@@ -22,6 +22,16 @@ BUILTIN_LIST = {
         {"folder": "MiniMap", "name": "Mini Map", "repo": "gettic/MiniMap"},
         {"folder": "GearSet", "name": "Gear Set", "repo": "gettic/GearSet"},
     ],
+    # Read only by app versions that know tag prefixes (older ones only read "addons"):
+    # the guide packs, released from the guide's repo under their own tag prefix.
+    "packs": [
+        {"folder": "AllinOneGuide_Alliance", "name": "Alliance routes",
+         "repo": "gettic/All-in-One-Guide", "tag_prefix": "alliance-", "parent": "AllinOneGuide",
+         "description": "Leveling routes for Alliance characters. Needs All-in-One Guide."},
+        {"folder": "AllinOneGuide_Horde", "name": "Horde routes",
+         "repo": "gettic/All-in-One-Guide", "tag_prefix": "horde-", "parent": "AllinOneGuide",
+         "description": "Leveling routes for Horde characters. Needs All-in-One Guide."},
+    ],
 }
 
 # The only place addon versions and downloads come from (tests may point elsewhere).

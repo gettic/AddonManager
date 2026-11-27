@@ -4,7 +4,10 @@ for the .exe self-test.
 Usage: python -m tests.make_selftest_data <empty folder>
 Prints three lines: the addon list path, the fake WoW folder and the fake GitHub API
 folder (for --github-api). The list mixes both kinds of entry: TaxiTime with a direct
-url/version/sha256, GuildHub from its (fake) GitHub repo's latest release.
+url/version/sha256, GuildHub from its (fake) GitHub repo's latest release, plus a guide
+with two packs in its repo ("packs" key, tag prefixes): Guide v1.0.0 and the pack release
+alliance-v0.5.0 published after it (the guide must still get its own), and a horde pack
+that isn't out yet (not_out: no row, not a failure).
 
        python -m tests.make_selftest_data <empty folder> --app-update <built .exe>
 Self-update test data: copies the .exe to <folder>\\run\\AddonManager.exe (the copy that
@@ -13,6 +16,7 @@ AddonManager.exe is another copy with a few bytes added (never run). On Linux th
 with the AddonManager-x86_64.AppImage file and asset (the copy keeps the file's name).
 Prints two lines: the copy to run and the fake GitHub API folder."""
 
+import json
 import os
 import pathlib
 import shutil
@@ -34,6 +38,33 @@ def app_update(base, exe):
     print(api)
 
 
+def _guide_packs(base, list_path):
+    """gettic/Guide in the fake API (main + alliance- stream) and its entries in the list."""
+    gh = os.path.join(base, "gh")
+    api = os.path.join(gh, "api")
+    url_of = lambda name: pathlib.Path(gh, "dl", name).as_uri()
+    main_zip = fixtures.make_zip(os.path.join(gh, "dl", "Guide-v1.0.0.zip"), "Guide", "1.0.0")
+    pack_zip = fixtures.make_zip(os.path.join(gh, "dl", "Guide_Alliance-v0.5.0.zip"),
+                                 "Guide_Alliance", "0.5.0")
+    fixtures.write_releases(api, "gettic/Guide", [   # newest first, like GitHub
+        fixtures.release_json("alliance-v0.5.0", [fixtures.asset(
+            "Guide_Alliance-v0.5.0.zip", url_of("Guide_Alliance-v0.5.0.zip"), pack_zip)],
+            published="2026-11-02T10:00:00Z"),
+        fixtures.release_json("v1.0.0", [fixtures.asset(
+            "Guide-v1.0.0.zip", url_of("Guide-v1.0.0.zip"), main_zip)],
+            published="2026-11-01T10:00:00Z")])
+    with open(list_path, encoding="utf-8") as f:
+        doc = json.load(f)
+    doc["addons"].append({"folder": "Guide", "name": "Guide", "repo": "gettic/Guide"})
+    doc["packs"] = [
+        {"folder": "Guide_Alliance", "name": "Alliance routes", "repo": "gettic/Guide",
+         "tag_prefix": "alliance-", "parent": "Guide"},
+        {"folder": "Guide_Horde", "name": "Horde routes", "repo": "gettic/Guide",
+         "tag_prefix": "horde-", "parent": "Guide"}]
+    with open(list_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2)
+
+
 def main(base):
     os.makedirs(base, exist_ok=True)
     site = fixtures.make_server_files(base)
@@ -50,6 +81,7 @@ def main(base):
          "url": pathlib.Path(wpath).as_uri(), "sha256": fixtures.sha256(wpath),
          "size": os.path.getsize(wpath)},
         {"folder": "GuildHub", "name": "Guild Hub", "repo": "gettic/GuildHub"}])
+    _guide_packs(base, list_path)
     root, _addons = fixtures.make_fake_wow(os.path.join(base, "wow"))
     print(list_path)
     print(root)

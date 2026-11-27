@@ -49,6 +49,7 @@ if os.name != "nt":
 SHARE_SETTING = "share_stats"   # settings.json: False = no usage ping at all
 REMOVED_SETTING = "removed_addons"   # settings.json: guild addons the player removed
 UNINSTALL_BUTTON = "Uninstall"   # the row's button when the addon is installed and current
+PACK_INDENT = 18   # px (scaled) a pack's name sits in under its main addon
 MIN_WIDTH = 580   # the window's smallest width (more if the rows need it)
 MIN_HEIGHT = 360   # at 100 % (theme.px scales it)
 START_WIDTH, START_HEIGHT = 680, 500   # first start at 100 % (scaled; taller if needed)
@@ -84,12 +85,12 @@ SHARE_TEXT = "Share anonymous counts"
 SHARE_NOTE = ("Once a day, sends which guild addons you have, their versions and whether "
               "they're up to date. No name, account or ID. Only the app's maker sees the totals.")
 REPORTS_TEXT = "Send guide reports"
-REPORTS_NOTE = ("On unless you switch it off. When you press Send on a report in the "
-                "All-in-One Guide, the app sends it after you /reload, log out or close the "
-                "game. Anyone can read "
-                "them on the guide's GitHub page, so keep names out of your note. Holds the "
-                "step, your note, level, class, race, language, game and addon version, and "
-                "map position if you allowed it. Never your name or account.")
+REPORTS_NOTE = ("On unless you switch it off. Reports you press Send on go out after you "
+                "/reload, log out or close the game. Anyone can read them on the guide's GitHub "
+                "page, so keep names out of your note. Holds the step, its state and quests, "
+                "your quest log, the arrow's target, your note, level, class, race, faction, "
+                "spec, game/addon version, the targeted NPC's number and map position if "
+                "allowed. The page never shows your name, realm or account.")
 GATHER_TEXT = "Share game data"
 GATHER_NOTE = ("On unless you switch it off. Sends All-in-One Guide's game facts while WoW "
                "is closed. Never your name or account.")
@@ -165,9 +166,11 @@ def _is_installed_beta(row, installed_v):
 class Row:
     """One addon line in the list."""
 
-    def __init__(self, folder, name, latest=None, addon=None, description=""):
+    def __init__(self, folder, name, latest=None, addon=None, description="", parent=""):
         self.folder, self.name, self.latest = folder, name, latest
         self.addon, self.description = addon, description
+        self.parent = parent   # a pack: the main addon's folder (shown indented under it)
+        self.needs = None      # (status, reason): a pack whose main addon can't go in now
         self.state = None   # None, "queued", "installing", "error"
         self.message = ""
         self.problem = ""   # short status when the latest release couldn't be read
@@ -739,11 +742,24 @@ class App:
         # sideways when a version text gets longer (e.g. "v1.4.0-beta.1 (beta)").
         for col, sample in ((1, VERSION_SAMPLE), (2, VERSION_SAMPLE + " (beta)")):
             f.columnconfigure(col, minsize=self._text_width(sample) + COL_GAP)
+        # Status: room for a pack's "Needs <main addon>" from the start, so the window
+        # doesn't get wider when it shows.
+        needs = [errors.NEEDS_PARENT.format(parent=p.name) for p in self.rows
+                 if any(r.parent == p.folder for r in self.rows)]
+        widest = 0
+        for text in needs:   # measured on a real status label (its padding included)
+            probe = ttk.Label(f, text=text)
+            widest = max(widest, probe.winfo_reqwidth())
+            probe.destroy()
+        f.columnconfigure(3, minsize=widest + (self._col_gap(3) if needs else 0))
         self._cells = []
         for i, _row in enumerate(self.rows, start=1):
             # Labels fill their cell (sticky nsew): the row's background reaches the edges.
-            name = ttk.Label(f, foreground=theme.NAME, font=theme.font("bold"),
-                             background=theme.PANEL)
+            # A pack: regular weight, indented under its main addon.
+            name = ttk.Label(f, foreground=theme.NAME, background=theme.PANEL,
+                             font=theme.font() if _row.parent else theme.font("bold"))
+            if _row.parent:
+                name.configure(padding=(theme.px(PACK_INDENT), 0, 0, 0))
             name.grid(row=i, column=0, sticky="nsew", padx=(0, self._col_gap(0)))
             installed = ttk.Label(f, background=theme.PANEL)
             installed.grid(row=i, column=1, sticky="nsew", padx=(0, self._col_gap(1)))
@@ -826,6 +842,10 @@ class App:
             was_removed = not exists and row.folder in removed
             if was_removed:
                 status_text = errors.REMOVED
+            needs = row.needs if (row.needs and not row.state
+                                  and not self._installed(row.parent)[0]) else None
+            if needs:
+                status_text = needs[0]
             if row.state == "queued":
                 status_text = "Waiting..."
             elif row.state == "installing":
@@ -853,8 +873,12 @@ class App:
             else:
                 status_label.configure(text=status_text, style="TLabel", background=back,
                                        foreground=("" if row.state else
+                                                   theme.STATUS.get(versions.UPDATE, "")
+                                                   if needs else
                                                    theme.STATUS.get(status, "")))
-            if no_normal and not row.state:
+            if needs:
+                cells["status_tip"].text = needs[1]
+            elif no_normal and not row.state:
                 cells["status_tip"].text = errors.NO_NORMAL_YET
             elif row.problem and not row.addon and not row.state:
                 cells["status_tip"].text = row.problem_full   # e.g. "Can't check now": why
@@ -872,9 +896,12 @@ class App:
             elif row.addon and status in BUTTON_TEXT and self.addons_dir:
                 button.configure(text=BUTTON_TEXT[status], width=self._row_chars(),
                                  style=("Accent.Item.TButton" if status in ALL_STATUSES
-                                        else "Item.TButton"),
+                                        and not needs else "Item.TButton"),
                                  command=lambda r=row: self.install_rows([r]))
-                if status in ALL_STATUSES and not was_removed:
+                # A pack that isn't installed: only its own Install button (the player
+                # picks their packs); Update all still updates installed packs.
+                if status in ALL_STATUSES and not was_removed and not (
+                        row.parent and status == versions.NOT_INSTALLED):
                     any_action = True
                     any_update = any_update or status == versions.UPDATE
                     updates += status == versions.UPDATE
@@ -1504,7 +1531,7 @@ class App:
             log.exception("Last known list failed")
             addons = []
         self.rows = [Row(a.folder, a.name, a.version or None, a if a.version else None,
-                         a.description) for a in addons]
+                         a.description, a.parent) for a in addons]
 
     def toggle_share(self):
         """Share anonymous counts switched: save it. On again: send today's count now if it
@@ -1806,19 +1833,24 @@ class App:
         if m is not None:
             problems = problems or {}
             self.rows, notes = [], []
+            shown_before = {k[0] for k in (self.settings.get("known_addons") or [])
+                            if isinstance(k, (list, tuple)) and k and isinstance(k[0], str)}
             for a in m.addons:
+                if _hidden_pack(a, problems.get(a.folder), shown_before,
+                                self._installed(a.folder)[0]):
+                    continue   # a pack that isn't out yet: no row until its first release
                 if a.folder in problems:
-                    row = Row(a.folder, a.name, None, None, a.description)
+                    row = Row(a.folder, a.name, None, None, a.description, a.parent)
                     row.problem, full = errors.release_message(problems[a.folder], a.name)
                     row.problem_full = full
                     row.problem_kind = getattr(problems[a.folder], "kind", "")
                     if full not in notes:
                         notes.append(full)
                 else:
-                    row = Row(a.folder, a.name, a.version, a, a.description)
+                    row = Row(a.folder, a.name, a.version, a, a.description, a.parent)
                 self.rows.append(row)
             self.settings = config.load_settings()
-            self.settings["known_addons"] = [[a.folder, a.name] for a in m.addons]
+            self.settings["known_addons"] = [[r.folder, r.name] for r in self.rows]
             config.save_settings(self.settings)
             # A removed addon that is back (from the bin, or by hand) counts as normal again.
             back = {f for f in self._removed() if self._installed(f)[0]}
@@ -1858,15 +1890,23 @@ class App:
             exists, v = self._installed(row.folder)
             if not exists and row.folder in removed:
                 continue   # the player removed it: only its own Install button brings it back
+            if not exists and row.parent:
+                continue   # packs the player hasn't picked: only their own Install button
             if versions.status(exists, v, row.latest) in ALL_STATUSES:
                 rows.append(row)
         if rows:
-            self.install_rows(rows)
+            self.install_rows(rows, from_all=True)
 
-    def install_rows(self, rows):
+    def install_rows(self, rows, from_all=False):
+        """Install these rows. from_all: Install all / Update all (never brings back a main
+        addon the player uninstalled; only a pack's own Install button does)."""
         # Only rows with a release to install (never a "Beta only"/"Not out yet" row).
         rows = [r for r in rows if r.addon is not None and r.addon.url]
         if self.busy or not self.addons_dir or not rows:
+            return
+        rows = self._with_parents(rows, from_all)
+        if not rows:
+            self.render()
             return
         if not wowpath.ensure_addons_dir(self.addons_dir):
             self.set_message(errors.install_message(
@@ -1882,8 +1922,46 @@ class App:
         threading.Thread(target=_install_worker, daemon=True,
                          args=(self.queue, self.check_game, list(rows), self.addons_dir)).start()
 
+    def _with_parents(self, rows, from_all=False):
+        """rows with each pack's main addon put first when it isn't installed (a pack does
+        nothing without it). A pack whose main addon can't be installed now (or, for Install
+        all / Update all, was uninstalled by the player) is left out: its row says "Needs
+        <main addon>" and the message line says why."""
+        out, why = [], ""
+        removed = self._removed() if from_all else set()
+        for row in rows:
+            row.needs = None
+            parent = self._row(row.parent) if row.parent else None
+            if row.parent and not self._installed(row.parent)[0]:
+                if row.parent in removed:
+                    name = parent.name if parent is not None else row.parent
+                    row.needs = errors.needs_parent(name, removed=True)
+                    why = why or row.needs[1]
+                    continue
+                if parent is not None and parent.addon is not None and parent.addon.url:
+                    if parent not in out:
+                        out.append(parent)
+                else:
+                    name = parent.name if parent is not None else row.parent
+                    beta_only = parent is not None and parent.problem_kind == "beta_only"
+                    row.needs = errors.needs_parent(name, beta_only)
+                    why = why or row.needs[1]
+                    continue
+            if row not in out:
+                out.append(row)
+        if why:
+            self.set_message(why)
+        return out
+
     def _row(self, folder):
         return next((r for r in self.rows if r.folder == folder), None)
+
+    def _drop_row(self, row):
+        """Take a row off the list (and off known_addons, the next start's quick list)."""
+        self.rows = [r for r in self.rows if r is not row]
+        self.settings = config.load_settings()
+        self.settings["known_addons"] = [[r.folder, r.name] for r in self.rows]
+        config.save_settings(self.settings)
 
     def _poll(self):
         if self.closed:
@@ -1983,6 +2061,9 @@ class App:
                 row.state = None
                 self.set_message(msg[3] if len(msg) > 3
                                  else errors.removed_message(row.name, where))
+                if (row.parent and row.addon is None and row.problem_kind == "not_out"
+                        and not self._installed(folder)[0]):
+                    self._drop_row(row)   # a pack that isn't out: no row once it's gone
             self.render()
         elif kind == "remove_error":
             self.busy = False
@@ -2390,6 +2471,15 @@ def _load_worker(q, check_game, location, allow_local, github_api=None, force=Tr
         msg = ("manifest", None, errors.manifest_message(e), None)
     game.join(10)
     q.put(msg)
+
+
+def _hidden_pack(addon, problem, shown_before, installed):
+    """True for a tag-prefixed entry (a guide pack) that gets no row: not installed and not
+    out yet ("not_out"), or not readable now and never shown before (so a first start while
+    offline doesn't list packs that may not exist yet)."""
+    if not addon.tag_prefix or problem is None or installed:
+        return False
+    return getattr(problem, "kind", "") == "not_out" or addon.folder not in shown_before
 
 
 def _resort_worker(q, manifest, allow_local, github_api, show_betas):

@@ -19,6 +19,10 @@ _VERSION_RE = re.compile(r"[vV]?[0-9A-Za-z.\-+]+")
 _SHA_RE = re.compile(r"[0-9a-fA-F]{64}")
 _REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-]{0,38}/[A-Za-z0-9_.\-]{1,100}")
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+# A release stream's tag prefix, e.g. "alliance-" (tags alliance-v1.0.0). Never "v<digit>"
+# or a digit at the start: those tags belong to the addon's own (unprefixed) stream.
+_PREFIX_RE = re.compile(r"[a-z][a-z0-9]*(-[a-z0-9]+)*-")
+MAX_PREFIX = 32
 
 
 class ManifestError(Exception):
@@ -44,6 +48,8 @@ class Addon:
     beta: bool = False  # version/url come from a GitHub pre-release (Show beta versions)
     beta_version: str = ""  # newest GitHub pre-release's version, offered or not (spots it installed)
     stable_version: str = ""  # newest normal GitHub release's version (even when a beta is offered)
+    tag_prefix: str = ""   # only the repo's releases tagged <prefix>v<version> (a guide pack)
+    parent: str = ""       # folder of the addon this one belongs under (shown indented)
 
 
 @dataclass
@@ -58,6 +64,35 @@ def is_safe_folder(name):
     """A plain AddOns folder name: no slashes, drive, '..' or leading dot."""
     return (isinstance(name, str) and 0 < len(name) <= 100
             and bool(_FOLDER_RE.fullmatch(name)) and not name.endswith("."))
+
+
+def is_safe_prefix(prefix):
+    """A tag prefix like "alliance-": lower-case words joined by '-', ending in '-'."""
+    return (isinstance(prefix, str) and 0 < len(prefix) <= MAX_PREFIX
+            and bool(_PREFIX_RE.fullmatch(prefix))
+            and not re.match(r"v[0-9]", prefix))
+
+
+def order_children(addons):
+    """addons with each one that has a parent moved right after its parent (and after
+    its earlier siblings); a parent that isn't in the list, or has a parent itself, is
+    dropped (the row is shown flat)."""
+    by_folder = {a.folder.lower(): a for a in addons}
+    out, children = [], {}
+    for a in addons:
+        p = by_folder.get(a.parent.lower()) if a.parent else None
+        if a.parent and (p is None or p is a or p.parent):
+            log.warning("Addon %s: parent %r not usable", a.folder, a.parent)
+            a.parent = ""
+            p = None
+        if p is not None:
+            a.parent = p.folder
+            children.setdefault(p.folder, []).append(a)
+    for a in addons:
+        if not a.parent:
+            out.append(a)
+            out.extend(children.get(a.folder, []))
+    return out
 
 
 def to_url(location):
@@ -100,16 +135,25 @@ def parse(data, base_url, allow_local=False):
     if fmt > SUPPORTED_FORMAT:
         raise ManifestError("too_new", f"format {fmt}")
 
-    addons, seen = [], set()
-    for entry in doc["addons"]:
+    # "packs": entries old app versions never see (they only read "addons"), e.g. the
+    # guide packs released from the guide's repo with their own tag prefix.
+    packs = doc.get("packs") if isinstance(doc.get("packs"), list) else []
+    addons, seen, streams = [], set(), set()
+    for entry in doc["addons"] + packs:
         addon = _parse_addon(entry, base_url, allow_local)
         if addon is None:
             continue
         if addon.folder.lower() in seen:
             log.warning("Duplicate addon %s skipped", addon.folder)
             continue
+        stream = (addon.repo.lower(), addon.tag_prefix)
+        if addon.repo and stream in streams:
+            log.warning("Addon %s skipped: same repo and tag prefix as another", addon.folder)
+            continue
         seen.add(addon.folder.lower())
+        streams.add(stream)
         addons.append(addon)
+    addons = order_children(addons)
 
     app = doc.get("app") if isinstance(doc.get("app"), dict) else {}
     return Manifest(title=str(doc.get("title") or ""), addons=addons,
@@ -132,8 +176,15 @@ def _parse_addon(entry, base_url, allow_local):
         if not is_safe_repo(repo):
             log.warning("Addon %s skipped: bad repo %r", folder, repo)
             return None
+        prefix = entry.get("tag_prefix")
+        if prefix is not None and not is_safe_prefix(prefix):
+            log.warning("Addon %s skipped: bad tag prefix %r", folder, prefix)
+            return None
+        parent = entry.get("parent")
         return Addon(folder=folder, name=str(entry.get("name") or folder), version="", url="",
-                     description=str(entry.get("description") or ""), repo=repo)
+                     description=str(entry.get("description") or ""), repo=repo,
+                     tag_prefix=prefix or "",
+                     parent=parent if is_safe_folder(parent) else "")
     if not isinstance(version, str) or not _VERSION_RE.fullmatch(version.strip()):
         log.warning("Addon %s skipped: bad version %r", folder, version)
         return None
