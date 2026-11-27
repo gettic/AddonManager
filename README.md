@@ -91,6 +91,7 @@ A beta is a test version of an addon. It may have bugs. The checkbox **Show beta
 - To go back sooner: with the checkbox off, an addon whose installed beta is newer than its normal version says "Beta installed" and has a **Use vX** button. Click it and confirm "Go back to the normal version?". Your addon settings are kept.
 - **Install all** and **Update all** never go back by itself.
 - If an addon has no normal version yet, the row just says "Beta installed".
+- If an addon so far has only test versions, with the checkbox off its row says "Beta only" and it is not installed. Its tip says to switch on **Show beta versions** to get it.
 - The Addon Manager's own updates always use normal versions.
 
 ## Uninstalling an addon

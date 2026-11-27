@@ -40,11 +40,13 @@ def fast(test):
 class Sender:
     """share.send in a thread; .code once it's shown, .result / .error at the end."""
 
-    def __init__(self, path, url, cancel=None, clock=None, **kw):
+    def __init__(self, path, url, cancel=None, clock=None, relay_sleep=None, **kw):
+        # Everything the thread reads (relay_sleep, LaterSender's now) is set here, before
+        # the thread starts: setting it on the object afterwards races the send.
         self.codes = queue.Queue()
         self.result = self.error = None
         self.progress = []
-        self.relay = share.Relay(url, allow_local=True, sleep=lambda s: None)
+        self.relay = share.Relay(url, allow_local=True, sleep=relay_sleep or (lambda s: None))
         args = dict(progress=lambda d, t: self.progress.append((d, t)), cancel=cancel)
         if clock:
             args["clock"] = clock
@@ -462,10 +464,12 @@ class PrecheckTests(unittest.TestCase):
 class LaterSender(Sender):
     """A sender with send later ticked; .states gets ("uploading"/"ready", value)."""
 
-    def __init__(self, path, url, kiwi_url, hours=12, **kw):
+    def __init__(self, path, url, kiwi_url, hours=12, now=None, **kw):
         self.states = queue.Queue()
         # no Send servers here: straight to file.kiwi (test_share_send adds them)
         self._later = {"hours": hours, "api": kiwi_url, "allow_local": True}
+        if now is not None:   # the Upload right away tick
+            self._later["now"] = now
         super().__init__(path, url, **kw)
 
     def _run(self, path, args):
@@ -685,8 +689,7 @@ class LaterTests(unittest.TestCase):
     def test_backs_off_on_429_and_5xx(self):
         self.kiwi.fail_puts = [429, 500, 503]
         sleeps = []
-        s = LaterSender(self.path, self.relay.url, self.kiwi.url)
-        s.relay.sleep = sleeps.append
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url, relay_sleep=sleeps.append)
         code = s.code()
         s.wait_state("ready")
         s.join()
@@ -712,8 +715,7 @@ class LaterTests(unittest.TestCase):
 
     def send_now(self):
         """Upload right away ticked: a small backup goes up without the live wait."""
-        s = LaterSender(self.path, self.relay.url, self.kiwi.url)
-        s._later["now"] = True
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url, now=True)
         return s, s.code()
 
     def test_upload_right_away_skips_the_wait(self):
@@ -750,8 +752,7 @@ class LaterTests(unittest.TestCase):
 
     def test_upload_right_away_off_still_waits(self):
         share_later.LATER_AFTER = 20   # (patched back by setUp's cleanup)
-        s = LaterSender(self.path, self.relay.url, self.kiwi.url)
-        s._later["now"] = False
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url, now=False)
         code = s.code()
         path = share.receive(code, self.receiver(), self.inbox)   # live, as before
         s.join()
@@ -762,8 +763,7 @@ class LaterTests(unittest.TestCase):
     def test_retry_cap(self):
         self.kiwi.fail_puts = [503] * 100
         with mock.patch.object(share_later, "RETRY_FOR", 10 ** 6):
-            s = LaterSender(self.path, self.relay.url, self.kiwi.url)
-            s.relay.sleep = lambda _s: None
+            s = LaterSender(self.path, self.relay.url, self.kiwi.url)   # relay naps: none
             s.code()
             s.join()
         self.assertEqual(s.error.kind, "later_failed")
@@ -860,8 +860,8 @@ class LaterTests(unittest.TestCase):
     def real_wait_sender(self, cancel=None):
         """file.kiwi always down, and the app's own stop-aware 5-minute wait (not a fake one)."""
         self.kiwi.fail_create = 503
-        s = LaterSender(self.path, self.relay.url, self.kiwi.url, cancel=cancel)
-        s.relay.sleep = time.sleep          # share.py then waits on its stop event
+        s = LaterSender(self.path, self.relay.url, self.kiwi.url, cancel=cancel,
+                        relay_sleep=time.sleep)   # share.py then waits on its stop event
         s.code()
         s.wait_state("kiwi_down")
         return s

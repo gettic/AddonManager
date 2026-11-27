@@ -91,6 +91,9 @@ def release_message(exc, name):
         return ("Can't check now", CERTIFICATE)
     if kind == "no_release":
         return ("Not out yet", f"{name} has no release to download yet.")
+    if kind == "beta_only":
+        return (BETA_ONLY, f"{name} is only out as a test (beta) version so far. "
+                "Switch on \"Show beta versions\" to get it.")
     if kind == "no_asset":
         return ("No download yet", f"{name}'s newest release has no download yet. "
                 "Try again later, or tell a guild officer.")
@@ -191,6 +194,7 @@ def app_updated(version_text):
 # Going back from an installed beta to the normal version.
 BETA_INSTALLED = "Beta installed"
 NO_NORMAL_YET = "There's no normal version of this addon yet."
+BETA_ONLY = "Beta only"   # row status: only test versions out, betas switched off
 GO_BACK_TITLE = "Go back to the normal version?"
 GO_BACK_OK = "Go back"
 GO_BACK_CANCEL = "Cancel"

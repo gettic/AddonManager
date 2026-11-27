@@ -260,6 +260,33 @@ class Basics(unittest.TestCase):
         self.assertIn("3 minutes", errors.release_message(github.ReleaseError("rate_limited", wait=150), "X")[1])
         self.assertEqual(errors.release_message(github.ReleaseError("no_release"), "X")[0],
                          "Not out yet")
+        short, full = errors.release_message(github.ReleaseError("beta_only"), "Guide")
+        self.assertEqual(short, errors.BETA_ONLY)
+        self.assertIn("Show beta versions", full)
+        self.assertIn("Guide", full)
+
+    def test_choose_beta_only(self):
+        beta = {"tag": "v0.2.0-beta.12", "assets": [], "prerelease": True}
+        with self.assertRaises(github.ReleaseError) as cm:
+            github.choose(None, beta, False)
+        self.assertEqual(cm.exception.kind, "beta_only")
+        self.assertEqual(github.choose(None, beta, True), (beta, True))
+        with self.assertRaises(github.ReleaseError) as cm:
+            github.choose(None, None, True)
+        self.assertEqual(cm.exception.kind, "no_release")
+
+    def test_install_without_url_refused(self):
+        work = fixtures.temp_dir("nourl_")
+        try:
+            _root, addons = fixtures.make_fake_wow(os.path.join(work, "wow"))
+            before = fixtures.tree_snapshot(addons)
+            with mock.patch.object(download, "download_file",
+                                   side_effect=AssertionError("downloaded")):
+                with self.assertRaises(installer.InstallError):
+                    installer.install(_addon(), addons)
+            self.assertEqual(fixtures.tree_snapshot(addons), before)   # nothing touched
+        finally:
+            fixtures.remove(work)
 
 
 class WithServer(unittest.TestCase):
@@ -514,9 +541,26 @@ class WithServer(unittest.TestCase):
     def test_drafts_skipped_and_only_betas(self):
         self._write_taxi(("v2.0.0", False, True), ("v1.5.0-beta.1", True))
         (taxi,), problems = self.resolve([_addon()])
-        self.assertEqual(problems["TaxiTime"].kind, "no_release")
+        self.assertEqual(problems["TaxiTime"].kind, "beta_only")
+        self.assertEqual(taxi.url, "")   # nothing to install while betas are off
         (taxi,), problems = self.resolve([_addon()], show_betas=True)
         self.assertEqual((problems, taxi.version, taxi.beta), ({}, "1.5.0-beta.1", True))
+
+    def test_selftest_accepts_beta_only_and_checks_its_download(self):
+        import main
+        self._write_taxi(("v0.2.0-beta.12", True), ("v0.2.0-beta.11", True))
+        addons, problems, beta_only = main._selftest_releases(
+            [_addon(), _addon("GuildHub", "gettic/GuildHub")], self.api)
+        self.assertEqual((problems, beta_only), ({}, ["TaxiTime"]))
+        self.assertEqual([a.folder for a in addons], ["TaxiTime", "GuildHub"])
+        taxi = addons[0]
+        self.assertEqual((taxi.version, taxi.beta), ("0.2.0-beta.12", True))
+        installer.install(taxi, self.addons)
+        self.assertEqual(toc.installed(self.addons, "TaxiTime"), (True, "0.2.0-beta.12"))
+        # A real problem still fails the step.
+        fixtures.write_releases(self.api_dir, "gettic/TaxiTime", [])
+        _, problems, beta_only = main._selftest_releases([_addon()], self.api)
+        self.assertEqual((sorted(problems), beta_only), (["TaxiTime"], []))
 
     def test_bad_release_list(self):
         fixtures.write_releases(self.api_dir, "gettic/TaxiTime", None, raw='{"tag_name": "v1"}')

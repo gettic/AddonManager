@@ -820,7 +820,7 @@ class App:
             go_back = (installed_beta and not beta_on and status == versions.NEWER
                        and row.addon is not None and not row.addon.beta)
             no_normal = (installed_beta and not beta_on and row.addon is None
-                         and row.problem_kind == "no_release")
+                         and row.problem_kind in ("no_release", "beta_only"))
             if go_back or no_normal:
                 status_text = errors.BETA_INSTALLED
             was_removed = not exists and row.folder in removed
@@ -1864,6 +1864,8 @@ class App:
             self.install_rows(rows)
 
     def install_rows(self, rows):
+        # Only rows with a release to install (never a "Beta only"/"Not out yet" row).
+        rows = [r for r in rows if r.addon is not None and r.addon.url]
         if self.busy or not self.addons_dir or not rows:
             return
         if not wowpath.ensure_addons_dir(self.addons_dir):

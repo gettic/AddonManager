@@ -27,7 +27,8 @@ _DIGEST_RE = re.compile(r"sha256:([0-9a-f]{64})", re.IGNORECASE)   # used with f
 
 
 class ReleaseError(Exception):
-    """kind: no_release, no_asset, rate_limited, offline, timeout, certificate, bad.
+    """kind: no_release, beta_only (only pre-releases while betas are off), no_asset,
+    rate_limited, offline, timeout, certificate, bad.
     wait: seconds until GitHub's limit resets (rate_limited)."""
 
     def __init__(self, kind, detail="", wait=0):
@@ -204,7 +205,9 @@ def choose(stable, beta, show_betas):
             or versions.compare(plain_tag(beta["tag"]), plain_tag(stable["tag"])) not in (0, -1)):
         return beta, True
     if stable is None:
-        raise ReleaseError("no_release", "only pre-releases" if beta else "no releases")
+        if beta is not None:   # only test versions so far: offered once betas are switched on
+            raise ReleaseError("beta_only", f"only pre-releases ({beta['tag']})")
+        raise ReleaseError("no_release", "no releases")
     return stable, False
 
 

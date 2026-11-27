@@ -7,7 +7,9 @@ import time
 import tkinter as tk
 import unittest
 
-from am import config, toc, ui, wowpath
+from unittest import mock
+
+from am import config, errors, toc, ui, wowpath
 from tests import fixtures
 
 
@@ -458,6 +460,41 @@ class WindowTests(unittest.TestCase):
             fixtures.make_addon_folder(self.addons, "GuildHub", "9.0")
             app.render()
             self.assertEqual(self.status(app, "GuildHub"), ("Newer than the guild's", "Uninstall"))
+
+    def test_beta_only_addon_not_installed(self):
+        # Only pre-releases and the box off: "Beta only", no button, never an install
+        # (Install all leaves it alone); the box on offers the beta.
+        with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:
+            gh = fixtures.make_github_site(self.work, lambda rel: server.url + rel)
+            z = fixtures.make_zip(os.path.join(gh, "dl", "TaxiTime-v0.2.0-beta.12.zip"),
+                                  "TaxiTime", "0.2.0-beta.12")
+            fixtures.write_releases(os.path.join(gh, "api"), "gettic/TaxiTime", [
+                fixtures.release_json("v0.2.0-beta.12", [fixtures.asset(
+                    "TaxiTime-v0.2.0-beta.12.zip",
+                    server.url + "dl/TaxiTime-v0.2.0-beta.12.zip", z)], prerelease=True)])
+            fixtures.remove(os.path.join(self.addons, "TaxiTime"))   # the fake's own copy
+            app = ui.App(self.root, os.path.join(gh, "addons.json"), True, self.root_dir,
+                         check_game=lambda: False, detect=lambda: [],
+                         github_api=server.url + "api",
+                         confirm=lambda *a: self.fail("asked"))
+            self.pump(app)
+            self.assertEqual(self.status(app, "TaxiTime"), (errors.BETA_ONLY, None))
+            row = next(r for r in app.rows if r.folder == "TaxiTime")
+            self.assertIsNone(row.addon)
+            self.assertIn("Show beta versions", row.problem_full)
+            with mock.patch.object(ui.installer, "install",
+                                   side_effect=AssertionError("installed")) as inst:
+                app.install_rows([row])
+                self.pump(app)
+                self.assertFalse(inst.called)
+                app.update_all()   # Install all: the other addons only
+                self.pump(app)
+            self.assertNotIn("TaxiTime", [c.args[0].folder for c in inst.call_args_list])
+            self.assertFalse(os.path.exists(os.path.join(self.addons, "TaxiTime")))
+            self.beta_box(app).invoke()
+            self.pump(app)
+            self.assertEqual(self.latest_text(app, "TaxiTime"), "v0.2.0-beta.12 (beta)")
+            self.assertEqual(self.status(app, "TaxiTime"), ("Not installed", "Install"))
 
     def test_beta_switch_no_flicker(self):
         with fixtures.LocalServer(os.path.join(self.work, "gh")) as server:

@@ -351,6 +351,8 @@ def install(addon, addons_dir, progress=None, timeout=30, tmp_root=None):
     """Download, check and install one addon (a manifest.Addon).
     Returns the installed version. Raises InstallError or download.DownloadError.
     On any failure the old version stays in place."""
+    if not getattr(addon, "url", ""):   # e.g. no release offered: never a download of ""
+        raise InstallError("other", f"{addon.folder}: no download address")
     addons_dir = check_addons_dir(addons_dir)
     target = target_path(addons_dir, addon.folder)
     backup = os.path.join(addons_dir, BACKUP_PREFIX + addon.folder)

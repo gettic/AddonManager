@@ -54,6 +54,23 @@ def set_dpi_aware():
         pass
 
 
+def _selftest_releases(addons, api):
+    """resolve_all for the self-test -> (addons, problems, beta_only folders).
+    An addon with only pre-releases is a normal state (the player sees "Beta only"), not a
+    failure: its beta is fetched again with betas on, so its real download is still checked."""
+    from am import github
+    addons, problems = github.resolve_all(addons, api, allow_local=True)
+    beta_only = sorted(f for f, e in problems.items() if getattr(e, "kind", "") == "beta_only")
+    if beta_only:
+        again = [a for a in addons if a.folder in beta_only]
+        filled, beta_problems = github.resolve_all(again, api, allow_local=True, show_betas=True)
+        by_folder = {a.folder: a for a in filled}
+        addons = [by_folder.get(a.folder, a) for a in addons]
+        problems = {f: e for f, e in problems.items() if f not in beta_only}
+        problems.update(beta_problems)
+    return addons, problems, beta_only
+
+
 def selftest(args):
     """Headless check used on the built .exe. Never uses the real WoW folder:
     --manifest and --wow are required."""
@@ -71,9 +88,10 @@ def selftest(args):
         m = manifest.load(args.manifest, allow_local=True)
         step("manifest", m.addons, f"{len(m.addons)} addons")
         api = github.api_base(args.github_api, True)
-        m.addons, problems = github.resolve_all(m.addons, api, allow_local=True)
+        m.addons, problems, beta_only = _selftest_releases(m.addons, api)
         releases_ok = step("releases", not problems,
                            f"{sum(1 for a in m.addons if a.repo)} from GitHub-style releases; "
+                           f"beta only: {beta_only or 'none'}; "
                            f"problems: {sorted(problems) or 'none'}")
         status, addons_dir = wowpath.from_picked(args.wow)
         if not step("wow folder", status == "ok", addons_dir or status):
@@ -81,6 +99,9 @@ def selftest(args):
         wowpath.ensure_addons_dir(addons_dir)
         all_ok = bool(m.addons) and releases_ok
         for addon in m.addons:
+            if not addon.url:   # its release problem is already in the "releases" step
+                all_ok = step(f"install {addon.folder}", False, "no release to install")
+                continue
             try:
                 installer.install(addon, addons_dir)
                 exists, v = toc.installed(addons_dir, addon.folder)
